@@ -43,3 +43,23 @@ tmp/
 Thumbs.db
 desktop.ini
 $RECYCLE.BIN/
+
+# ── 追加防護（2026-10-05 機密稽核）──────────────────────────
+# 憑證 / 金鑰檔
+*.p8
+*.pfx
+*.jks
+service-account*.json
+*credentials*.json
+
+# 資料庫傾印與備份（可能含個資、密碼雜湊）
+*.sql.gz
+*.dump
+*.bak
+*.orig
+
+# 工具狀態 / 建置產出
+.vscode/
+.idea/
+*.tsbuildinfo
+coverage/
