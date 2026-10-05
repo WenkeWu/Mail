@@ -150,6 +150,7 @@ flowchart TD
 | 步驟 | 指令 | 說明 |
 |---|---|---|
 | 0 | `pnpm --filter @atwhomail/backup-agent run verify` | 先確認本機鏡像完整（缺檔/損毀 → exit 1） |
+| 0b | （一次性）建立測試標的 | **2026-10-05 起必做**：舊測試標的 `mail-d1-restore-test` / `mail-r2-restore-test` 已刪除，執行 `--target=test` / `--bucket=test` 演練前，需先建立**全新的**測試 D1 與 bucket，並填入 `.env` 的 `D1_TEST_ID` / `R2_TEST_BUCKET` |
 | 1 | `... run restore-d1 -- --target=test --yes` | 先還原到**測試 D1**（`D1_TEST_ID`）演練 |
 | 2 | `... run restore-r2 -- --bucket=test --yes` | 還原到**測試 bucket** |
 | 3 | 驗證 | D1：`wrangler d1 execute <db> --remote --command "SELECT COUNT(*)...`；R2：`restore-r2 --verify-only`；抽樣 sha256 比對 |

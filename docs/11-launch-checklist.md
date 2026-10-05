@@ -12,7 +12,7 @@
 | D1 | ✅ | `mail-d1` `1d02352f-9f40-4e06-a95f-95a781a84998`（3 migrations） |
 | R2 | ✅ | `mail-r2`（`mail/`、`attachments/`） |
 | 本機備份 | ✅ | PostgreSQL 17.11 `atwhomail_backup`；磁碟 `D:\Mail\mail-backup\`（13 物件 / 41,088 B） |
-| 還原能力 | ✅ 已演練 | 測試 D1 `332b8869…` + bucket `mail-r2-restore-test`（位元組級 sha256 等價） |
+| 還原能力 | ✅ 已演練 | 2026-09-23 對測試 D1 `332b8869…` + bucket `mail-r2-restore-test` 演練（位元組級 sha256 等價）；**演練後測試標的已於 2026-10-05 刪除**（見 §5 #9） |
 | 測試 | ✅ 87 個 / 7 檔 | `pnpm test`（workerd 測試池，含 32 個 API 整合測試 + 8 收信 + 5 MTA-STS） |
 | 安全標頭 | ✅ | nosniff / DENY / no-referrer / HSTS / CSP（HTML 端點保留專屬 CSP） |
 | 健康檢查 | ✅ | `GET /api/health` 含 D1 探測（DB 異常 → 503） |
@@ -36,7 +36,7 @@
 | D1 migrations | ✅ 3 筆（`0001_init` / `0002_auth` / `0003_password_changed`） |
 | 健康檢查 | ✅ `{"ok":true,"db":"ok"}` |
 | **TLS-RPT（`_smtp._tls`）** | ❌ 不存在 → 收不到 TLS 失敗報告（`enforce` 前應補，見 §2-4） |
-| 殘留演練資源 | ⚠️ D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` 尚未刪除 |
+| 殘留演練資源 | ✅ 已清理（2026-10-05）：D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` 皆已刪除；僅保留 production `mail-d1` / `mail-r2`（刪除後已列舉驗證） |
 | CF API token | ⚠️ 缺 DNS read / Email Routing read / Email Sending read（403 code 10000/10001）→ 稽核須靠公開 DNS |
 | 官方文件重驗 | ✅ `email-service/llms-full.txt`（2026-10-05 抓取）：寄信所需 `cf-bounce` 系列記錄**無新增要求** |
 
@@ -107,7 +107,8 @@
       | PG 密碼 | `~/.atwhomail-pg-pass` + `.env` | 本機備份庫 | 12 個月 |
       | owner 密碼 | 僅雜湊存 D1 | 登入 | 建議改用強密碼（目前為測試期弱密碼） |
 
-- [ ] **7. 每季演練還原**（09 文件 §6）
+- [ ] **7. 每季演練還原**（09 文件 §5.1 Runbook）
+      **前置**：舊測試標的（`mail-d1-restore-test` / `mail-r2-restore-test`）已於 2026-10-05 刪除 → 先建立**全新的**測試 D1 與 bucket，並填入 `.env` 的 `D1_TEST_ID` / `R2_TEST_BUCKET`（詳見 09 §5.1 步驟 0b）
       ```powershell
       cd D:\Mail\Atwhomail
       pnpm --filter @atwhomail/backup-agent run verify
@@ -147,7 +148,7 @@
 | 6 | 無前端 App（Inbox UI） | 目前只能透過 API 使用 | 下一階段（React） |
 | 7 | `email_aliases` 表已建但無 API | 別名功能未實作 | 依需求排程 |
 | 8 | **TLS-RPT（`_smtp._tls`）未發佈** | 收不到 TLS 失敗報告 → 切 `enforce` 前沒有觀察資料（2026-10-05 稽核新增） | 發佈 TXT `v=TLSRPTv1; rua=mailto:…`（見 §2-4） |
-| 9 | **演練殘留資源未清**：D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` | 佔帳號額度、混淆維運（Phase 15 演練產物） | 確認不再需要後刪除（可程式化） |
+| 9 | ~~演練殘留資源未清~~ → **✅ 2026-10-05 已解決**：測試 D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` 已刪除（僅保留 production） | — | 下次季度還原演練前需先建立新的測試標的（見 §2-7；`docs/09` §5.1 步驟 0b） |
 | 10 | **CF API token 缺 read 權限**：DNS / Email Routing / Email Sending 皆 403 | 稽核無法全自動，只能靠公開 DNS | Dashboard → API Tokens → Edit 加**唯讀** scope（token 值不變，無需換檔） |
 | 11 | **`_mta-sts` 訊號記錄曾無聲消失** | MTA-STS 實質失效而不自知（policy 200 但無人查詢） | 每次動 mail DNS 後重驗（`07` Step 6、skill `dns-mta-sts-verification.md` Rule 1b） |
 
