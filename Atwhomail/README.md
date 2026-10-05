@@ -1,5 +1,22 @@
 # AtWhoMail
 
+## 版本控制（git root = `D:\Mail`）
+
+- Remote：`git@github.com:WenkeWu/Mail.git`（`main`）
+- 首次推送：`3f9ebdc`（71 檔 / 0.32 MB）
+- **已被 `.gitignore` 排除（絕勿 commit）**：`.env`、`.dev.vars`、`cloudflare_api_token.txt`、
+  `mail-backup/`、`mail-backup-snapshots/`、`downloads/`、`node_modules/`、`.wrangler/`、`dist/`
+
+日常流程：
+```bash
+cd /d/Mail
+git add -A && git commit -m "..." && git push
+```
+提交前機密自檢（應為 0 命中）：
+```bash
+git grep --cached -l -F "$(cat ~/.atwhomail-cf-token)" ; git diff --cached --name-only | grep -iE "\.env$|token|snapshot"
+```
+
 大量虛擬 Email Address + 自有 App 收發信系統（MVP）。
 
 - Domain：`atwho.org`（Cloudflare 代管，Email Routing 已啟用）
