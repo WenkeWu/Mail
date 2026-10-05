@@ -76,7 +76,7 @@ sequenceDiagram
 | 條件 | 值 | 說明 |
 |---|---|---|
 | Plan | **Workers Paid** | Free plan 只能寄給 verified destination addresses |
-| Sending onboarding | 完成 | Cloudflare 自動建 SPF/DKIM/MTA-STS/bounce MX records |
+| Sending onboarding | 完成 | Cloudflare 自動建 SPF/DKIM/bounce MX records（於 `cf-bounce` 子網域）+ DMARC；**MTA-STS 需手動**（`_mta-sts` CNAME + policy Worker，見 07 Step 6） |
 | 單封大小 | ≤ 5 MiB（含附件） | 超過收 `552 5.3.4 Message too big` |
 | 收件人數 | ≤ 50（to+cc+bcc） | — |
 | 每日配額 | 動態 | 新帳號保守、隨信譽自動調升；大量寄送需申請 |

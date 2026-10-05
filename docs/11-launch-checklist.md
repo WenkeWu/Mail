@@ -1,6 +1,6 @@
 # 11 — 上線檢查清單（Launch Checklist）
 
-> 對應 Phase 16（10 文件 §3）。狀態：2026-09-15。**本文件是「上線前最後一哩」的操作清單**，每項都附驗證指令與預期輸出。
+> 對應 Phase 16（10 文件 §3）。狀態：2026-09-15（**2026-10-05 收發信現況稽核**）。**本文件是「上線前最後一哩」的操作清單**，每項都附驗證指令與預期輸出。
 
 ## 1. 系統現況（已完成 ✅）
 
@@ -8,7 +8,7 @@
 |---|---|---|
 | 收信 Worker | ✅ 上線 | `atwhomail-email-handler`（catch-all `*@atwho.org`；R2 + D1 + HTML 消毒 + 附件抽取） |
 | API Worker | ✅ 上線 | `atwhomail-api`（REST；Model C 雙 session；安全標頭；健康檢查含 D1 探測） |
-| MTA-STS Worker | ✅ 上線 | `atwhomail-mta-sts`（`mta-sts.atwho.org`；mode=testing） |
+| MTA-STS Worker | ✅ 上線 | `atwhomail-mta-sts`（`mta-sts.atwho.org`；mode=testing）｜訊號 CNAME 於 2026-10-05 補回（見 §1.1） |
 | D1 | ✅ | `mail-d1` `1d02352f-9f40-4e06-a95f-95a781a84998`（3 migrations） |
 | R2 | ✅ | `mail-r2`（`mail/`、`attachments/`） |
 | 本機備份 | ✅ | PostgreSQL 17.11 `atwhomail_backup`；磁碟 `D:\Mail\mail-backup\`（13 物件 / 41,088 B） |
@@ -16,6 +16,29 @@
 | 測試 | ✅ 87 個 / 7 檔 | `pnpm test`（workerd 測試池，含 32 個 API 整合測試 + 8 收信 + 5 MTA-STS） |
 | 安全標頭 | ✅ | nosniff / DENY / no-referrer / HSTS / CSP（HTML 端點保留專屬 CSP） |
 | 健康檢查 | ✅ | `GET /api/health` 含 D1 探測（DB 異常 → 503） |
+
+### 1.1 2026-10-05 收發信現況稽核（公開 DNS + CF API 實測）
+
+> 稽核方式：公開 DNS（權威 NS + 多個公共解析器）、CF API（Workers/D1/R2/secrets）、D1 遠端查詢。
+> 因 token 缺 DNS / Email Routing / Email Sending read 權限（403），該三者以公開 DNS 驗證。
+
+| 檢查項 | 結果 |
+|---|---|
+| 收信 MX（`atwho.org`） | ✅ `route1/2/3.mx.cloudflare.net` |
+| 收信 SPF | ✅ `v=spf1 include:_spf.mx.cloudflare.net ~all` |
+| Routing DKIM | ✅ `cf2024-1._domainkey.atwho.org` 存在且 `p=` 完整 |
+| 寄信 bounce MX | ✅ `cf-bounce.atwho.org` → route1/2/3 |
+| 寄信 SPF / DKIM | ✅ `cf-bounce.atwho.org` / `cf-bounce._domainkey.atwho.org` |
+| DMARC | ✅ `_dmarc` `p=none` + `rua=…@dmarc-reports.cloudflare.net` |
+| **MTA-STS 訊號** | ⚠️→✅ 稽核時 `_mta-sts` CNAME **已消失**（NXDOMAIN）＝MTA-STS 實質未生效；**當日補回並驗收** |
+| Worker bindings | ✅ api：`DB`/`MAIL`/`EMAIL(send_email)` + secrets `ADMIN_TOKEN`/`JWT_SECRET`；handler：`DB`/`MAIL`；mta-sts：`MODE_OVERRIDE=testing` |
+| Observability | ✅ 三個 Worker 皆開啟（`head_sampling_rate=1`） |
+| D1 migrations | ✅ 3 筆（`0001_init` / `0002_auth` / `0003_password_changed`） |
+| 健康檢查 | ✅ `{"ok":true,"db":"ok"}` |
+| **TLS-RPT（`_smtp._tls`）** | ❌ 不存在 → 收不到 TLS 失敗報告（`enforce` 前應補，見 §2-4） |
+| 殘留演練資源 | ⚠️ D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` 尚未刪除 |
+| CF API token | ⚠️ 缺 DNS read / Email Routing read / Email Sending read（403 code 10000/10001）→ 稽核須靠公開 DNS |
+| 官方文件重驗 | ✅ `email-service/llms-full.txt`（2026-10-05 抓取）：寄信所需 `cf-bounce` 系列記錄**無新增要求** |
 
 ## 2. 上線前必做（逐步核對）
 
@@ -44,12 +67,31 @@
       - ⚠️ 目前 `test1@atwho.org` 等測試地址仍在 D1 → 上線前清理測試資料（見 §5）
 
 - [ ] **4. MTA-STS 由 testing → enforce（觀察 2–4 週後）**
+
+      **前置條件（缺一不可，2026-10-05 稽核新增）**
+
+      - (a) **訊號記錄必須存在**：`_mta-sts.atwho.org` CNAME → `_mta-sts.mx.cloudflare.net`（Proxy OFF）。
+            此記錄曾無聲消失過 → 切 enforce 前先重驗：
+            ```powershell
+            nslookup -type=TXT _mta-sts.atwho.org chelsea.ns.cloudflare.com
+            # 預期：canonical name = _mta-sts.mx.cloudflare.net，下一段 "v=STSv1; id=20230615T153000;"
+            ```
+      - (b) **要有 TLS-RPT 報告可看**：目前 `_smtp._tls.atwho.org` **不存在** → 收不到 TLS 失敗報告，
+            等於「觀察幾週」沒有資料依據。需自行發佈（RFC 8460）：
+            ```
+            Type: TXT   Name: _smtp._tls   Value: v=TLSRPTv1; rua=mailto:<收報告的信箱>
+            ```
+            （TLS-RPT 只有「有記錄」時寄件端才會回報；沒記錄＝零回報，不代表沒有 TLS 問題）
+
+      **切換步驟**
       ```powershell
-      # 先確認政策正確
+      # 1) 確認政策與訊號都正確
       curl.exe -s https://mta-sts.atwho.org/.well-known/mta-sts.txt
+      # 2) 改 packages/mta-sts/wrangler.jsonc 的 MODE_OVERRIDE=enforce 後重新部署
+      #    pnpm --filter @atwhomail/mta-sts run deploy
       ```
-      預期：`mode: testing`（無誤後改 `packages/mta-sts/wrangler.jsonc` 的 `MODE_OVERRIDE=enforce` 並 `pnpm --filter @atwhomail/mta-sts run deploy`）
-      ⚠️ enforce 設定錯誤會**拒收正常來信** → 變更後 24 小時內密切觀察
+      預期：政策檔為 `mode: testing`（切換後變 `enforce`）。
+      ⚠️ enforce 設定錯誤會**拒收正常來信** → 變更後 24 小時內密切觀察（觀察管道見 (b)）。
 
 - [ ] **5. 監控**
       - Uptime 監控（Cloudflare Health Check 或 cron）：`GET https://atwhomail-api.ulhome.workers.dev/api/health` → 期待 `{"ok":true,"db":"ok",...}`（DB 異常時 **503**）
@@ -104,6 +146,10 @@
 | 5 | 遠端圖片被剝離（MVP 刻意） | HTML 信中的外部圖片不顯示 | 之後做圖片代理（08 §16） |
 | 6 | 無前端 App（Inbox UI） | 目前只能透過 API 使用 | 下一階段（React） |
 | 7 | `email_aliases` 表已建但無 API | 別名功能未實作 | 依需求排程 |
+| 8 | **TLS-RPT（`_smtp._tls`）未發佈** | 收不到 TLS 失敗報告 → 切 `enforce` 前沒有觀察資料（2026-10-05 稽核新增） | 發佈 TXT `v=TLSRPTv1; rua=mailto:…`（見 §2-4） |
+| 9 | **演練殘留資源未清**：D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` | 佔帳號額度、混淆維運（Phase 15 演練產物） | 確認不再需要後刪除（可程式化） |
+| 10 | **CF API token 缺 read 權限**：DNS / Email Routing / Email Sending 皆 403 | 稽核無法全自動，只能靠公開 DNS | Dashboard → API Tokens → Edit 加**唯讀** scope（token 值不變，無需換檔） |
+| 11 | **`_mta-sts` 訊號記錄曾無聲消失** | MTA-STS 實質失效而不自知（policy 200 但無人查詢） | 每次動 mail DNS 後重驗（`07` Step 6、skill `dns-mta-sts-verification.md` Rule 1b） |
 
 ## 6. 相關文件
 

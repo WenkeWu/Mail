@@ -8,7 +8,7 @@
 
 | 元件 | 角色 | 誰提供 | 狀態 |
 |---|---|---|---|
-| Domain + DNS（MX / SPF / DKIM / MTA-STS / bounce MX） | 收發信的 DNS 基礎 | Cloudflare（Email Service 啟用時自動建立 records） | Cloudflare 現成 |
+| Domain + DNS（MX / SPF / DKIM / MTA-STS / bounce MX） | 收發信的 DNS 基礎 | Cloudflare（Email Routing / Sending 啟用時自動建立 MX、SPF、DKIM、bounce MX；**MTA-STS 的 `_mta-sts` CNAME 需手動**，見 07 Step 6） | Cloudflare 現成 |
 | Email Routing（收信） | 接受 Internet 信件 → 依 routing rule 轉給 Worker | Cloudflare Email Service | Cloudflare 現成 |
 | Email Worker（收信 handler） | Catch-all 接收 → 查 D1 決定 accept/reject → raw 存 R2 → metadata 存 D1 | 我們開發（Workers + TypeScript） | 我們寫 |
 | Worker API（REST） | App 後端：地址 CRUD、Inbox、附件、寄信、alias、backup 讀取 | 我們開發（Workers + TypeScript） | 我們寫 |
@@ -95,4 +95,4 @@ flowchart TD
 - 寄信（Email Sending）：**僅 Workers Paid**；$5/月含 3,000 封，超出 $0.35/千封；單封 ≤ 5 MiB。
 - Email Routing 每 domain 上限 200 條 rule → 印證「一條地址一條 rule」不可行，catch-all 是唯一解。
 - 啟用 routing 前須先驗證至少一個真實 destination 信箱（手動步驟，見 07 文件）。
-- 寄出前 domain 須完成 sending onboarding（SPF/DKIM/MTA-STS/bounce MX 由 Cloudflare 自動建立）。
+- 寄出前 domain 須完成 sending onboarding（SPF/DKIM/bounce MX 由 Cloudflare 自動建立於 `cf-bounce` 子網域；**MTA-STS 訊號需手動建立**，見 `07-cloudflare-resources.md` Step 6）。

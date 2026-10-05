@@ -348,7 +348,7 @@ POST /api/mail/send
 ### 寄信前置條件（官方限制，務必納入設計）
 
 * **Workers Paid plan**：寄信給任意 Internet 收件人僅限 Workers Paid；Workers Free 只能寄給帳號內 verified destination addresses（可作為開發期免費測試管道）
-* **Sending domain onboarding**：寄出前 domain 必須完成寄送設定（Cloudflare 自動建立 SPF / DKIM / MTA-STS / bounce MX DNS records）；只能從已設定的 routing domains 寄出
+* **Sending domain onboarding**：寄出前 domain 必須完成寄送設定（Cloudflare 自動建立 SPF / DKIM / bounce MX records 於 `cf-bounce` 子網域；DMARC 亦由 CF 提供）。**MTA-STS 的訊號記錄需自行建立**（`_mta-sts` CNAME → `_mta-sts.mx.cloudflare.net`，Proxy OFF）並自行提供政策檔，官方不代為設定，見 `07-cloudflare-resources.md` Step 6。只能從已設定的 routing domains 寄出
 * **單封上限 5 MiB**（含附件），超過會收到 `552 5.3.4 Message too big`
 * **單封最多 50 個收件人**（to + cc + bcc 合計）
 * **每日寄信配額**：新帳號從保守值開始，隨送達率與信譽自動調升；需要大量寄送時向 Cloudflare 申請調升
