@@ -1,0 +1,28 @@
+{
+  "name": "atwhomail",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "AtWhoMail — 大量虛擬 Email Address + 自有 App 收發信（Cloudflare Email Service + D1 + R2）",
+  "scripts": {
+    "test": "vitest run",
+    "lint": "pnpm typecheck",
+    "build": "pnpm -r --if-present run build",
+    "dev:api": "pnpm --filter @atwhomail/api run dev",
+    "backup": "pnpm --filter @atwhomail/backup-agent start",
+    "dev:email": "pnpm --filter @atwhomail/email-handler run dev",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "deploy:api": "pnpm --filter @atwhomail/api run deploy",
+    "deploy:email": "pnpm --filter @atwhomail/email-handler run deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.8",
+    "@cloudflare/workers-types": "^5.20260911.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.128.0"
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.4.0"
+  }
+}

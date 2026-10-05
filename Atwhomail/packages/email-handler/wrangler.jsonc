@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "atwhomail-email-handler",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mail-d1",
+      "database_id": "1d02352f-9f40-4e06-a95f-95a781a84998",
+      "migrations_dir": "../../migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MAIL",
+      "bucket_name": "mail-r2"
+    }
+  ]
+  // Cloudflare Email Routing 的 catch-all rule 指向本 worker（07 文件 Step 4，Phase 5 手動設定）
+}

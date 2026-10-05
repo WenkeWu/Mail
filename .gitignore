@@ -1,0 +1,45 @@
+# ── AtWhoMail 專案 repo（git root = D:\Mail）──
+# 設計文件：docs/（納入版控）
+# 程式碼：Atwhomail/（pnpm monorepo）
+
+# 依賴
+node_modules/
+.pnpm-store/
+
+# Secrets（切勿 commit）
+.env
+.env.*
+!.env.example
+*.dev.vars
+.dev.vars
+*.pem
+*.key
+*.p12
+
+# 本機備份落地與下載物（體積大且含個資）
+mail-backup/
+mail-backup-snapshots/
+downloads/
+
+# 明文憑證（絕不進版控；請改用 ~/.atwhomail-cf-token 並刪除本地檔案）
+cloudflare_api_token.txt
+*token*.txt
+*credential*
+
+# Wrangler / 建置產出
+.wrangler/
+dist/
+build/
+.next/
+
+# 日誌與暫存
+*.log
+logs/
+tmp/
+.cache/
+
+# 系統
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/

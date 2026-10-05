@@ -1,0 +1,19 @@
+{
+  "name": "atwhomail-test",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": [],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mail-d1-test",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MAIL",
+      "bucket_name": "mail-r2-test"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@atwhomail/backup-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "本機備份 Agent — Cloudflare D1/R2 → 本機 PostgreSQL + 磁碟（單向、增量）",
+  "scripts": {
+    "start": "node src/index.ts",
+    "verify": "node src/verify-r2.ts",
+    "restore-d1": "node src/restore-d1.ts",
+    "restore-r2": "node src/restore-r2.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "@types/pg": "^8.23.1"
+  }
+}

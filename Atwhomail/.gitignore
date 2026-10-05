@@ -1,0 +1,21 @@
+# 依賴
+node_modules/
+
+# Wrangler 本機狀態
+.wrangler/
+
+# Secrets（本機開發用，勿 commit）
+.dev.vars
+
+# Backup Agent 設定與落地備份（含 PG 密碼 / rescue token）
+packages/backup-agent/.env
+mail-backup/
+
+# 建置產出
+dist/
+build/
+
+# 系統
+.DS_Store
+Thumbs.db
+*.log

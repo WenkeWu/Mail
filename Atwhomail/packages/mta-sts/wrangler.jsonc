@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "atwhomail-mta-sts",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "observability": {
+    "enabled": true
+  },
+  "routes": [
+    {
+      "pattern": "mta-sts.atwho.org/*",
+      "zone_name": "atwho.org"
+    }
+  ],
+  "vars": {
+    "MODE_OVERRIDE": "testing"
+  }
+  // 觀察數週無異常後，將 MODE_OVERRIDE 改為 "enforce" 再部署
+  // Route 需要 mta-sts.atwho.org 有 proxied DNS 紀錄（DNS → CNAME mta-sts → atwhomail-mta-sts.ulhome.workers.dev, Proxy ON）
+}
