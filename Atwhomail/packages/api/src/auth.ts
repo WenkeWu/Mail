@@ -34,6 +34,8 @@ export interface Env {
   EMAIL: SendEmail;
   ADMIN_TOKEN?: string;
   JWT_SECRET?: string;
+  /** CORS 白名單（逗號分隔來源；`*` = 允許任何來源）。2026-10-06 加入，供外部 App 呼叫。 */
+  ALLOWED_ORIGINS?: string;
 }
 
 export type Scope =

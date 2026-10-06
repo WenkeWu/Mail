@@ -27,21 +27,53 @@ import {
   requireSession,
   resolveScope,
   type AuthEnv,
+  type Env,
   type Scope,
 } from "./auth";
 import { BACKUP_TABLES, clampLimit, formatCursor, parseCursor, type Cursor } from "./backup";
 
 const app = new Hono<AuthEnv>();
 
+/**
+ * CORS 白名單判定（2026-10-06 加入，供外部 App／PWA 直接呼叫）。
+ * `ALLOWED_ORIGINS`：逗號分隔的來源清單；`*` 表示允許任何來源。
+ * 回傳要回給瀏覽器的 `Access-Control-Allow-Origin` 值（`*` 模式回顯來源，以相容未來 credentials 情境）。
+ */
+function allowedOrigin(env: Env, origin: string | undefined): string | null {
+  if (!origin) return null;
+  const list = (env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (list.includes("*")) return origin;
+  return list.includes(origin) ? origin : null;
+}
+
+// ── CORS（08 §23 補充）：認證一律 Bearer token、不用 cookie，故只需 Allow-Origin/Headers 與 preflight ──
+app.use("*", async (c, next) => {
+  const origin = allowedOrigin(c.env, c.req.header("origin"));
+  if (origin) {
+    c.header("Access-Control-Allow-Origin", origin);
+    c.header("Vary", "Origin");
+    c.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+    c.header("Access-Control-Allow-Headers", "Authorization, Content-Type, x-admin-token");
+    c.header("Access-Control-Max-Age", "86400");
+  }
+  if (c.req.method === "OPTIONS") return c.body(null, 204); // preflight 直接回應
+  await next();
+});
+
 // ── 安全標頭（08 §23）：API 只回 JSON／二進位，禁快取、禁 iframe、禁 MIME 猜測 ──
 app.use("*", async (c, next) => {
+  const crossOrigin = allowedOrigin(c.env, c.req.header("origin")) !== null;
   await next();
   const h = c.res.headers;
   h.set("X-Content-Type-Options", "nosniff");
   h.set("Referrer-Policy", "no-referrer");
   h.set("X-Frame-Options", "DENY");
   h.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-  h.set("Cross-Origin-Resource-Policy", "same-origin");
+  // 白名單來源放行跨網域讀取；其餘維持 same-origin（CORP 仍防 no-cors 嵌入）
+  h.set("Cross-Origin-Resource-Policy", crossOrigin ? "cross-origin" : "same-origin");
   if (!h.has("Content-Security-Policy")) h.set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
 });
 

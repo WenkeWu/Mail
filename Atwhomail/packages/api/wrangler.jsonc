@@ -24,6 +24,12 @@
     {
       "name": "EMAIL"
     }
-  ]
+  ],
+  "vars": {
+    // CORS 白名單（2026-10-06）：逗號分隔的來源；"*" = 允許任何來源。
+    // 目前為 "*" 以便外部 App 開發串接；取得正式網域後請收斂成明確白名單，例如：
+    //   "ALLOWED_ORIGINS": "https://app.example.com,capacitor://localhost"
+    "ALLOWED_ORIGINS": "*"
+  }
   // Phase 11 加入：vars / secrets（JWT_SECRET 等，用 .dev.vars 與 wrangler secret put）
 }
