@@ -186,5 +186,6 @@
 ## 6. 相關文件
 
 - 架構：`01-architecture.md`｜流程：`02-email-flows.md`｜Schema：`03`、`04`
-- API：`05-api-spec.md`｜結構：`06`｜CF 資源：`07`｜安全：`08`
+- API：`05-api-spec.md`｜結構：`06`｜CF 資源：`07`｜安全：`08-security-checklist.md`
 - 備份／還原：`09-backup-dr.md`（§5.1 Runbook）｜實作計畫：`10-implementation-plan.md`
+- **外部 App／PWA 整合：`12-pwa-integration.md`**（端點契約、CORS、上線檢查）

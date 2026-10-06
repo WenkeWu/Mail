@@ -115,3 +115,20 @@
 | Mailbox scope | alice 登入：看不到 bob 的信 / 不能以 bob@ 寄信（403/404） |
 | Mailbox 登入 | disabled 地址登入 → 401；密碼錯 5 次 → 鎖定 |
 | 密碼重設 | owner 重設後，alice 舊 token 失效 |
+| CORS | 未在白名單的 Origin → 不回 `Access-Control-Allow-Origin`（瀏覽器擋下）；帶白名單 Origin 時 `CORP` 放行為 `cross-origin`，無 Origin 仍 `same-origin` |
+
+## 13. CORS 政策（2026-10-06 新增）
+
+**為什麼要開**：本 API 由**外部自建 App／PWA** 直接呼叫（見 `12-pwa-integration.md`）。
+原本完全沒有 CORS 標頭 → 瀏覽器在 preflight 階段就擋掉所有跨網域請求（實測 `OPTIONS` 回 404）。
+
+| 決策 | 理由 |
+|---|---|
+| 白名單制（Worker 變數 `ALLOWED_ORIGINS`），**開發期暫用 `*`** | 上線前收斂為實際網域，避免任何網站都能從使用者瀏覽器發起請求 |
+| **不允許 credentials**（不使用 cookie） | 認證一律 Bearer token；惡意網站沒有 token 就拿不到資料，故 `*` 風險可控，但仍建議收斂 |
+| 只開放必要 methods/headers | `GET, POST, PATCH, DELETE, OPTIONS` ＋ `Authorization, Content-Type, x-admin-token` |
+| preflight 回 `204` 且**不進入**後續中介層 | 不觸發認證／DB，降低攻擊面與成本 |
+| `Cross-Origin-Resource-Policy` 依來源條件化 | 白名單來源 → `cross-origin`（允許跨網域讀取）；無 Origin（伺服器端呼叫）→ 維持 `same-origin` |
+| 其餘安全標頭不動 | `X-Frame-Options: DENY`、`CSP: default-src 'none'`、HSTS、`nosniff`、`Referrer-Policy` 全部維持 |
+
+**待辦**：取得 App 正式網域後收斂 `ALLOWED_ORIGINS` 並重新部署（`11-launch-checklist.md` §5）。

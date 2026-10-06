@@ -26,6 +26,12 @@ flowchart TD
 
 ## 2. 目錄結構（完整）
 
+> ⚠️ **2026-10-06 實況補註**：以下為 Phase 1 的**規劃**結構，實作時做了簡化 —— 以實況為準：
+> - `packages/api` **未拆** `routes/`、`services/`、`middleware/`；實際是 `src/index.ts`（Hono 路由全部在此）＋ `src/auth.ts`（Model C 認證）＋ `src/backup.ts`（備份游標工具）＋ `src/index.test` 系列的 `test/`
+> - `packages/backup-agent` 是 **Node/TypeScript**（非 Python），入口 `src/index.ts`
+> - `web/`（React PWA）**不在本 repo**：改由**外部自建 App** 透過 API 收發信 → 見 `12-pwa-integration.md`
+> - 新增 `scripts/`：`register-backup-tasks.ps1`（註冊 Windows 排程）、`backup-agent.cmd`（監督迴圈 wrapper）、`backup-verify.cmd`、`backup-watchdog.cmd`、`backup_watchdog.py`（每 10 分鐘健檢＋郵件告警）
+
 ```text
 mail-system/
 ├── package.json                    # workspaces root
