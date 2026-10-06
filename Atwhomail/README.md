@@ -53,8 +53,10 @@ pnpm --filter @atwhomail/backup-agent run restore-r2 -- --bucket=test --yes
 ## 排程備份（Windows，已上線）
 powershell -ExecutionPolicy Bypass -File scripts\register-backup-tasks.ps1   # 註冊排程
 powershell -ExecutionPolicy Bypass -File scripts\register-backup-tasks.ps1 -Remove   # 移除
-# 兩個工作：AtWhoMail Backup Agent（登入時啟動、常駐、異常自動重啟）
+# 兩個工作：AtWhoMail Backup Agent（登入時啟動；存活性由 wrapper 內建監督迴圈保證 — agent 一結束就 60 秒後拉起）
 #           AtWhoMail Backup Verify（每日 09:00 完整性檢查，失敗 exit 1）
+# ⚠️ Task Scheduler 的 RestartOnFailure / repetition 在本機實測「不會觸發」→ 不要依賴它們（2026-10-06 事故）
+#    要看的訊號是 agent.log 的：agent exited code=... ; supervisor restarting in 60s
 # 日誌：D:\Mail\mail-backup\logs\{agent,verify}.log
 # 注意：.ps1 必須存成 UTF-8 with BOM；.cmd 必須純 ASCII（cmd.exe 以 CP950 讀取）
 pnpm deploy:api          # 部署 API worker

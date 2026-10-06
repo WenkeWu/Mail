@@ -4,9 +4,10 @@
 
 .DESCRIPTION
   建立兩個工作：
-    1. AtWhoMail Backup Agent  — 登入時啟動並常駐；異常結束自動重啟（每 1 分鐘，最多 999 次），
-                                 並額外設定「每 5 分鐘重複觸發」作為保險（2026-10-06 事故後新增：
-                                 wrapper 曾吞掉 exit code → 排程記成成功 → 自動重啟永不觸發 → agent 死後不再回來）
+    1. AtWhoMail Backup Agent  — 登入時啟動並常駐。**實際存活性由 wrapper 內的監督迴圈保證**
+                                 （agent 一結束即記錄，60 秒後自動拉起）。排程層的 RestartOnFailure
+                                 與 repetition 只是第二層保險，且**本機實測都不會觸發**，不可依賴
+                                 （2026-10-06 事故：舊 wrapper 吞掉 exit code → 排程記成成功 → 停擺 8 小時）
     2. AtWhoMail Backup Verify — 每日 09:00 執行完整性檢查（sha256），失敗時結束碼 1
 
 .EXAMPLE
@@ -66,7 +67,7 @@ $agentPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType In
 Register-ScheduledTask -TaskName $agentTask -Action $agentAction -Trigger @($agentTrigger, $agentRepTrigger) `
     -Settings $agentSettings -Principal $agentPrincipal `
     -Description "AtWhoMail 備份 Agent（D1/R2 → 本機 PostgreSQL + 磁碟；單向增量）" -Force | Out-Null
-Write-Host "已註冊：$agentTask（登入時啟動、常駐、異常自動重啟）" -ForegroundColor Green
+Write-Host "已註冊：$agentTask（登入時啟動；崩潰由 wrapper 監督迴圈拉起）" -ForegroundColor Green
 
 # ── 2) 每日完整性檢查 ──
 $verifyAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$root\scripts\backup-verify.cmd`"" -WorkingDirectory $root
