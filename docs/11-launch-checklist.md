@@ -169,7 +169,7 @@
 
 | # | 缺口 | 影響 | 建議 |
 |---|---|---|---|
-| 1 | 測試資料仍在 production D1（`test1`/`bob`/`phase13` 等 9 個地址、8 封信） | 髒資料、被動收到外部垃圾信 | 上線前清空或保留為 sandbox 地址 |
+| 1 | ~~測試資料仍在 production D1~~ → **✅ 2026-10-06 已清理**：退役測試地址 `bob`／`phase13`（`test1` **保留為沙盒**）、軟刪 11 封測試信；現況 **4 個地址**（`test1` 沙盒＋`tlsrpt`／`alerts`／`app` 功能地址）、**2 封信**（僅 watchdog 告警紀錄）；R2 物件未動以維持備份鏡像完整性 | — | 日後測試請用 `test1@atwho.org`（沙盒）並測試後刪除 |
 | 2 | `mail/` 物件無 `sha256` custom metadata | 收信端無法用 R2 metadata 做完整性比對（改由 `r2_manifest` 記錄） | Phase 14+ 於 handler 寫入 metadata |
 | 3 | 不支援 Range 請求（下載大附件無法續傳） | ≤25MiB 附件需一次下載 | 之後補 206 支援 |
 | 4 | inline 附件（`cid:` 內嵌圖）不顯示 | HTML 信的內嵌圖片看不到 | 之後做 cid → R2 對應 |
