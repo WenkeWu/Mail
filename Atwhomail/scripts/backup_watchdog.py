@@ -61,10 +61,12 @@ def read(path: str) -> str:
 
 
 def parse_iso(text: str):
+    """ISO-8601 → aware datetime. Naive input is assumed UTC so comparisons never raise."""
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def age_min(ts) -> float | None:
@@ -79,14 +81,15 @@ def check_agent_log() -> None:
     stamps = re.findall(r'"ts":"([^"]+)"', text)
     ts = parse_iso(stamps[-1]) if stamps else None
     if ts is None:
+        # 不提前 return：時間戳解析失敗不該讓後面的崩潰密度檢查被跳過
         problems.append(f"agent.log 找不到可解析的時間戳（{LOG}）")
-        return
-    a = age_min(ts)
-    if a is not None and a > STALE_MIN:
-        problems.append(
-            f"備份 agent 已 {a:.0f} 分鐘沒有任何日誌（門檻 {STALE_MIN} 分）"
-            f"→ 可能已死或 supervisor 迴圈失效；最後一筆 {ts.isoformat()}"
-        )
+    else:
+        a = age_min(ts)
+        if a is not None and a > STALE_MIN:
+            problems.append(
+                f"備份 agent 已 {a:.0f} 分鐘沒有任何日誌（門檻 {STALE_MIN} 分）"
+                f"→ 可能已死或 supervisor 迴圈失效；最後一筆 {ts.isoformat()}"
+            )
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=WINDOW_MIN)
     recent = 0
     for line in text.splitlines():

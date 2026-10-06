@@ -63,3 +63,8 @@ service-account*.json
 .idea/
 *.tsbuildinfo
 coverage/
+
+# Python（2026-10-06 起 scripts/ 有 watchdog；import 會產生 __pycache__）
+__pycache__/
+*.pyc
+*.pyo
