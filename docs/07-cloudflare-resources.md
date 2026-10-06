@@ -12,8 +12,8 @@
 | Email Routing（收信功能） | Catch-all 收信 | 🖐️ dashboard 啟用（2026-09-01） | ✅ MX = route1/2/3.mx.cloudflare.net；SPF = include:_spf.mx.cloudflare.net（2026-10-05 複驗） |
 | Destination address（ulhome@gmail.com） | Email Routing 啟用必要條件 | 🖐️ dashboard + 收驗證信點連結 | ✅ 2026-09-02 你確認顯示 Verified |
 | Catch-all routing rule → email-handler Worker | 收信入口 | 🖐️ dashboard（1 條 rule） | ✅ 2026-09-05 測試信觸發並存 R2 成功 |
-| Workers（email-handler / api） | 程式本體 | 🤖 `wrangler deploy` | ✅ 2026-09-13（handler）／2026-09-24（api） |
-| D1 database（mail-d1） | metadata | 🤖 `wrangler d1 create` | ✅ 2026-09-05；3 migrations 全數套用（2026-10-05 複驗） |
+| Workers（email-handler / api / mta-sts / heartbeat） | 程式本體 | 🤖 `wrangler deploy` | ✅ 2026-09-13（handler）／2026-09-24（api）／2026-10-05（mta-sts）／**2026-10-06（heartbeat：Cron `*/15 * * * *` ＋ `send_email`，補機器關機告警盲區）** |
+| D1 database（mail-d1） | metadata | 🤖 `wrangler d1 create` | ✅ 2026-09-05；**5 migrations 全數套用**（2026-10-06 複驗：0001–0003 主體、`0004_system_heartbeat`、`0005_heartbeat_cron_ts`） |
 | R2 bucket（mail-r2） | 內容儲存 | 🤖 `wrangler r2 bucket create` | ✅ 2026-09-05 |
 | send_email binding | 寄信 | 🤖 wrangler.jsonc（需 Paid） | ✅ Phase 10 完成（api worker binding 名 `EMAIL`） |
 | Email Sending onboarding（寄信功能） | 寄信 domain 設定 | 🖐️ dashboard 啟動（自動建 SPF/DKIM/bounce MX 於 `cf-bounce` 子網域；**MTA-STS 需手動，見 Step 6**） | ✅ 2026-09-13 寄信實測成功 |

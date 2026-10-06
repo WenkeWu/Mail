@@ -18,6 +18,8 @@ Checks
   5. single-instance invariant - exactly one node "src/index.ts" process
   6. MTA-STS signal + policy   - "_mta-sts" CNAME must exist (via DoH) and the policy must serve
                                  mode: none|testing|enforce  (§5 #11 曾無聲消失)
+  0. liveness heartbeat        - POST to atwhomail-heartbeat so the CLOUD can alert when this
+                                 machine itself is down/offline (§5 #13；本機檢查無法涵蓋)
 
 Env overrides (for testing):
   WATCHDOG_LOG WATCHDOG_VLOG WATCHDOG_API WATCHDOG_API_SEND WATCHDOG_ENV_FILE
@@ -223,6 +225,30 @@ def check_mta_sts() -> None:
         problems.append(f"MTA-STS 政策內容異常（HTTP {code}）：{body[:120]!r}")
 
 
+# ── 本機 liveness 心跳（2026-10-06，docs/11 §5 #13）──
+# 雲端 atwhomail-heartbeat 的 Cron 每 15 分鐘檢查心跳；超過 STALE_MIN（45 分）沒收到就寄告警信。
+# 這是唯一能涵蓋「整台機器關機／離線」的機制（其餘檢查全在本機執行）。
+HEARTBEAT_URL = os.environ.get("WATCHDOG_HEARTBEAT_URL",
+                               "https://atwhomail-heartbeat.ulhome.workers.dev/heartbeat")
+
+
+def post_heartbeat() -> None:
+    """回報本機存活；失敗列入 problems（雲端 45 分鐘後也會自行告警，形成雙保險）。"""
+    tok = admin_token()
+    if not tok:
+        problems.append("心跳無法回報：找不到 ADMIN_TOKEN")
+        return
+    req = urllib.request.Request(
+        HEARTBEAT_URL, data=b"{}", method="POST",
+        headers={"x-admin-token": tok, "Content-Type": "application/json", **UA})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            if resp.status != 200:
+                problems.append(f"心跳回報失敗：HTTP {resp.status}（{HEARTBEAT_URL}）")
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"心跳回報失敗：{exc}（{HEARTBEAT_URL}）")
+
+
 def admin_token() -> str | None:
     """Rescue token for /api/mail/send. Never printed, never emailed."""
     tok = os.environ.get("ADMIN_TOKEN")
@@ -282,6 +308,8 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001
         pass
+
+    post_heartbeat()  # 先回報「本機還活著」給雲端（雲端 45 分鐘收不到就寄告警）
 
     for fn in (check_agent_log, check_verify, check_api, check_instances, check_mta_sts):
         try:

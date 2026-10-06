@@ -1,0 +1,13 @@
+{
+  "name": "@atwhomail/heartbeat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run",
+    "typecheck": "tsc --noEmit"
+  }
+}

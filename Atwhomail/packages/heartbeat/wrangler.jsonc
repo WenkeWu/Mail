@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "atwhomail-heartbeat",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mail-d1",
+      "database_id": "1d02352f-9f40-4e06-a95f-95a781a84998",
+      "migrations_dir": "../../migrations"
+    }
+  ],
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ],
+  "triggers": {
+    // 每 15 分鐘檢查本機心跳（2026-10-06，11 §5 #13：整台機器關機時也能告警）
+    "crons": ["*/15 * * * *"]
+  },
+  "vars": {
+    "HEARTBEAT_NAME": "local-backup-host",
+    "ALERT_TO": "ulhome@gmail.com",
+    "STALE_MIN": "45"
+  }
+  // 需設定 secret：ADMIN_TOKEN（與 api worker 相同值；本機 watchdog 用它 POST /heartbeat）
+  //   cd packages/heartbeat && pnpm exec wrangler secret put ADMIN_TOKEN
+}

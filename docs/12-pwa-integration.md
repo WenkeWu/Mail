@@ -199,7 +199,7 @@ async function sendMail({ to, subject, text, html }) {
 | HTML 信件 | 遠端圖片會被剝離；`cid:` 內嵌圖不顯示（MVP 刻意） |
 | 別名 | `email_aliases` 表已建但無 API |
 | 配額 | Workers Paid（Email Sending 3,000 封/月）；D1/R2 免費額度內 |
-| 監控 | `scripts/backup_watchdog.py` 每 10 分鐘檢查服務／備份／MTA-STS 訊號，異常寄信告警 |
+| 監控 | 本機 `scripts/backup_watchdog.py` 每 10 分鐘檢查（服務／備份／agent 實例／MTA-STS 訊號）並回報雲端心跳；`atwhomail-heartbeat` 的 Cron 每 15 分鐘檢查心跳，**本機停擺 45 分鐘即由雲端寄信告警** |
 
 ## 9. 相關文件
 

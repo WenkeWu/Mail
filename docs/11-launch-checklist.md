@@ -110,11 +110,11 @@
       ⚠️ enforce 設定錯誤會**拒收正常來信** → 變更後 24 小時內密切觀察（觀察管道見 (b)）。
 
 - [x] **5. 監控** ✅ 2026-10-06 完成
-      - **本機 watchdog**（`scripts/backup_watchdog.py`，由 Windows 排程 `AtWhoMail Backup Watchdog` 每 10 分鐘執行，**不依賴 Hermes**）：檢查 ① `agent.log` 新鮮度（>12 分鐘無日誌即告警）② 崩潰重啟密度（60 分鐘內 ≥3 次）③ 每日 verify 的 exit code 與新鮮度 ④ API `/api/health`（200 且 `db=ok`）⑤ agent 實例數（必須恰為 1）
-      - **告警通道＝電子郵件**（`alerts@atwho.org` → `ulhome@gmail.com`，經自家 `/api/mail/send`）：因為本機未接任何 Hermes 推播通道（無 Telegram/Discord），郵件是唯一保證看得到的通道
-      - **健康時完全靜默**（不寄信）；同類告警 **6 小時內不重複寄送**（狀態檔 `mail-backup/logs/watchdog-alert.state`）
-      - Workers **Observability 已開啟**（api / email-handler / mta-sts）→ Dashboard 可看 logs/traces
-      - ⚠️ 已知限制：watchdog 與排程都跑在本機 → **整台機器關機時不會有任何告警**（需要外部心跳才涵蓋，見 §5 #13）
+      - **本機 watchdog**（`scripts/backup_watchdog.py`，由 Windows 排程 `AtWhoMail Backup Watchdog` 每 10 分鐘執行，**不依賴 Hermes**）：檢查 ① 心跳回報（見下）② `agent.log` 新鮮度（>12 分鐘無日誌即告警）③ 崩潰重啟密度（60 分鐘內 ≥3 次）④ 每日 verify 的 exit code 與新鮮度 ⑤ API `/api/health`（200 且 `db=ok`）⑥ agent 實例數（必須恰為 1）⑦ **MTA-STS 訊號與政策**（DoH 查 `_mta-sts` CNAME ＋ HTTPS 政策 `mode:`）
+      - **雲端 liveness 心跳（補上「整台機器關機」的盲區）**：`atwhomail-heartbeat` Worker ＋ D1 `system_heartbeat`；本機每次 watchdog 執行即 POST 心跳，**Cron 每 15 分鐘**檢查，超過 45 分鐘未回報 → 由雲端寄告警信（12 小時去重）。每次 cron 都在 D1 留下 `last_cron_at`，可自我驗證
+      - **告警通道＝電子郵件**（`alerts@atwho.org` → `ulhome@gmail.com`，經自家 `/api/mail/send` 或 Worker 的 `EMAIL` binding）：因為本機未接任何 Hermes 推播通道（無 Telegram/Discord），郵件是唯一保證看得到的通道
+      - **健康時完全靜默**（不寄信）；同類告警 **6 小時內不重複寄送**（狀態檔 `mail-backup/logs/watchdog-alert.state`；恢復後即清除狀態，讓新事件能立即告警）
+      - Workers **Observability 已開啟**（api / email-handler / mta-sts / heartbeat）→ Dashboard 可看 logs/traces
 
 - [x] **6. 密碼與 secrets 盤點**（輪替計畫）— PG 部分 ✅ 2026-10-06 完成
       | Secret | 存放 | 用途 | 狀態 / 輪替建議 |
@@ -181,7 +181,7 @@
 | 10 | **CF API token 缺 read 權限**：DNS / Email Routing / Email Sending 皆 403 | 稽核無法全自動，只能靠公開 DNS | Dashboard → API Tokens → Edit 加**唯讀** scope（token 值不變，無需換檔） |
 | 11 | ~~`_mta-sts` 訊號記錄曾無聲消失~~ → **✅ 2026-10-06 已納入自動監控**：watchdog 每 10 分鐘以 DoH 檢查訊號 CNAME 與政策端點，異常即寄告警信 | — | 仍建議每次動 mail DNS 後人工重驗（`07` Step 6、skill `dns-mta-sts-verification.md` Rule 1b） |
 | 12 | ~~備份失敗完全不會告警~~ → **✅ 2026-10-06 已解決**：新增每 10 分鐘的本機 watchdog（`scripts/backup_watchdog.py`＋Windows 排程）與郵件告警（`alerts@atwho.org` → `ulhome@gmail.com`），涵蓋 agent 停滯／崩潰重啟密度／verify 失敗／API 異常／實例數異常 | — | 健康時靜默；同類告警 6 小時節流（詳見 §2-5） |
-| 13 | **整台機器關機時不會有任何告警**：watchdog、Windows 排程、備份 agent 全在本機（雲端收發信仍在運作） | 長時間停機無法察覺 | 之後做外部心跳：Cloudflare Worker + Cron 檢查本機回報，或第三方 Uptime 服務打 `/api/health` 並在「無回報」時告警 |
+| 13 | ~~整台機器關機時不會有任何告警~~ → **✅ 2026-10-06 已實作**：新增 `atwhomail-heartbeat` Worker（D1 `system_heartbeat`；Cron 每 15 分鐘）。本機 watchdog 每次執行即 POST 心跳；**超過 45 分鐘未回報 → 由雲端寄告警信**（12 小時去重）。已驗證：cron 執行痕跡 `last_cron_at`（實測 16:00:19）、本機回報、無／錯 token 401、103 測試通過 | — | 端到端「停擺→收到信」建議用**關機驗收**：關機 >45 分鐘應收到主旨「本機停擺（心跳停止）」 |
 
 ## 6. 相關文件
 
