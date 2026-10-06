@@ -50,8 +50,20 @@
       已驗證結果：
       | 工作 | 觸發 | 狀態 | 實測 |
       |---|---|---|---|
-      | `AtWhoMail Backup Agent` | 登入時 | **Running** | `tick #1`：D1 0 變更、R2 12 跳過、watermarks 正常 |
-      | `AtWhoMail Backup Verify` | 每日 09:00 | Ready | 手動觸發 → `total:13 ok:13 missing:0 corrupt:0`、exit 0 |
+      | `AtWhoMail Backup Agent` | 登入時（＋每 5 分鐘重複觸發） | **Running** | `tick #N` 每 5 分鐘一筆、watermarks 正常 |
+      | `AtWhoMail Backup Verify` | 每日 09:00 | Ready | 2026-10-06 實測 → `total:15 ok:15 missing:0 corrupt:0`、exit 0 |
+
+      🔴 **2026-10-06 維運事件（已修；務必了解，否則會誤判「備份正常」）**
+      Agent 於 01:30 因 PostgreSQL 連線瞬斷而結束，之後**停擺約 8 小時無人察覺**（無資料遺失）。根因與修法：
+
+      | 問題 | 說明 | 修法 |
+      |---|---|---|
+      | wrapper 吞掉結束碼 | 舊版 `backup-agent.cmd` 以 `endlocal` 結尾 → 一律回 0 → 排程記成「成功」 | 改為 `set "RC=%ERRORLEVEL%"` ＋ `endlocal & exit /b %RC%`；結束行時間戳改印**真正的結束時間**（舊版印的是啟動時間，會誤導） |
+      | Task Scheduler 不會自動重啟 | 實測：修正後 `LastResult=1` 已正確呈現失敗，但 `RestartOnFailure`（999 × 1 分鐘）與 repetition **實測都不會觸發**（`AtLogOn` 觸發器無 `StartBoundary`，週期無法排定） | **不依賴排程機制**：wrapper 改為**監督迴圈**（agent 一結束就記錄、`ping` 等 60 秒、再拉起）。實測：殺掉 agent → 60 秒內自動恢復 ✅ |
+      | 無監控 | 停擺 8 小時是人工偶然發現 | 見 §2-5（尚未設定，仍為缺口） |
+
+      ⚠️ **副作用（重要）**：監督迴圈讓工作永不回結束碼 → **排程 `LastResult` 不再能反映 agent 崩潰**。
+      要看的訊號是 `agent.log` 的 `agent exited code=... ; supervisor restarting in 60s`。
 
       ⚠️ **編碼陷阱（已修）**：`register-backup-tasks.ps1` 必須存成 **UTF-8 with BOM**（Windows PowerShell 5.1 把無 BOM 的 UTF-8 當 ANSI 讀，中文字串會吃掉引號/括號 → ParserError）；`backup-*.cmd` 必須**純 ASCII**（cmd.exe 以 CP950 讀 .cmd，UTF-8 中文註解會變成亂碼並被當成指令執行，例如 `'ha256' 不是內部或外部命令`），時間戳改用 PowerShell ISO-8601。
 
@@ -60,6 +72,10 @@
       Get-Content D:\Mail\mail-backup\logs\agent.log -Tail 5
       ```
       預期：`"msg":"tick #N"` 每 5 分鐘一筆，`"sync":{"created":0,...}`（無變更時）。
+
+      ⚠️ 同時檢查是否出現**崩潰重啟**訊號（2026-10-06 起 wrapper 為監督迴圈）：
+      `[<時間>] agent exited code=<非0> ; supervisor restarting in 60s`
+      → 出現一次代表 agent 曾崩潰並已自動恢復（1 分鐘內）；**同一小時內密集出現＝有反覆性問題，需處理**。
 
 - [ ] **3. 寄信配額與聲譽**
       - Workers Paid 含 **3,000 封/月**（超量 $0.35/千封）；Dashboard → Workers → Email Sending 可看用量
@@ -151,6 +167,7 @@
 | 9 | ~~演練殘留資源未清~~ → **✅ 2026-10-05 已解決**：測試 D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` 已刪除（僅保留 production） | — | 下次季度還原演練前需先建立新的測試標的（見 §2-7；`docs/09` §5.1 步驟 0b） |
 | 10 | **CF API token 缺 read 權限**：DNS / Email Routing / Email Sending 皆 403 | 稽核無法全自動，只能靠公開 DNS | Dashboard → API Tokens → Edit 加**唯讀** scope（token 值不變，無需換檔） |
 | 11 | **`_mta-sts` 訊號記錄曾無聲消失** | MTA-STS 實質失效而不自知（policy 200 但無人查詢） | 每次動 mail DNS 後重驗（`07` Step 6、skill `dns-mta-sts-verification.md` Rule 1b） |
+| 12 | **備份失敗完全不會告警**：Agent 崩潰後雖有 wrapper 監督迴圈在 60 秒內恢復，但**沒有任何通知**；Verify 排程 `RestartCount=0`、無 repetition，失敗只留在 log（2026-10-06 事件即停擺 8 小時才被人工發現） | 備份可長時間靜默失效 | 設告警：監看 `agent.log` 的 `supervisor restarting` 與 verify 的 `exit code=`，並補 §2-5（Uptime / 健康檢查） |
 
 ## 6. 相關文件
 

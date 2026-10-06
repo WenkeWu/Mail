@@ -4,7 +4,9 @@
 
 .DESCRIPTION
   建立兩個工作：
-    1. AtWhoMail Backup Agent  — 登入時啟動並常駐；異常結束自動重啟（每 1 分鐘，最多 999 次）
+    1. AtWhoMail Backup Agent  — 登入時啟動並常駐；異常結束自動重啟（每 1 分鐘，最多 999 次），
+                                 並額外設定「每 5 分鐘重複觸發」作為保險（2026-10-06 事故後新增：
+                                 wrapper 曾吞掉 exit code → 排程記成成功 → 自動重啟永不觸發 → agent 死後不再回來）
     2. AtWhoMail Backup Verify — 每日 09:00 執行完整性檢查（sha256），失敗時結束碼 1
 
 .EXAMPLE
@@ -45,6 +47,15 @@ if (-not (Test-Path "$root\packages\backup-agent\.env")) { throw "找不到 pack
 # ── 1) 常駐備份 Agent ──
 $agentAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$root\scripts\backup-agent.cmd`"" -WorkingDirectory $root
 $agentTrigger = New-ScheduledTaskTrigger -AtLogOn
+# 2026-10-06：加「每 5 分鐘重複觸發」保險。
+#   事故根因：agent 崩潰時 wrapper 吞掉 exit code → 排程記成「成功」→ RestartCount 永遠不觸發，
+#   於是 agent 一死就再也不回來（實際停擺 8 小時）。
+#   ⚠️ 實測結論（2026-10-06，殺掉 agent 驗證）：repetition 只掛在純 AtLogOn 觸發器上**不會生效**，
+#   因為 AtLogOn 沒有 StartBoundary，Task Scheduler 無法排定週期。必須另掛一個有 StartBoundary
+#   的時間觸發器（下面 $agentRepTrigger），repetition 才會真的每 5 分鐘嘗試拉起。
+#   搭配 MultipleInstances=IgnoreNew（見下方 settings）→ 已在執行時重複觸發會被忽略，不會重複啟動。
+$agentRepTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
 $agentSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
@@ -52,7 +63,7 @@ $agentSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit ([TimeSpan]::Zero)   # 0 = 無時限（常駐）
 $agentPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask -TaskName $agentTask -Action $agentAction -Trigger $agentTrigger `
+Register-ScheduledTask -TaskName $agentTask -Action $agentAction -Trigger @($agentTrigger, $agentRepTrigger) `
     -Settings $agentSettings -Principal $agentPrincipal `
     -Description "AtWhoMail 備份 Agent（D1/R2 → 本機 PostgreSQL + 磁碟；單向增量）" -Force | Out-Null
 Write-Host "已註冊：$agentTask（登入時啟動、常駐、異常自動重啟）" -ForegroundColor Green
