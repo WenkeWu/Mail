@@ -16,6 +16,8 @@ Checks
   3. daily verify result       - last "verify exit code=" in verify.log must be 0, and must be fresh
   4. API worker health         - GET /api/health => 200 with db == "ok"
   5. single-instance invariant - exactly one node "src/index.ts" process
+  6. MTA-STS signal + policy   - "_mta-sts" CNAME must exist (via DoH) and the policy must serve
+                                 mode: none|testing|enforce  (§5 #11 曾無聲消失)
 
 Env overrides (for testing):
   WATCHDOG_LOG WATCHDOG_VLOG WATCHDOG_API WATCHDOG_API_SEND WATCHDOG_ENV_FILE
@@ -48,6 +50,13 @@ THROTTLE_H = float(os.environ.get("WATCHDOG_THROTTLE_H", "6"))
 WINDOW_MIN = 60
 VERIFY_MAX_AGE_H = 26
 UA = {"User-Agent": "AtWhoMail-Watchdog/1.0"}   # Cloudflare blocks Python-urllib's default UA (1010)
+
+# MTA-STS 訊號／政策（§5 #11）：訊號記錄曾無聲消失 → MTA-STS 實質失效卻無人知道。
+# 訊號檢查走 DoH（JSON API）；主用 Cloudflare，失敗時退回 Google。
+MTA_STS_NAME = os.environ.get("WATCHDOG_MTA_STS_NAME", "_mta-sts.atwho.org")
+MTA_STS_EXPECT = os.environ.get("WATCHDOG_MTA_STS_EXPECT", "_mta-sts.mx.cloudflare.net")
+MTA_STS_POLICY = os.environ.get("WATCHDOG_MTA_STS_POLICY", "https://mta-sts.atwho.org/.well-known/mta-sts.txt")
+DOH_ENDPOINTS = ("https://cloudflare-dns.com/dns-query", "https://dns.google/resolve")
 
 problems: list[str] = []
 
@@ -170,6 +179,46 @@ def check_instances() -> None:
         problems.append(f"偵測到 {n} 個 backup agent 程序 → 可能同時寫入 PostgreSQL，請立即處理")
 
 
+def _doh(name: str, rtype: str) -> dict:
+    """DoH JSON 查詢：Cloudflare 為主、Google 為備。"""
+    last: Exception | None = None
+    for base in DOH_ENDPOINTS:
+        url = f"{base}?name={name}&type={rtype}"
+        try:
+            req = urllib.request.Request(url, headers={**UA, "accept": "application/dns-json"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+    raise last if last else RuntimeError("no DoH endpoint reachable")
+
+
+def check_mta_sts() -> None:
+    """MTA-STS 訊號 CNAME 必須存在、政策端點必須可用（§5 #11 曾無聲消失）。"""
+    try:
+        d = _doh(MTA_STS_NAME, "CNAME")
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"MTA-STS 訊號無法查詢（{MTA_STS_NAME}）：{exc}")
+        return
+    answers = [str(a.get("data", "")).rstrip(".") for a in d.get("Answer", [])]
+    if d.get("Status") != 0 or MTA_STS_EXPECT not in answers:
+        problems.append(
+            f"MTA-STS 訊號記錄異常（{MTA_STS_NAME} CNAME → {answers or 'NXDOMAIN'}，預期 {MTA_STS_EXPECT}）"
+            "→ 寄件方查不到政策，MTA-STS 實質失效"
+        )
+
+    try:
+        req = urllib.request.Request(MTA_STS_POLICY, headers=UA)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            code, body = resp.status, resp.read().decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"MTA-STS 政策端點無法取得（{MTA_STS_POLICY}）：{exc}")
+        return
+    m = re.search(r"(?m)^mode:\s*(\S+)", body)
+    if code != 200 or not m or m.group(1) not in ("none", "testing", "enforce"):
+        problems.append(f"MTA-STS 政策內容異常（HTTP {code}）：{body[:120]!r}")
+
+
 def admin_token() -> str | None:
     """Rescue token for /api/mail/send. Never printed, never emailed."""
     tok = os.environ.get("ADMIN_TOKEN")
@@ -230,7 +279,7 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         pass
 
-    for fn in (check_agent_log, check_verify, check_api, check_instances):
+    for fn in (check_agent_log, check_verify, check_api, check_instances, check_mta_sts):
         try:
             fn()
         except Exception as exc:  # noqa: BLE001

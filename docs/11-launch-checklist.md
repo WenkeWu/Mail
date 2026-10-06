@@ -174,12 +174,12 @@
 | 3 | 不支援 Range 請求（下載大附件無法續傳） | ≤25MiB 附件需一次下載 | 之後補 206 支援 |
 | 4 | inline 附件（`cid:` 內嵌圖）不顯示 | HTML 信的內嵌圖片看不到 | 之後做 cid → R2 對應 |
 | 5 | 遠端圖片被剝離（MVP 刻意） | HTML 信中的外部圖片不顯示 | 之後做圖片代理（08 §16） |
-| 6 | 無前端 App（Inbox UI） | 目前只能透過 API 使用 | 下一階段（React） |
+| 6 | 無**內建**前端 App（Inbox UI） | 本 repo 只提供 API，不含 UI | ✅ 2026-10-06：**外部自建 PWA 已可經 API 收發信**（CORS 白名單已開、`mailbox-login` 逐信箱隔離）；本 repo 維持只出 API |
 | 7 | `email_aliases` 表已建但無 API | 別名功能未實作 | 依需求排程 |
-| 8 | **TLS-RPT（`_smtp._tls`）未發佈** | 收不到 TLS 失敗報告 → 切 `enforce` 前沒有觀察資料（2026-10-05 稽核新增） | 發佈 TXT `v=TLSRPTv1; rua=mailto:…`（見 §2-4） |
+| 8 | ~~TLS-RPT（`_smtp._tls`）未發佈~~ → **✅ 2026-10-06 已發佈**：TXT `v=TLSRPTv1; rua=mailto:tlsrpt@atwho.org,mailto:ulhome@gmail.com`（權威 NS 實測一致） | — | 觀察 2–4 週後再評估切 `enforce`（§2-4） |
 | 9 | ~~演練殘留資源未清~~ → **✅ 2026-10-05 已解決**：測試 D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` 已刪除（僅保留 production） | — | 下次季度還原演練前需先建立新的測試標的（見 §2-7；`docs/09` §5.1 步驟 0b） |
 | 10 | **CF API token 缺 read 權限**：DNS / Email Routing / Email Sending 皆 403 | 稽核無法全自動，只能靠公開 DNS | Dashboard → API Tokens → Edit 加**唯讀** scope（token 值不變，無需換檔） |
-| 11 | **`_mta-sts` 訊號記錄曾無聲消失** | MTA-STS 實質失效而不自知（policy 200 但無人查詢） | 每次動 mail DNS 後重驗（`07` Step 6、skill `dns-mta-sts-verification.md` Rule 1b） |
+| 11 | ~~`_mta-sts` 訊號記錄曾無聲消失~~ → **✅ 2026-10-06 已納入自動監控**：watchdog 每 10 分鐘以 DoH 檢查訊號 CNAME 與政策端點，異常即寄告警信 | — | 仍建議每次動 mail DNS 後人工重驗（`07` Step 6、skill `dns-mta-sts-verification.md` Rule 1b） |
 | 12 | ~~備份失敗完全不會告警~~ → **✅ 2026-10-06 已解決**：新增每 10 分鐘的本機 watchdog（`scripts/backup_watchdog.py`＋Windows 排程）與郵件告警（`alerts@atwho.org` → `ulhome@gmail.com`），涵蓋 agent 停滯／崩潰重啟密度／verify 失敗／API 異常／實例數異常 | — | 健康時靜默；同類告警 6 小時節流（詳見 §2-5） |
 | 13 | **整台機器關機時不會有任何告警**：watchdog、Windows 排程、備份 agent 全在本機（雲端收發信仍在運作） | 長時間停機無法察覺 | 之後做外部心跳：Cloudflare Worker + Cron 檢查本機回報，或第三方 Uptime 服務打 `/api/health` 並在「無回報」時告警 |
 
