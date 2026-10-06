@@ -116,14 +116,25 @@
       - Workers **Observability 已開啟**（api / email-handler / mta-sts）→ Dashboard 可看 logs/traces
       - ⚠️ 已知限制：watchdog 與排程都跑在本機 → **整台機器關機時不會有任何告警**（需要外部心跳才涵蓋，見 §5 #13）
 
-- [ ] **6. 密碼與 secrets 盤點**（輪替計畫）
-      | Secret | 存放 | 用途 | 輪替建議 |
+- [x] **6. 密碼與 secrets 盤點**（輪替計畫）— PG 部分 ✅ 2026-10-06 完成
+      | Secret | 存放 | 用途 | 狀態 / 輪替建議 |
       |---|---|---|---|
       | `ADMIN_TOKEN` | `packages/api/.dev.vars` + Worker secret | rescue 通道（owner 等效） | 6–12 個月 |
       | `JWT_SECRET` | 同上 | session 簽章（輪替＝全體登出） | 12 個月 |
       | CF API Token | `~/.atwhomail-cf-token` | wrangler / restore | 已在 Dashboard 設 1 年 TTL |
-      | PG 密碼 | `~/.atwhomail-pg-pass` + `.env` | 本機備份庫 | 12 個月 |
+      | **備份 agent 角色密碼** | `packages/backup-agent/.env`（`PG_USER=atwhomail_backup`） | 本機備份庫寫入 | ✅ 2026-10-06 建立**專用角色**（不再用 `postgres` 超級使用者），43 字元隨機密碼；後續每 12 個月 |
+      | **`postgres` 超級使用者密碼** | `~/.atwhomail-pg-pass` | 人力維運 / pgAdmin | ✅ 2026-10-06 已由預設 `postgres` 輪替為 43 字元隨機密碼 |
       | owner 密碼 | 僅雜湊存 D1 | 登入 | 建議改用強密碼（目前為測試期弱密碼） |
+
+      ⚠️ **影響範圍（2026-10-06 實作紀錄）**：`pg_hba.conf` 全為 `scram-sha-256` → 密碼一改**立即生效**，但**既有連線不受影響**（所以必須重啟 agent 才會套用新憑證）。
+      **已存連線需更新**：pgAdmin／DBeaver 等 GUI 的 `postgres` 連線請改用 `~/.atwhomail-pg-pass` 的新密碼。
+      **驗收指令**（`PSQL` 指 `C:\Program Files\PostgreSQL\17\bin\psql.exe`）：
+      ```powershell
+      # 舊預設密碼必須失敗
+      $env:PGPASSWORD='postgres'; & $PSQL -h localhost -U postgres -d atwhomail_backup -c "select 1"
+      # 新 agent 角色可讀寫（.env 內為 43 字元密碼）
+      & $PSQL -h localhost -U atwhomail_backup -d atwhomail_backup -c "select current_user, count(*) from messages"
+      ```
 
 - [ ] **7. 每季演練還原**（09 文件 §5.1 Runbook）
       **前置**：舊測試標的（`mail-d1-restore-test` / `mail-r2-restore-test`）已於 2026-10-05 刪除 → 先建立**全新的**測試 D1 與 bucket，並填入 `.env` 的 `D1_TEST_ID` / `R2_TEST_BUCKET`（詳見 09 §5.1 步驟 0b）
