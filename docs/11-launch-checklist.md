@@ -109,10 +109,12 @@
       預期：政策檔為 `mode: testing`（切換後變 `enforce`）。
       ⚠️ enforce 設定錯誤會**拒收正常來信** → 變更後 24 小時內密切觀察（觀察管道見 (b)）。
 
-- [ ] **5. 監控**
-      - Uptime 監控（Cloudflare Health Check 或 cron）：`GET https://atwhomail-api.ulhome.workers.dev/api/health` → 期待 `{"ok":true,"db":"ok",...}`（DB 異常時 **503**）
+- [x] **5. 監控** ✅ 2026-10-06 完成
+      - **本機 watchdog**（`scripts/backup_watchdog.py`，由 Windows 排程 `AtWhoMail Backup Watchdog` 每 10 分鐘執行，**不依賴 Hermes**）：檢查 ① `agent.log` 新鮮度（>12 分鐘無日誌即告警）② 崩潰重啟密度（60 分鐘內 ≥3 次）③ 每日 verify 的 exit code 與新鮮度 ④ API `/api/health`（200 且 `db=ok`）⑤ agent 實例數（必須恰為 1）
+      - **告警通道＝電子郵件**（`alerts@atwho.org` → `ulhome@gmail.com`，經自家 `/api/mail/send`）：因為本機未接任何 Hermes 推播通道（無 Telegram/Discord），郵件是唯一保證看得到的通道
+      - **健康時完全靜默**（不寄信）；同類告警 **6 小時內不重複寄送**（狀態檔 `mail-backup/logs/watchdog-alert.state`）
       - Workers **Observability 已開啟**（api / email-handler / mta-sts）→ Dashboard 可看 logs/traces
-      - 每日 verify 排程失敗（exit 1）＝ 備份有問題 → 立即處理
+      - ⚠️ 已知限制：watchdog 與排程都跑在本機 → **整台機器關機時不會有任何告警**（需要外部心跳才涵蓋，見 §5 #13）
 
 - [ ] **6. 密碼與 secrets 盤點**（輪替計畫）
       | Secret | 存放 | 用途 | 輪替建議 |
@@ -167,7 +169,8 @@
 | 9 | ~~演練殘留資源未清~~ → **✅ 2026-10-05 已解決**：測試 D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` 已刪除（僅保留 production） | — | 下次季度還原演練前需先建立新的測試標的（見 §2-7；`docs/09` §5.1 步驟 0b） |
 | 10 | **CF API token 缺 read 權限**：DNS / Email Routing / Email Sending 皆 403 | 稽核無法全自動，只能靠公開 DNS | Dashboard → API Tokens → Edit 加**唯讀** scope（token 值不變，無需換檔） |
 | 11 | **`_mta-sts` 訊號記錄曾無聲消失** | MTA-STS 實質失效而不自知（policy 200 但無人查詢） | 每次動 mail DNS 後重驗（`07` Step 6、skill `dns-mta-sts-verification.md` Rule 1b） |
-| 12 | **備份失敗完全不會告警**：Agent 崩潰後雖有 wrapper 監督迴圈在 60 秒內恢復，但**沒有任何通知**；Verify 排程 `RestartCount=0`、無 repetition，失敗只留在 log（2026-10-06 事件即停擺 8 小時才被人工發現） | 備份可長時間靜默失效 | 設告警：監看 `agent.log` 的 `supervisor restarting` 與 verify 的 `exit code=`，並補 §2-5（Uptime / 健康檢查） |
+| 12 | ~~備份失敗完全不會告警~~ → **✅ 2026-10-06 已解決**：新增每 10 分鐘的本機 watchdog（`scripts/backup_watchdog.py`＋Windows 排程）與郵件告警（`alerts@atwho.org` → `ulhome@gmail.com`），涵蓋 agent 停滯／崩潰重啟密度／verify 失敗／API 異常／實例數異常 | — | 健康時靜默；同類告警 6 小時節流（詳見 §2-5） |
+| 13 | **整台機器關機時不會有任何告警**：watchdog、Windows 排程、備份 agent 全在本機（雲端收發信仍在運作） | 長時間停機無法察覺 | 之後做外部心跳：Cloudflare Worker + Cron 檢查本機回報，或第三方 Uptime 服務打 `/api/health` 並在「無回報」時告警 |
 
 ## 6. 相關文件
 

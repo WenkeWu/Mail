@@ -3,12 +3,15 @@
   註冊 AtWhoMail 備份排程（Windows 工作排程器；使用者層級，無需系統管理員）
 
 .DESCRIPTION
-  建立兩個工作：
+  建立三個工作：
     1. AtWhoMail Backup Agent  — 登入時啟動並常駐。**實際存活性由 wrapper 內的監督迴圈保證**
                                  （agent 一結束即記錄，60 秒後自動拉起）。排程層的 RestartOnFailure
                                  與 repetition 只是第二層保險，且**本機實測都不會觸發**，不可依賴
                                  （2026-10-06 事故：舊 wrapper 吞掉 exit code → 排程記成成功 → 停擺 8 小時）
     2. AtWhoMail Backup Verify — 每日 09:00 執行完整性檢查（sha256），失敗時結束碼 1
+    3. AtWhoMail Backup Watchdog — 每 10 分鐘健檢（agent.log 新鮮度／崩潰重啟密度／verify 結果／
+                                 API 健康／實例數）；**健康時完全靜默**，異常時寄告警信到
+                                 ulhome@gmail.com（寄件者 alerts@atwho.org，經自家 /api/mail/send）
 
 .EXAMPLE
   # 註冊（在一般 PowerShell 視窗執行，不需管理員）
@@ -27,11 +30,12 @@ param([switch]$Remove)
 
 $ErrorActionPreference = "Stop"
 $root       = "D:\Mail\Atwhomail"
-$agentTask  = "AtWhoMail Backup Agent"
-$verifyTask = "AtWhoMail Backup Verify"
+$agentTask    = "AtWhoMail Backup Agent"
+$verifyTask   = "AtWhoMail Backup Verify"
+$watchdogTask = "AtWhoMail Backup Watchdog"   # 2026-10-06 新增：每 10 分鐘健檢，異常時寄告警信
 
 if ($Remove) {
-    foreach ($t in @($agentTask, $verifyTask)) {
+    foreach ($t in @($agentTask, $verifyTask, $watchdogTask)) {
         if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
             Unregister-ScheduledTask -TaskName $t -Confirm:$false
             Write-Host "已移除排程：$t" -ForegroundColor Yellow
@@ -78,6 +82,19 @@ Register-ScheduledTask -TaskName $verifyTask -Action $verifyAction -Trigger $ver
     -Settings $verifySettings -Principal $agentPrincipal `
     -Description "AtWhoMail 備份完整性檢查（sha256 重算；缺檔/損毀 → 結束碼 1）" -Force | Out-Null
 Write-Host "已註冊：$verifyTask（每日 09:00）" -ForegroundColor Green
+
+# ── 3) 備份 watchdog（每 10 分鐘；健康時靜默，異常時寄告警信）──
+# 2026-10-06 新增。獨立的第三個工作，讓監控不依賴 Hermes 是否開著。
+$wdAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$root\scripts\backup-watchdog.cmd`"" -WorkingDirectory $root
+$wdTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+    -RepetitionInterval (New-TimeSpan -Minutes 10) -RepetitionDuration (New-TimeSpan -Days 3650)
+$wdSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+
+Register-ScheduledTask -TaskName $watchdogTask -Action $wdAction -Trigger $wdTrigger `
+    -Settings $wdSettings -Principal $agentPrincipal `
+    -Description "AtWhoMail 備份 watchdog（每 10 分鐘；健康時靜默，異常時寄告警信到 ulhome@gmail.com）" -Force | Out-Null
+Write-Host "已註冊：$watchdogTask（每 10 分鐘；健康時靜默）" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "驗證方式：" -ForegroundColor Cyan
