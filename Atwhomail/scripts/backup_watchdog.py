@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -158,14 +159,17 @@ def check_api() -> None:
 def check_instances() -> None:
     if os.environ.get("WATCHDOG_SKIP_PROC"):
         return
+    # 2026-10-06 修正：排程器環境下原本會失敗（PATH 不完整 ＋ -Filter 巢狀雙引號）→ **靜默跳過本檢查**，
+    # 等於這個檢查從未真正生效（watchdog.log 留有「無法查程序數」警告）。改用絕對路徑 powershell.exe，
+    # 且條件全寫在 Where-Object（只用單引號，避免引號轉義）；同時限定 node.exe，避免把其他程序算成實例。
+    ps = (os.environ.get("WATCHDOG_POWERSHELL") or shutil.which("powershell")
+          or r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+    query = ("Get-CimInstance Win32_Process | "
+             "Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like '*src/index.ts*' } | "
+             "Measure-Object | Select-Object -ExpandProperty Count")
     try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" "
-             "| Where-Object { $_.CommandLine -like '*src/index.ts*' } "
-             "| Measure-Object | Select-Object -ExpandProperty Count"],
-            capture_output=True, text=True, timeout=60,
-        ).stdout.strip()
+        out = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", query],
+                             capture_output=True, text=True, timeout=60).stdout.strip()
     except Exception as exc:  # noqa: BLE001
         print(f"（watchdog 注意：無法查程序數，略過此項：{exc}）", file=sys.stderr)
         return
@@ -286,6 +290,12 @@ def main() -> int:
             problems.append(f"watchdog 檢查 {fn.__name__} 時發生例外：{exc}")
 
     if not problems:
+        # 健康 → 清掉節流狀態：確保「恢復後又發生」的新事件能立即告警，
+        # 而不是被上一次（可能只是換版瞬間的同簽章）記錄靜音 6 小時。
+        try:
+            os.remove(STATE)
+        except OSError:
+            pass
         return 0
 
     now = datetime.now()
