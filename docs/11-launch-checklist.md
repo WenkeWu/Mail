@@ -111,6 +111,8 @@
 
 - [x] **5. 監控** ✅ 2026-10-06 完成
       - **本機 watchdog**（`scripts/backup_watchdog.py`，由 Windows 排程 `AtWhoMail Backup Watchdog` 每 10 分鐘執行，**不依賴 Hermes**）：檢查 ① 心跳回報（見下）② `agent.log` 新鮮度（>12 分鐘無日誌即告警）③ 崩潰重啟密度（60 分鐘內 ≥3 次）④ 每日 verify 的 exit code 與新鮮度 ⑤ API `/api/health`（200 且 `db=ok`）⑥ agent 實例數（必須恰為 1）⑦ **MTA-STS 訊號與政策**（DoH 查 `_mta-sts` CNAME ＋ HTTPS 政策 `mode:`）
+      - **不彈視窗（2026-10-07 修正）**：三個排程的動作都經過 `scripts/run-hidden.vbs`（`wscript.exe` 以視窗狀態 0 啟動並回傳子程序結束碼）。原因：`LogonType=Interactive` ＋ `cmd.exe /c …` 會在桌面**每 10 分鐘彈出 cmd 視窗**，而 Task Scheduler 的 `Settings.Hidden` 只隱藏「工作項目本身」、**不隱藏視窗**。實測（對照組）`MainWindowHandle`：經 VBS = 0（隱藏）、直接啟動 = 非 0（可見）
+      - ⚠️ **教訓：Windows 上 Hermes cron 不能執行 `.sh`** → 回報 `bash not found on PATH` 並連續失敗 109 次（2026-10-06~07 完全沒在運作）。已改用 `.py` 啟動器（`~/AppData/Local/hermes/scripts/atwhomail-backup-watchdog.py`，呼叫同一支 `backup_watchdog.py`）
       - **雲端 liveness 心跳（補上「整台機器關機」的盲區）**：`atwhomail-heartbeat` Worker ＋ D1 `system_heartbeat`；本機每次 watchdog 執行即 POST 心跳，**Cron 每 15 分鐘**檢查，超過 45 分鐘未回報 → 由雲端寄告警信（12 小時去重）。每次 cron 都在 D1 留下 `last_cron_at`，可自我驗證
       - **告警通道＝電子郵件**（`alerts@atwho.org` → `ulhome@gmail.com`，經自家 `/api/mail/send` 或 Worker 的 `EMAIL` binding）：因為本機未接任何 Hermes 推播通道（無 Telegram/Discord），郵件是唯一保證看得到的通道
       - **健康時完全靜默**（不寄信）；同類告警 **6 小時內不重複寄送**（狀態檔 `mail-backup/logs/watchdog-alert.state`；恢復後即清除狀態，讓新事件能立即告警）

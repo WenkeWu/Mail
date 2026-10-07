@@ -30,7 +30,7 @@ flowchart TD
 > - `packages/api` **未拆** `routes/`、`services/`、`middleware/`；實際是 `src/index.ts`（Hono 路由全部在此）＋ `src/auth.ts`（Model C 認證）＋ `src/backup.ts`（備份游標工具）＋ `src/index.test` 系列的 `test/`
 > - `packages/backup-agent` 是 **Node/TypeScript**（非 Python），入口 `src/index.ts`
 > - `web/`（React PWA）**不在本 repo**：改由**外部自建 App** 透過 API 收發信 → 見 `12-pwa-integration.md`
-> - 新增 `scripts/`：`register-backup-tasks.ps1`（註冊 Windows 排程）、`backup-agent.cmd`（監督迴圈 wrapper）、`backup-verify.cmd`、`backup-watchdog.cmd`、`backup_watchdog.py`（每 10 分鐘健檢＋郵件告警＋雲端心跳）
+> - 新增 `scripts/`：`register-backup-tasks.ps1`（註冊 Windows 排程）、`backup-agent.cmd`（監督迴圈 wrapper）、`backup-verify.cmd`、`backup-watchdog.cmd`、`backup_watchdog.py`（每 10 分鐘健檢＋郵件告警＋雲端心跳）、`run-hidden.vbs`（**隱藏視窗啟動器**：排程動作經 `wscript.exe` 以視窗狀態 0 執行，否則每 10 分鐘會在桌面彈出 cmd 視窗）
 > - 新增第 4 個 Worker `packages/heartbeat`（`atwhomail-heartbeat`，2026-10-06）：D1 `system_heartbeat` ＋ Cron 每 15 分鐘，補上「整台機器關機」的告警盲區（`11` §2-5、§5 #13）
 
 ```text

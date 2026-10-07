@@ -33,6 +33,7 @@ $root       = "D:\Mail\Atwhomail"
 $agentTask    = "AtWhoMail Backup Agent"
 $verifyTask   = "AtWhoMail Backup Verify"
 $watchdogTask = "AtWhoMail Backup Watchdog"   # 2026-10-06 新增：每 10 分鐘健檢，異常時寄告警信
+$runner       = "$root\scripts\run-hidden.vbs"   # 2026-10-07 新增：隱藏視窗啟動器（見下方「0) 說明」）
 
 if ($Remove) {
     foreach ($t in @($agentTask, $verifyTask, $watchdogTask)) {
@@ -47,10 +48,20 @@ if ($Remove) {
 }
 
 if (-not (Test-Path "$root\scripts\backup-agent.cmd")) { throw "找不到 $root\scripts\backup-agent.cmd" }
+if (-not (Test-Path "$root\scripts\run-hidden.vbs"))   { throw "找不到 $root\scripts\run-hidden.vbs（隱藏視窗啟動器）" }
 if (-not (Test-Path "$root\packages\backup-agent\.env")) { throw "找不到 packages\backup-agent\.env（請先設定 PG 密碼與 ADMIN_TOKEN）" }
 
+# ── 0) 為什麼動作要經過 run-hidden.vbs（2026-10-07 修正）──
+#   原本三個工作的動作都是 `cmd.exe /c "*.cmd"`，而 Principal 用 LogonType=Interactive
+#   → **每次執行都會在使用者桌面彈出一個 cmd 主控台視窗**（watchdog 每 10 分鐘閃一次，
+#   2026-10-07 使用者反映）。
+#   ⚠️ 注意：Task Scheduler 的 Settings.Hidden 只會把「工作項目本身」從排程清單藏起來，
+#   **不會隱藏執行時的視窗**。要真的不顯示，必須換啟動方式。
+#   現在改為 `wscript.exe run-hidden.vbs "<script>"`：VBS 以視窗狀態 0（隱藏）啟動 cmd，
+#   並等待子程序結束、把它的結束碼原樣回傳 → LastTaskResult 的語意完全不變。
+
 # ── 1) 常駐備份 Agent ──
-$agentAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$root\scripts\backup-agent.cmd`"" -WorkingDirectory $root
+$agentAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$runner`" `"$root\scripts\backup-agent.cmd`"" -WorkingDirectory $root
 $agentTrigger = New-ScheduledTaskTrigger -AtLogOn
 # 2026-10-06：加「每 5 分鐘重複觸發」保險。
 #   事故根因：agent 崩潰時 wrapper 吞掉 exit code → 排程記成「成功」→ RestartCount 永遠不觸發，
@@ -68,13 +79,21 @@ $agentSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit ([TimeSpan]::Zero)   # 0 = 無時限（常駐）
 $agentPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
+# 重新註冊前先停掉正在執行的實例（-Force 無法覆蓋執行中的工作）
+$running = Get-ScheduledTask -TaskName $agentTask -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Running' }
+if ($running) {
+    Write-Host "偵測到 $agentTask 正在執行 → 先停止" -ForegroundColor Yellow
+    Stop-ScheduledTask -TaskName $agentTask
+    Start-Sleep -Seconds 3
+}
+
 Register-ScheduledTask -TaskName $agentTask -Action $agentAction -Trigger @($agentTrigger, $agentRepTrigger) `
     -Settings $agentSettings -Principal $agentPrincipal `
     -Description "AtWhoMail 備份 Agent（D1/R2 → 本機 PostgreSQL + 磁碟；單向增量）" -Force | Out-Null
 Write-Host "已註冊：$agentTask（登入時啟動；崩潰由 wrapper 監督迴圈拉起）" -ForegroundColor Green
 
 # ── 2) 每日完整性檢查 ──
-$verifyAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$root\scripts\backup-verify.cmd`"" -WorkingDirectory $root
+$verifyAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$runner`" `"$root\scripts\backup-verify.cmd`"" -WorkingDirectory $root
 $verifyTrigger = New-ScheduledTaskTrigger -Daily -At 9:00am
 $verifySettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 
@@ -85,7 +104,7 @@ Write-Host "已註冊：$verifyTask（每日 09:00）" -ForegroundColor Green
 
 # ── 3) 備份 watchdog（每 10 分鐘；健康時靜默，異常時寄告警信）──
 # 2026-10-06 新增。獨立的第三個工作，讓監控不依賴 Hermes 是否開著。
-$wdAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$root\scripts\backup-watchdog.cmd`"" -WorkingDirectory $root
+$wdAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$runner`" `"$root\scripts\backup-watchdog.cmd`"" -WorkingDirectory $root
 $wdTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes 10) -RepetitionDuration (New-TimeSpan -Days 3650)
 $wdSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
@@ -95,6 +114,11 @@ Register-ScheduledTask -TaskName $watchdogTask -Action $wdAction -Trigger $wdTri
     -Settings $wdSettings -Principal $agentPrincipal `
     -Description "AtWhoMail 備份 watchdog（每 10 分鐘；健康時靜默，異常時寄告警信到 ulhome@gmail.com）" -Force | Out-Null
 Write-Host "已註冊：$watchdogTask（每 10 分鐘；健康時靜默）" -ForegroundColor Green
+
+# 立刻把備份 Agent 拉起來（剛剛為了重新註冊而停掉）
+Start-ScheduledTask -TaskName $agentTask
+Start-Sleep -Seconds 2
+Write-Host "已重新啟動 $agentTask" -ForegroundColor Cyan
 
 Write-Host ""
 Write-Host "驗證方式：" -ForegroundColor Cyan
