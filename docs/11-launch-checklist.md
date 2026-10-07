@@ -113,6 +113,7 @@
       - **本機 watchdog**（`scripts/backup_watchdog.py`，由 Windows 排程 `AtWhoMail Backup Watchdog` 每 10 分鐘執行，**不依賴 Hermes**）：檢查 ① 心跳回報（見下）② `agent.log` 新鮮度（>12 分鐘無日誌即告警）③ 崩潰重啟密度（60 分鐘內 ≥3 次）④ 每日 verify 的 exit code 與新鮮度 ⑤ API `/api/health`（200 且 `db=ok`）⑥ agent 實例數（必須恰為 1）⑦ **MTA-STS 訊號與政策**（DoH 查 `_mta-sts` CNAME ＋ HTTPS 政策 `mode:`）
       - **不彈視窗（2026-10-07 修正）**：三個排程的動作都經過 `scripts/run-hidden.vbs`（`wscript.exe` 以視窗狀態 0 啟動並回傳子程序結束碼）。原因：`LogonType=Interactive` ＋ `cmd.exe /c …` 會在桌面**每 10 分鐘彈出 cmd 視窗**，而 Task Scheduler 的 `Settings.Hidden` 只隱藏「工作項目本身」、**不隱藏視窗**。實測（對照組）`MainWindowHandle`：經 VBS = 0（隱藏）、直接啟動 = 非 0（可見）
       - ⚠️ **教訓：Windows 上 Hermes cron 不能執行 `.sh`** → 回報 `bash not found on PATH` 並連續失敗 109 次（2026-10-06~07 完全沒在運作）。已改用 `.py` 啟動器（`~/AppData/Local/hermes/scripts/atwhomail-backup-watchdog.py`，呼叫同一支 `backup_watchdog.py`）
+      - **DKIM 記錄完整性（2026-10-07 新增，第 8 項檢查）**：每輪以 DoH 讀回 `cf-bounce._domainkey`／`cf2024-1._domainkey` 公鑰並驗證 ① 記錄存在 ② 嚴格 base64 可解 ③ 能解出 ≥2048-bit RSA ④ **指紋與上次相同**（被默默換掉＝DNS 可能被動手的訊號）。這正是最真實的故障模式：其他檢查全綠、但寄出的信全部失去 DKIM 而進垃圾匣（2026-09-02 曾發生）。**端到端**驗證（真的寄一封信、取回已簽章正本、驗算簽章）由 `scripts/dkim_verify.py` 按需執行（建議每月或改動寄信／DNS 設定後）
       - **雲端 liveness 心跳（補上「整台機器關機」的盲區）**：`atwhomail-heartbeat` Worker ＋ D1 `system_heartbeat`；本機每次 watchdog 執行即 POST 心跳，**Cron 每 15 分鐘**檢查，超過 45 分鐘未回報 → 由雲端寄告警信（12 小時去重）。每次 cron 都在 D1 留下 `last_cron_at`，可自我驗證
       - **告警通道＝電子郵件**（`alerts@atwho.org` → `ulhome@gmail.com`，經自家 `/api/mail/send` 或 Worker 的 `EMAIL` binding）：因為本機未接任何 Hermes 推播通道（無 Telegram/Discord），郵件是唯一保證看得到的通道
       - **健康時完全靜默**（不寄信）；同類告警 **6 小時內不重複寄送**（狀態檔 `mail-backup/logs/watchdog-alert.state`；恢復後即清除狀態，讓新事件能立即告警）
@@ -123,7 +124,7 @@
       |---|---|---|---|
       | `ADMIN_TOKEN` | `packages/api/.dev.vars` + Worker secret | rescue 通道（owner 等效） | 6–12 個月 |
       | `JWT_SECRET` | 同上 | session 簽章（輪替＝全體登出） | 12 個月 |
-      | CF API Token | `~/.atwhomail-cf-token` | wrangler / restore | 已在 Dashboard 設 1 年 TTL |
+      | CF API Token | `~/.atwhomail-cf-token` | wrangler / restore / DNS 稽核 | ⚠️ 文件原寫「已設 1 年 TTL」，但 **2026-10-07 實測 `/user/tokens/verify` 回報無到期日（`expires_on` 為空）** → 待 Dashboard 目視確認實際值後再定案；另 2026-10-07 已加 `Zone:DNS:Read`（仍缺 Email Routing／Sending read） |
       | **備份 agent 角色密碼** | `packages/backup-agent/.env`（`PG_USER=atwhomail_backup`） | 本機備份庫寫入 | ✅ 2026-10-06 建立**專用角色**（不再用 `postgres` 超級使用者），43 字元隨機密碼；後續每 12 個月 |
       | **`postgres` 超級使用者密碼** | `~/.atwhomail-pg-pass` | 人力維運 / pgAdmin | ✅ 2026-10-06 已由預設 `postgres` 輪替為 43 字元隨機密碼 |
       | owner 密碼 | 僅雜湊存 D1 | 登入 | 建議改用強密碼（目前為測試期弱密碼） |
@@ -184,6 +185,8 @@
 | 11 | ~~`_mta-sts` 訊號記錄曾無聲消失~~ → **✅ 2026-10-06 已納入自動監控**：watchdog 每 10 分鐘以 DoH 檢查訊號 CNAME 與政策端點，異常即寄告警信 | — | 仍建議每次動 mail DNS 後人工重驗（`07` Step 6、skill `dns-mta-sts-verification.md` Rule 1b） |
 | 12 | ~~備份失敗完全不會告警~~ → **✅ 2026-10-06 已解決**：新增每 10 分鐘的本機 watchdog（`scripts/backup_watchdog.py`＋Windows 排程）與郵件告警（`alerts@atwho.org` → `ulhome@gmail.com`），涵蓋 agent 停滯／崩潰重啟密度／verify 失敗／API 異常／實例數異常 | — | 健康時靜默；同類告警 6 小時節流（詳見 §2-5） |
 | 13 | ~~整台機器關機時不會有任何告警~~ → **✅ 2026-10-06 已實作**：新增 `atwhomail-heartbeat` Worker（D1 `system_heartbeat`；Cron 每 15 分鐘）。本機 watchdog 每次執行即 POST 心跳；**超過 45 分鐘未回報 → 由雲端寄告警信**（12 小時去重）。已驗證：cron 執行痕跡 `last_cron_at`（實測 16:00:19）、本機回報、無／錯 token 401、103 測試通過 | — | 端到端「停擺→收到信」建議用**關機驗收**：關機 >45 分鐘應收到主旨「本機停擺（心跳停止）」 |
+
+| 14 | ~~DKIM 失效沒有任何自動監控~~ → **✅ 2026-10-07 已解決**：watchdog 新增第 8 項檢查（每輪以 DoH 驗證 `cf-bounce`／`cf2024-1` 公鑰：存在／合法 base64／≥2048-bit／**指紋未變**）＋端到端腳本 `scripts/dkim_verify.py`（**實測通過**：`d=atwho.org; s=cf-bounce` 與 `d=cloudflare-smtp.org; s=cf2024-1` 兩個簽章的 body hash 與 RSA 簽章全部驗證通過） | — | 端到端會真的寄一封信（收件者須為自家 active 信箱）；建議每月或改動寄信／DNS 設定後跑一次（`python scripts/dkim_verify.py`） |
 
 ## 6. 相關文件
 

@@ -78,6 +78,34 @@ wrangler d1 migrations apply mail-d1            # 每次 schema 變更
 | MTA-STS 政策主機（`mta-sts`） | 提供政策檔 | Step 6（`atwhomail-mta-sts` Worker + custom domain） |
 | bounce MX | 退信接收 | Step 5 自動（`cf-bounce` 子網域） |
 
+### 4.1 zone 內全部記錄（2026-10-07 實測 22 筆；token 已具 `Zone:DNS:Read`）
+
+> ⚠️ **22 筆之中只有 14 筆屬於本專案**，另 **7 筆與本專案無關** —— 那是 **Cloudflare Tunnel** 的 CNAME
+> （`chat`／`flow`／`form`／`imap`／`now`／`smtp`／`www` → `*.cfargotunnel.com`，**proxied**），
+> 指向你另一組 dev 服務（AllChat／QMarket／Where are you／frontend…）。**別誤刪、也不要列進本專案資源**。
+> 另注意：`cfd_tunnel` API 對本專案 token 回 **401**（無讀權限）→ **不能用「空清單」推論沒有 tunnel**。
+
+| # | Type | Name | 值 | 用途 |
+|---|---|---|---|---|
+| 1–3 | MX | `atwho.org` | `route1/2/3.mx.cloudflare.net`（priority **26/76/97**） | 收信（**優先序容錯鏈**，不是重複） |
+| 4 | TXT | `atwho.org` | `v=spf1 include:_spf.mx.cloudflare.net ~all` | 收信 SPF |
+| 5 | TXT | `cf2024-1._domainkey.atwho.org` | `v=DKIM1; h=sha256; k=rsa; p=…`（2048-bit） | 收信 DKIM（CF 自動，2026-09-01） |
+| 6–8 | MX | `cf-bounce.atwho.org` | `route1/2/3.mx.cloudflare.net` | 寄信退信（bounce） |
+| 9 | TXT | `cf-bounce.atwho.org` | `v=spf1 include:_spf.mx.cloudflare.net ~all` | 寄信 SPF |
+| 10 | TXT | `cf-bounce._domainkey.atwho.org` | `v=DKIM1; h=sha256; k=rsa; p=…`（2048-bit，與 #5 同一把） | **寄信 DKIM — 實測簽章為 `d=atwho.org; s=cf-bounce`** |
+| 11 | TXT | `_dmarc.atwho.org` | `v=DMARC1; p=none; rua=mailto:…@dmarc-reports.cloudflare.net` | 政策（目前只監控；DKIM/SPF 已實測 pass） |
+| 12 | TXT | `_smtp._tls.atwho.org` | `v=TLSRPTv1; rua=mailto:tlsrpt@atwho.org,…` | TLS 失敗回報 |
+| 13 | CNAME | `_mta-sts.atwho.org` | `_mta-sts.mx.cloudflare.net`（**DNS only 灰雲**） | MTA-STS 訊號 |
+| 14 | CNAME | `mta-sts.atwho.org` | `atwhomail-mta-sts.ulhome.workers.dev`（proxied） | MTA-STS 政策站（Worker 路由 `mta-sts.atwho.org/*`） |
+| 15 | TXT | `default._domainkey.atwho.org` | `v=DKIM1;h=sha256;k=rsa;p=…`（**2048-bit、完整**） | ⚠️ **Cloudflare 不使用此 selector**（本專案寄信實測用 `cf-bounce`）。2026-09-02 曾貼成截斷金鑰、10-07 上午刪除，同日下午又出現**完整有效**版本（與 `cf-bounce` **不同把**）→ 待確認是誰要用的；若無人使用可直接刪 |
+| 16–22 | CNAME ×7 | `chat`／`flow`／`form`／`imap`／`now`／`smtp`／`www` | `*.cfargotunnel.com`（proxied） | ⚠️ **非本專案**（你的 dev 服務 tunnel） |
+
+> **判斷「是否多餘」的通則**：同 name ＋ 同 type ＋ **同值** = 真重複（可刪）；**不同值** = 記錄集
+> （MX 優先序、多節點等，**不可刪**）；不同 name ＋ 同值 = 正常（多名稱共用同一目標）。
+> 2026-10-07 實測：**完全重複的記錄 0 筆**。
+> `default._domainkey` 的來龍去脈見 #15：**它不是本專案寄信在用的 selector**（實測簽章為 `d=atwho.org; s=cf-bounce`），
+> 因此它的存在與否都不影響本專案；但仍建議確認來源（詳見 §5 Step 6 註記）。
+
 ## 5. 手動進度追蹤（每完成一項由我驗證後 ✅）
 
 - [x] Step 1：確認 zone（atwho.org）— 2026-09-02 DNS 驗證通過
@@ -92,4 +120,5 @@ wrangler d1 migrations apply mail-d1            # 每次 schema 變更
       - ✅ **當日已重新加入並驗收**：權威 NS `chelsea.ns.cloudflare.com` 回 `canonical name = _mta-sts.mx.cloudflare.net`；
         TXT 穿過 CNAME 回 `v=STSv1; id=20230615T153000;`；政策檔仍 200 `mode: testing`。
       - 🔁 **此記錄會無聲消失** → 每次動 mail DNS 都要重驗（檢查法見 skill `dns-mta-sts-verification.md` Rule 1b）。
-      - ⚠️ **尚未發佈 `_smtp._tls.atwho.org`（TLS-RPT）** → 收不到 TLS 失敗報告，`testing → enforce` 前應先補。
+      - ✅ **TLS-RPT 已發佈（2026-10-06）**：`_smtp._tls.atwho.org` TXT = `v=TLSRPTv1; rua=mailto:tlsrpt@atwho.org,mailto:ulhome@gmail.com`（權威 NS 實測一致）。
+        ~~原本缺此記錄 → 收不到 TLS 失敗報告~~；現已具備 `testing → enforce` 的觀察依據（觀察 2–4 週）。

@@ -18,6 +18,11 @@ Checks
   5. single-instance invariant - exactly one node "src/index.ts" process
   6. MTA-STS signal + policy   - "_mta-sts" CNAME must exist (via DoH) and the policy must serve
                                  mode: none|testing|enforce  (§5 #11 曾無聲消失)
+  7. DKIM records              - "cf-bounce"/"cf2024-1" _domainkey TXT must exist, decode as strict
+                                 base64, parse as RSA >= 2048-bit, and match the last-known
+                                 fingerprint. 寄信 DKIM 悄悄失效 = 所有信被判垃圾，而系統其他部分
+                                 完全正常；2026-09-02 就發生過手動貼上截斷金鑰的 `default._domainkey`。
+                                 端到端（真的寄一封信再驗簽章）成本較高，由 scripts/dkim_verify.py 按需執行。
   0. liveness heartbeat        - POST to atwhomail-heartbeat so the CLOUD can alert when this
                                  machine itself is down/offline (§5 #13；本機檢查無法涵蓋)
 
@@ -25,9 +30,11 @@ Env overrides (for testing):
   WATCHDOG_LOG WATCHDOG_VLOG WATCHDOG_API WATCHDOG_API_SEND WATCHDOG_ENV_FILE
   WATCHDOG_ALERT_TO WATCHDOG_ALERT_FROM WATCHDOG_STATE WATCHDOG_STALE_MIN
   WATCHDOG_RESTART_LIMIT WATCHDOG_THROTTLE_H WATCHDOG_SKIP_PROC WATCHDOG_NO_EMAIL
+  WATCHDOG_DKIM_NAMES WATCHDOG_DKIM_STATE WATCHDOG_DKIM_MIN_BITS
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -225,6 +232,107 @@ def check_mta_sts() -> None:
         problems.append(f"MTA-STS 政策內容異常（HTTP {code}）：{body[:120]!r}")
 
 
+# ── DKIM 記錄完整性（2026-10-07，docs/11 §5 B3）──
+# 監控目標是最真實的故障模式：公鑰記錄被刪除／被改壞／被默默換掉。
+# 這種情況下系統每一項檢查都會是綠的，但所有寄出的信都會失去 DKIM → 進垃圾匣。
+# 因此每輪（10 分鐘）用 DoH 讀回公鑰，驗證：存在、合法 base64、能解出 >= 2048-bit RSA、
+# 且指紋與上次相同（不同 = 可能有人在動你的 DNS，要立刻看）。
+DKIM_NAMES = [n.strip() for n in os.environ.get(
+    "WATCHDOG_DKIM_NAMES",
+    "cf-bounce._domainkey.atwho.org,cf2024-1._domainkey.atwho.org").split(",") if n.strip()]
+DKIM_STATE = os.environ.get("WATCHDOG_DKIM_STATE", r"D:\Mail\mail-backup\logs\dkim-keys.state")
+DKIM_MIN_BITS = int(os.environ.get("WATCHDOG_DKIM_MIN_BITS", "2048"))
+
+
+def _der_tlv(buf: bytes, i: int):
+    tag = buf[i]
+    i += 1
+    ln = buf[i]
+    i += 1
+    if ln & 0x80:
+        n = ln & 0x7F
+        ln = int.from_bytes(buf[i:i + n], "big")
+        i += n
+    return tag, buf[i:i + ln], i + ln
+
+
+def _rsa_bits(der: bytes) -> int:
+    """SubjectPublicKeyInfo DER → RSA modulus 位元長度（純 stdlib，不需要密碼學套件）。"""
+    tag, seq, _ = _der_tlv(der, 0)
+    if tag != 0x30:
+        raise ValueError("SPKI 不是 SEQUENCE")
+    _, _, i = _der_tlv(seq, 0)            # AlgorithmIdentifier（略過）
+    tag, bits, _ = _der_tlv(seq, i)       # BIT STRING
+    if tag != 0x03:
+        raise ValueError("SPKI 缺少 BIT STRING")
+    _, rsa_seq, _ = _der_tlv(bits[1:], 0)  # 去掉 unused-bits 位元組
+    tag, mod, _ = _der_tlv(rsa_seq, 0)     # INTEGER n
+    if tag != 0x02:
+        raise ValueError("RSA 缺少 modulus INTEGER")
+    if mod[:1] == b"\x00":
+        mod = mod[1:]
+    return len(mod) * 8
+
+
+def dkim_public_key(name: str) -> str:
+    """DoH 取 TXT 並抽出 p=（TXT 可能被拆成多段字串，需接回）。"""
+    d = _doh(name, "TXT")
+    if d.get("Status") != 0:
+        raise LookupError(f"查不到記錄（DoH Status={d.get('Status')}）")
+    if not d.get("Answer"):
+        raise LookupError("查不到 TXT 記錄（NXDOMAIN 或無回應）")
+    txt = ""
+    for a in d.get("Answer", []):
+        txt += str(a.get("data", "")).strip('"').replace('" "', "")
+    if "p=" not in txt:
+        raise LookupError(f"TXT 沒有 p= 欄位（實際 {txt[:80]!r}）")
+    return txt.split("p=", 1)[1].split(";")[0].strip()
+
+
+def check_dkim() -> None:
+    try:
+        with open(DKIM_STATE, "r", encoding="utf-8") as fh:
+            st = json.load(fh)
+    except (OSError, ValueError):
+        st = {}
+    touched = False
+    for name in DKIM_NAMES:
+        try:
+            p = dkim_public_key(name)
+            der = base64.b64decode(p, validate=True)   # 嚴格模式：截斷金鑰（含 ... 或 )）會直接失敗
+            bits = _rsa_bits(der)
+            if bits < DKIM_MIN_BITS:
+                problems.append(f"DKIM 公鑰過短：{name} 僅 {bits}-bit（需 ≥{DKIM_MIN_BITS}）")
+                continue
+        except Exception as exc:  # noqa: BLE001
+            problems.append(
+                f"DKIM 記錄異常：{name} → {exc}"
+                "（寄出的信會失去 DKIM 簽章而進垃圾匣，請立刻檢查 DNS）"
+            )
+            continue
+        fp = hashlib.sha256(p.encode()).hexdigest()[:16]
+        prev = (st.get(name) or {}).get("fp")
+        if prev and prev != fp:
+            problems.append(
+                f"DKIM 公鑰已變更：{name}（指紋 {prev} → {fp}）"
+                "→ 若不是你主動更換，請立即檢查 DNS 是否被改動"
+            )
+            st[name] = {"fp": fp, "bits": bits,
+                        "changed_at": datetime.now(timezone.utc).isoformat()}
+            touched = True
+        elif prev != fp:
+            st[name] = {"fp": fp, "bits": bits,
+                        "first_seen": datetime.now(timezone.utc).isoformat()}
+            touched = True
+    if touched:
+        try:
+            os.makedirs(os.path.dirname(DKIM_STATE), exist_ok=True)
+            with open(DKIM_STATE, "w", encoding="utf-8") as fh:
+                json.dump(st, fh, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+
 # ── 本機 liveness 心跳（2026-10-06，docs/11 §5 #13）──
 # 雲端 atwhomail-heartbeat 的 Cron 每 15 分鐘檢查心跳；超過 STALE_MIN（45 分）沒收到就寄告警信。
 # 這是唯一能涵蓋「整台機器關機／離線」的機制（其餘檢查全在本機執行）。
@@ -311,7 +419,7 @@ def main() -> int:
 
     post_heartbeat()  # 先回報「本機還活著」給雲端（雲端 45 分鐘收不到就寄告警）
 
-    for fn in (check_agent_log, check_verify, check_api, check_instances, check_mta_sts):
+    for fn in (check_agent_log, check_verify, check_api, check_instances, check_mta_sts, check_dkim):
         try:
             fn()
         except Exception as exc:  # noqa: BLE001
