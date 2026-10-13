@@ -1,0 +1,19 @@
+{
+  "name": "AtWhoMail",
+  "short_name": "AtWhoMail",
+  "description": "虛擬地址收發信（Cloudflare Email + D1 + R2）",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#6001d2",
+  "theme_color": "#6001d2",
+  "lang": "zh-Hant",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

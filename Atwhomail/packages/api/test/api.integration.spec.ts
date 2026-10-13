@@ -398,7 +398,15 @@ describe("備份端點（Phase 13/14）", () => {
     expect((await req("/api/backup/changes")).status).toBe(401);
     const token = await login("owner", OWNER_PW);
     const body = await json<{ tables: Record<string, { cursor: string }>; created: unknown[] }>(await req("/api/backup/changes", {}, token));
-    expect(Object.keys(body.tables)).toEqual(["users", "email_addresses", "email_aliases", "messages", "attachments"]);
+    // 2026-10-12（Phase 1 / docs/14 D10）：納入 invites（6 張表）——owner 已同意擴大 P6 範圍
+    expect(Object.keys(body.tables)).toEqual([
+      "users",
+      "email_addresses",
+      "email_aliases",
+      "messages",
+      "attachments",
+      "invites",
+    ]);
     expect(body.tables.messages!.cursor).toMatch(/^\d+_\d+$/);
     expect(body.created.length).toBeGreaterThan(0);
   });
@@ -420,5 +428,127 @@ describe("備份端點（Phase 13/14）", () => {
     expect(res.status).toBe(200);
     expect(Array.isArray(body.objects)).toBe(true);
     expect(typeof body.truncated).toBe("boolean");
+  });
+});
+
+describe("搜尋與資料夾（UI 需求：q / folder=all / address_id）", () => {
+  it("q 搜尋 subject（不分大小寫）", async () => {
+    await E.DB.prepare("UPDATE messages SET subject = 'Invoice 100% due' WHERE id = 1").run();
+    const token = await login("owner", OWNER_PW);
+    const hit = await json<{ items: Array<{ id: number }> }>(await req("/api/mail/inbox?q=invoice", {}, token));
+    expect(hit.items.map((i) => i.id)).toEqual([1]);
+  });
+
+  it("q 的 LIKE 特殊字元視為字面值（% 不該全中）", async () => {
+    await E.DB.prepare("UPDATE messages SET subject = 'Invoice 100% due' WHERE id = 1").run();
+    const token = await login("owner", OWNER_PW);
+    const pct = await json<{ items: Array<{ id: number }> }>(await req("/api/mail/inbox?q=%25", {}, token));
+    expect(pct.items.map((i) => i.id)).toEqual([1]);
+    const underscore = await json<{ items: Array<{ id: number }> }>(await req("/api/mail/inbox?q=_", {}, token));
+    expect(underscore.items).toHaveLength(0);
+  });
+
+  it("q 不破壞 scope（mailbox 搜尋到別人的信 → 0 筆）", async () => {
+    const aliceToken = await mailboxLogin("alice@atwho.org", ALICE_PW);
+    const res = await json<{ items: unknown[] }>(await req("/api/mail/inbox?q=To%20bob", {}, aliceToken));
+    expect(res.items).toHaveLength(0);
+  });
+
+  it("folder=all 跨資料夾；非法 folder 仍 400", async () => {
+    const ts = Date.now();
+    await E.DB.prepare(
+      `INSERT INTO messages (id, owner_user_id, address_id, folder, message_id, from_address, to_address, cc, subject, text_preview, received_at, raw_r2_key, created_at, updated_at)
+       VALUES (3, 1, 1, 'archive', '<m3@x>', 'ext@example.com', '[]', '[]', 'Archived', 'p3', ?, 'mail/2026/09/m3.eml', ?, ?)`
+    )
+      .bind(ts, ts, ts)
+      .run();
+    const token = await login("owner", OWNER_PW);
+    const all = await json<{ items: Array<{ folder: string }> }>(await req("/api/mail/inbox?folder=all", {}, token));
+    expect(all.items.map((i) => i.folder).sort()).toEqual(["archive", "inbox", "inbox"]);
+    expect((await req("/api/mail/inbox?folder=bogus", {}, token)).status).toBe(400);
+  });
+
+  it("owner 可用 address_id 過濾；mailbox 一律忽略此參數", async () => {
+    const ownerToken = await login("owner", OWNER_PW);
+    const filtered = await json<{ items: Array<{ id: number }> }>(
+      await req("/api/mail/inbox?folder=all&address_id=2", {}, ownerToken)
+    );
+    expect(filtered.items.map((i) => i.id)).toEqual([2]);
+    expect((await req("/api/mail/inbox?address_id=abc", {}, ownerToken)).status).toBe(400);
+
+    const aliceToken = await mailboxLogin("alice@atwho.org", ALICE_PW);
+    const ignored = await json<{ items: Array<{ id: number }> }>(
+      await req("/api/mail/inbox?folder=all&address_id=2", {}, aliceToken)
+    );
+    expect(ignored.items.map((i) => i.id)).toEqual([1]);
+  });
+});
+
+describe("GET /api/mail/counts", () => {
+  it("owner：各資料夾統計；sent 不計未讀；含各地址統計", async () => {
+    const ts = Date.now();
+    await E.DB.prepare(
+      `INSERT INTO messages (id, owner_user_id, address_id, folder, message_id, from_address, to_address, cc, subject, text_preview, received_at, send_status, raw_r2_key, created_at, updated_at)
+       VALUES (4, 1, 1, 'sent', '<m4@x>', 'alice@atwho.org', '[{"address":"x@example.com","name":""}]', '[]', 'Sent', 'ps', ?, 'sent', 'mail/2026/09/m4.eml', ?, ?)`
+    )
+      .bind(ts, ts, ts)
+      .run();
+
+    const token = await login("owner", OWNER_PW);
+    const body = await json<{
+      folders: Record<string, { total: number; unread: number }>;
+      addresses: Array<{ id: number; total: number; unread: number }>;
+    }>(await req("/api/mail/counts", {}, token));
+
+    expect(body.folders.inbox).toEqual({ total: 2, unread: 2 });
+    expect(body.folders.sent).toEqual({ total: 1, unread: 0 }); // 寄件備份 read_at 恆為 NULL，不可算未讀
+    expect(body.folders.trash).toEqual({ total: 0, unread: 0 });
+    expect(body.addresses).toEqual([
+      { id: 1, email: "alice@atwho.org", total: 1, unread: 1 },
+      { id: 2, email: "bob@atwho.org", total: 1, unread: 1 },
+    ]);
+  });
+
+  it("mailbox：只統計自己；addresses = null", async () => {
+    const token = await mailboxLogin("alice@atwho.org", ALICE_PW);
+    const body = await json<{ folders: Record<string, { total: number }>; addresses: unknown }>(
+      await req("/api/mail/counts", {}, token)
+    );
+    expect(body.folders.inbox!.total).toBe(1);
+    expect(body.addresses).toBeNull();
+  });
+});
+
+describe("GET /api/mail/:id/text（完整純文字內文）", () => {
+  it("短 preview → 直接回傳，無需 R2 物件", async () => {
+    const token = await mailboxLogin("alice@atwho.org", ALICE_PW);
+    const res = await json<{ id: number; text: string }>(await req("/api/mail/1/text", {}, token));
+    expect(res.id).toBe(1);
+    expect(res.text).toBe("p1");
+  });
+
+  it("長文 → 由 raw .eml 解析全文；越權 404", async () => {
+    const body = "L".repeat(250);
+    const eml =
+      "From: ext@example.com\r\nTo: alice@atwho.org\r\nSubject: Long\r\n" +
+      "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + body;
+    await E.MAIL.put("mail/2026/09/m1.eml", new TextEncoder().encode(eml));
+    await E.DB.prepare("UPDATE messages SET text_preview = ?1 WHERE id = 1").bind("L".repeat(200)).run();
+
+    const aliceToken = await mailboxLogin("alice@atwho.org", ALICE_PW);
+    const res = await json<{ text: string }>(await req("/api/mail/1/text", {}, aliceToken));
+    expect(res.text.trim()).toBe(body);
+
+    const bobToken = await mailboxLogin("bob@atwho.org", BOB_PW);
+    expect((await req("/api/mail/1/text", {}, bobToken)).status).toBe(404);
+  });
+
+  it("R2 物件遺失 → 退回 preview，不回 500", async () => {
+    await E.DB.prepare("UPDATE messages SET text_preview = ?1 WHERE id = 2").bind("P".repeat(200)).run();
+    const bobToken = await mailboxLogin("bob@atwho.org", BOB_PW);
+    const res = await req("/api/mail/2/text", {}, bobToken);
+    expect(res.status).toBe(200);
+    const body = await json<{ text: string }>(res);
+    expect(body.text).toBe("P".repeat(200));
   });
 });

@@ -1,11 +1,27 @@
 /**
  * tables.ts — 備份鏡像的欄位定義
  *
- * 必須與 D1 migrations（0001_init + 0003_password_changed）逐欄一致，
+ * 必須與 D1 migrations（0001_init + 0003_password_changed + 0006_visitor_registration）逐欄一致，
  * 順序不影響 upsert 正確性（以欄名對應），但保持一致可讀性較好。
+ *
+ * 鏡像範圍（2026-10-12，Phase 1）：
+ *  - 納入 `invites`（邀請碼；不備份的話 D1 遺失後所有未用邀請碼消失）
+ *  - **刻意排除 `registration_audit`**：稽核量大且非信件／身分資料，只存在 D1
+ *    （docs/13 §7.2、docs/14 §4.6）→ 不加入 TABLE_COLUMNS，增量端點也就不會回傳它
  */
 export const TABLE_COLUMNS: Record<string, string[]> = {
-  users: ["id", "username", "display_name", "password_hash", "status", "password_changed_at", "created_at", "updated_at"],
+  users: [
+    "id",
+    "username",
+    "display_name",
+    "password_hash",
+    "status",
+    "role", // 0006：owner / visitor
+    "access_email", // 0006：Access 邊緣身分（稽核）
+    "password_changed_at",
+    "created_at",
+    "updated_at",
+  ],
   email_addresses: [
     "id",
     "user_id",
@@ -14,6 +30,11 @@ export const TABLE_COLUMNS: Record<string, string[]> = {
     "email",
     "password_hash",
     "status",
+    "can_send", // 0006：寄信權限（安全閥）
+    "daily_send_quota", // 0006：每日配額
+    "sent_today", // 0006：當日已寄
+    "quota_reset_at", // 0006：配額重置時間
+    "first_send_at", // 0006：首次寄信時間
     "password_changed_at",
     "created_at",
     "updated_at",
@@ -53,6 +74,19 @@ export const TABLE_COLUMNS: Record<string, string[]> = {
     "created_at",
     "updated_at",
   ],
+  // 0006：邀請碼（Phase 1）。registration_audit 刻意不在此（見檔頭說明）
+  invites: [
+    "id",
+    "code",
+    "created_by",
+    "max_uses",
+    "used_count",
+    "expires_at",
+    "note",
+    "status",
+    "created_at",
+    "updated_at",
+  ],
 };
 
 export const BACKUP_TABLES = Object.keys(TABLE_COLUMNS);
@@ -60,7 +94,19 @@ export const BACKUP_TABLES = Object.keys(TABLE_COLUMNS);
 /** 整數欄位（PG bigint 以字串回傳 → 還原時需轉回 number，避免 SQL 出現引號） */
 export const INTEGER_COLUMNS: Record<string, string[]> = {
   users: ["id", "password_changed_at", "created_at", "updated_at"],
-  email_addresses: ["id", "user_id", "password_changed_at", "created_at", "updated_at", "deleted_at"],
+  email_addresses: [
+    "id",
+    "user_id",
+    "can_send",
+    "daily_send_quota",
+    "sent_today",
+    "quota_reset_at",
+    "first_send_at",
+    "password_changed_at",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+  ],
   email_aliases: ["id", "target_email_address_id", "created_at", "updated_at"],
   messages: [
     "id",
@@ -73,6 +119,7 @@ export const INTEGER_COLUMNS: Record<string, string[]> = {
     "deleted_at",
   ],
   attachments: ["id", "message_id", "size_bytes", "created_at", "updated_at"],
+  invites: ["id", "created_by", "max_uses", "used_count", "expires_at", "created_at", "updated_at"],
 };
 
 /** PG 列 → D1 可用的值（bigint 字串轉 number、null 保持 null） */

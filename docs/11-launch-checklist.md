@@ -13,9 +13,11 @@
 | R2 | ✅ | `mail-r2`（`mail/`、`attachments/`） |
 | 本機備份 | ✅ | PostgreSQL 17.11 `atwhomail_backup`；磁碟 `D:\Mail\mail-backup\`（13 物件 / 41,088 B） |
 | 還原能力 | ✅ 已演練 | 2026-09-23 對測試 D1 `332b8869…` + bucket `mail-r2-restore-test` 演練（位元組級 sha256 等價）；**演練後測試標的已於 2026-10-05 刪除**（見 §5 #9） |
-| 測試 | ✅ 87 個 / 7 檔 | `pnpm test`（workerd 測試池，含 32 個 API 整合測試 + 8 收信 + 5 MTA-STS） |
+| 測試 | ✅ 113 個 / 8 檔 | `pnpm test`（workerd 測試池，含 43 個 API 整合測試 + 8 收信 + 5 MTA-STS） |
+| 內建前端 | ✅ 2026-10-07 | `web/`（Vite + React 19）Yahoo Mail 風格 UI；`pnpm dev:web` → http://localhost:5173 |
 | 安全標頭 | ✅ | nosniff / DENY / no-referrer / HSTS / CSP（HTML 端點保留專屬 CSP） |
 | 健康檢查 | ✅ | `GET /api/health` 含 D1 探測（DB 異常 → 503） |
+| 訪客註冊（Phase 1） | 🟡 程式完成、**未部署** | 邀請碼註冊＋配額／限流／停權＋稽核；migration 0006 本地已套用、**遠端待 owner**（見 §2-8） |
 
 ### 1.1 2026-10-05 收發信現況稽核（公開 DNS + CF API 實測）
 
@@ -148,14 +150,45 @@
       pnpm --filter @atwhomail/backup-agent run restore-r2 -- --bucket=test --yes
       ```
 
+- [ ] **8. Phase 1 訪客註冊上線前檢查**（2026-10-12 實作完成；**migration 0006 遠端尚未套用、API 尚未部署**）
+      - [ ] **migration 0006 遠端套用**（由 owner 執行；實作 agent 不得跑 `--remote`）
+            ```powershell
+            cd D:\Mail\Atwhomail
+            pnpm --filter @atwhomail/api exec wrangler d1 migrations apply mail-d1 --remote
+            ```
+      - [ ] **配額值確認**（單一來源：`packages/api/src/index.ts` 的 `QUOTA`）：
+            每日 **20**／暖機期前 24 小時 **5**／每小時 **10**。要調整就改這一處（`docs/13` §6.5 C1–C3）
+      - [ ] **既有 owner 地址也受配額約束**（migration 預設 `daily_send_quota=20`）→
+            若某地址要不受限，調高該地址的 `daily_send_quota`（或 `can_send=0` 立即關閉寄信）
+      - [ ] **暖機期行為驗收**：新註冊帳號前 24 小時只能寄 5 封（第 6 封 → `429 QUOTA_EXCEEDED`）
+      - [ ] **停權流程演練**（C7 一鍵止血）：
+            ```powershell
+            # 停權（suspended）→ 該帳號登入與寄信應立即 403 ACCOUNT_SUSPENDED
+            curl.exe -sS -X PATCH https://atwhomail-api.ulhome.workers.dev/api/users/<id>/status `
+              -H "x-admin-token: $env:ADMIN_TOKEN" -H "Content-Type: application/json" -d '{\"status\":\"suspended\"}'
+            ```
+      - [ ] **稽核可查**：`registration_audit` 應有 `register_ok`／`register_rejected`／`send_rejected_*`
+            ```powershell
+            pnpm --filter @atwhomail/api exec wrangler d1 execute mail-d1 --remote --command "SELECT event, COUNT(*) FROM registration_audit GROUP BY event"
+            ```
+      - [ ] **備份鏡像**：本機 agent 啟動後套用 `0003_local_invites`，`invites` 納入鏡像；
+            `registration_audit` 刻意不納入（`docs/03` §5.3）
+      - [ ] **CORS**：`ALLOWED_ORIGINS` 已含 `https://app.atwho.org`（訪客入口）——開放前確認 Access 政策已切 `Everyone`
+      - ⚠️ **尚未交付**（`docs/13` §6.5 的 C5／C6）：寄信量告警（達 80% 或全帳號 >200 封/日）與
+            「連續 3 日觸頂自動停權」不在本次 `docs/14` §4 規格內 → 需 owner 決定是否納入下一階段
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
 |---|---|---|
 | `GET /api/health`、`GET /` | 公開 | 健康檢查 |
 | `POST /api/auth/login`、`/api/auth/mailbox-login` | 公開（5 次失敗鎖 15 分） | 取得 session |
+| `POST /api/auth/register` | **公開（需邀請碼）** | 訪客註冊（Phase 1）→ mailbox session |
+| `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（只回遮罩碼）／撤銷 |
+| `GET /api/me` | owner 或 mailbox | 身分與寄信配額（供前端顯示） |
+| `PATCH /api/users/:id/status` | owner 或 rescue | 停權／復權（立即生效） |
 | `/api/email-addresses*`（含密碼） | owner 或 rescue | 地址管理 |
-| `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件 |
+| `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**） |
 | `/api/backup/changes`、`/api/backup/r2/*` | owner 或 rescue | 備份拉取（**含 password_hash → 僅維運**） |
 | restore | **僅本機腳本 + CF token** | 手動還原（production 無寫入端點） |
 
@@ -177,7 +210,7 @@
 | 3 | 不支援 Range 請求（下載大附件無法續傳） | ≤25MiB 附件需一次下載 | 之後補 206 支援 |
 | 4 | inline 附件（`cid:` 內嵌圖）不顯示 | HTML 信的內嵌圖片看不到 | 之後做 cid → R2 對應 |
 | 5 | 遠端圖片被剝離（MVP 刻意） | HTML 信中的外部圖片不顯示 | 之後做圖片代理（08 §16） |
-| 6 | 無**內建**前端 App（Inbox UI） | 本 repo 只提供 API，不含 UI | ✅ 2026-10-06：**外部自建 PWA 已可經 API 收發信**（CORS 白名單已開、`mailbox-login` 逐信箱隔離）；本 repo 維持只出 API |
+| 6 | ~~無**內建**前端 App（Inbox UI）~~ → **✅ 2026-10-07 已補**：`web/`（Vite + React 19 + TS）Yahoo Mail 風格三欄式 UI —— 雙身分登入、資料夾未讀 badge、跨資料夾搜尋、sanitized HTML 內文（sandbox iframe）、附件下載、回覆／轉寄、含附件寄信、owner 地址管理。啟動：`pnpm dev:web`（`docs/06` §2.1）。外部 App 走 API 的方式不變（`docs/12`） | — | 後續可選：部署成與 API 同源（Workers Static Assets）以便手機使用 |
 | 7 | `email_aliases` 表已建但無 API | 別名功能未實作 | 依需求排程 |
 | 8 | ~~TLS-RPT（`_smtp._tls`）未發佈~~ → **✅ 2026-10-06 已發佈**：TXT `v=TLSRPTv1; rua=mailto:tlsrpt@atwho.org,mailto:ulhome@gmail.com`（權威 NS 實測一致） | — | 觀察 2–4 週後再評估切 `enforce`（§2-4） |
 | 9 | ~~演練殘留資源未清~~ → **✅ 2026-10-05 已解決**：測試 D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` 已刪除（僅保留 production） | — | 下次季度還原演練前需先建立新的測試標的（見 §2-7；`docs/09` §5.1 步驟 0b） |

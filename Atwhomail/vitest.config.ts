@@ -31,5 +31,13 @@ export default defineConfig({
   test: {
     include: ["packages/*/test/**/*.spec.ts"],
     setupFiles: ["./test/apply-migrations.ts"],
+    /**
+     * 2026-10-13：逾時由預設 5s 放寬到 30s。
+     * 原因：argon2id 每次雜湊／驗證約 0.7–0.9 秒，而「登入鎖定（6 次驗證）」「註冊（雜湊）」
+     * 「配額（多次登入＋寄信）」等案例一次要做 4–6 次 → 實測最慢已達 4.6 秒，逼近 5 秒上限；
+     * 機器一有負載（例如排程備份同時在跑）就會整批 timeout（實測一次 7 案例同時紅）。
+     * 這些測試是「真的在算密碼」而不是卡住，放寬逾時才是正確的處置。
+     */
+    testTimeout: 30_000,
   },
 });

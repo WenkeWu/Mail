@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@noble/hashes": "^2.4.0",
-    "hono": "^4.13.5"
+    "hono": "^4.13.5",
+    "postal-mime": "^3.0.0"
   }
 }

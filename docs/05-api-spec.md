@@ -13,7 +13,13 @@
 |---|---|---|---|
 | Auth | POST | `/api/auth/login` | Owner（username + 密碼）登入 |
 | Auth | POST | `/api/auth/mailbox-login` | 信箱帳號（email address + 密碼）登入 |
+| Auth | POST | `/api/auth/register` | **訪客註冊（公開，需邀請碼）** → mailbox session |
 | Auth | PATCH | `/api/email-addresses/:id/password` | 重設地址密碼（owner 或本人） |
+| Invite | POST | `/api/invites` | 產生邀請碼（owner / x-admin-token） |
+| Invite | GET | `/api/invites` | 列出邀請碼（只回遮罩碼） |
+| Invite | DELETE | `/api/invites/:id` | 撤銷邀請碼（soft：`status='revoked'`） |
+| Me | GET | `/api/me` | 目前 session 的 role／username／各地址寄信配額 |
+| 使用者 | PATCH | `/api/users/:id/status` | 停權／復權（owner；C7 立即生效） |
 | 地址 | POST | `/api/email-addresses` | 建立虛擬地址 |
 | 地址 | GET | `/api/email-addresses` | 列出我的地址（含 disabled） |
 | 地址 | GET | `/api/email-addresses/:id` | 單一地址 |
@@ -22,8 +28,10 @@
 | Alias | POST | `/api/email-aliases` | 建立 alias |
 | Alias | PATCH | `/api/email-aliases/:id` | 啟用/停用 |
 | Alias | DELETE | `/api/email-aliases/:id` | 刪除 alias |
-| Inbox | GET | `/api/mail/inbox` | 收件匣（分頁，scope 見 §2.0） |
+| Inbox | GET | `/api/mail/inbox` | 收件匣（分頁＋搜尋，scope 見 §2.0） |
+| Inbox | GET | `/api/mail/counts` | 各資料夾未讀/總數（側欄 badge；owner 另附各地址） |
 | Mail | GET | `/api/mail/:id` | 信件詳情（含附件清單） |
+| Mail | GET | `/api/mail/:id/text` | 完整純文字內文（UI 讀信／回覆引言用） |
 | Mail | PATCH | `/api/mail/:id/read` | 標記已讀/未讀 |
 | Mail | PATCH | `/api/mail/:id/archive` | 封存 |
 | Mail | PATCH | `/api/mail/:id/folder` | 移動 folder（trash/spam…） |
@@ -127,6 +135,7 @@ Authorization: Bearer <JWT>
 
 ```http
 GET /api/mail/inbox?folder=inbox&cursor=...&limit=50
+                  // 2026-10-07 新增：&q=<搜尋字串>&address_id=<owner 專用>&folder=all（跨資料夾）
 → 200 {
     "items": [
       { "id": 9001, "from": "x@y.com", "subject": "...",
@@ -150,7 +159,21 @@ PATCH /api/mail/:id/read      body: { "read": true }   → 200
 PATCH /api/mail/:id/archive                         → 200（folder: inbox→archive）
 PATCH /api/mail/:id/folder    body: { "folder": "trash" } → 200
 DELETE /api/mail/:id                                 → 204（soft delete）
+
+GET /api/mail/:id/text
+→ 200 { "id": 9001, "text": "完整純文字內文" }        // 無純文字內文 → text: null
+  // D1 只存 200 字 preview；超過時由 R2 的 raw .eml 以 postal-mime 解析（HTML-only 信件亦自動轉出 text）
+  // R2 遺失／解析失敗 → 退回 preview，不回 500
+
+GET /api/mail/counts
+→ 200 { "folders": { "inbox": { "total": 2, "unread": 2 }, "sent": { "total": 4, "unread": 0 },
+                     "archive": {...}, "trash": {...}, "spam": {...} },
+        "addresses": [ { "id": 1, "email": "alice@atwho.org", "total": 1, "unread": 1 } ] }
+  // 側欄 badge 用；addresses 僅 owner session（mailbox → null，且只計 inbox）
+  // sent 為寄件備份（read_at 恆為 NULL）→ 一律不計未讀
 ```
+
+**搜尋參數（供內建 UI）：** `q` 對 `subject` / `from_address` / `text_preview` 做 LIKE（`\ % _` escape 為字面值、上限 200 字）；`folder=all` 跨資料夾；`address_id` 僅 owner scope 有效（mailbox 一律忽略）。
 
 **HTML body 顯示（安全，見 08 文件）：** Worker 回傳 sanitized HTML（存於 R2 `html_r2_key`，寄信與收信都會 sanitize）。**永不直接 render 原始外部 HTML**；圖片一律由 Worker 代理並消毒 URL（或 MVP 直接剝離遠端圖片，只留內嵌 CID）。
 
@@ -180,6 +203,71 @@ Authorization: Bearer <BACKUP_TOKEN>        // 獨立高權限 token，非使用
 ```
 
 語意（細節見 09 文件）：依各表 `updated_at > cursor` 掃描，`deleted_at` 有值者進 `deleted`。回應內含**完整列資料**（此處省略示意），Agent 直接 upsert 進 PostgreSQL。
+
+### 2.7 Phase 1：邀請碼、訪客註冊、配額（2026-10-12 實作，設計見 `13`）
+
+> 前提：**API Worker 直連不受 Cloudflare Access 保護**（`13` §8.3）→ 防護全靠邀請碼＋限流＋配額＋稽核。
+
+```http
+POST /api/invites                       Authorization: owner / x-admin-token
+{ "max_uses": 1, "expires_in_hours": 72, "note": "給小明" }        // 後兩者選填
+→ 201 { "id": 7, "code": "Xk3…", "max_uses": 1, "expires_at": 1789… }
+  // code 為 crypto 隨機 ≥24 字元（base64url）；只在建立當下回傳一次
+
+GET  /api/invites                       → 200 { "invites": [ { "id", "masked_code": "Xk3…",
+                                             "max_uses", "used_count", "expires_at", "status", "note", "created_at" } ] }
+  // ⚠️ 列表只回遮罩碼（前 4 碼）；不提供全碼查詢
+
+DELETE /api/invites/:id                 → 200 { "ok": true, "id": 7 }   // soft：status='revoked'，不刪資料列
+
+POST /api/auth/register                 // 公開；需邀請碼；5 次失敗鎖 15 分鐘（auth_attempts key=ip:<ip>）
+{ "invite_code": "Xk3…", "username": "friend01", "password": "…", "local_part": "friend01" }  // local_part 選填（預設=username）
+→ 201 { "token": "<JWT scope=mailbox>", "session": "mailbox", "address": { "id": 12, "email": "friend01@atwho.org" } }
+  // 順序（失敗即止）：限流 → REGISTRATION_DISABLED 開關 → 驗邀請碼 → 格式/唯一性 → 密碼強度
+  //   → 原子扣次數（UPDATE … WHERE used_count < max_uses）→ 建 users(role='visitor') + email_addresses
+  //   → 簽 mailbox JWT → 稽核 register_ok
+
+GET /api/me                             Authorization: owner 或 mailbox
+→ 200 { "role": "owner"|"visitor", "session": "owner"|"mailbox", "username": "friend01",
+        "addresses": [ { "id", "email", "can_send", "daily_send_quota", "sent_today", "quota_reset_at" } ] }
+  // owner：名下全部地址；mailbox：只有自己那一個（供 UI 顯示配額、停用寄信）
+
+PATCH /api/users/:id/status             Authorization: owner
+{ "status": "suspended" | "active" }    → 200 { "ok": true, "id": 5, "status": "suspended" }
+  // 立即生效：停權後該 user 的 mailbox 登入與寄信皆 403 ACCOUNT_SUSPENDED
+  // （DB 端以 users.status='disabled' 表示——0001 的 CHECK 只允許 active/disabled）
+```
+
+**寄信配額（`POST /api/mail/send` 內，順序即判定順序）**
+
+| # | 檢查 | 失敗 |
+|---|---|---|
+| 1 | 帳號 `users.status='active'` | `403 ACCOUNT_SUSPENDED` |
+| 2 | 地址 `status='active'` 且 `can_send=1` | `403 SEND_NOT_ALLOWED` |
+| 3 | 配額重置（`quota_reset_at` 過期 → `sent_today=0`，次日 00:00 UTC） | — |
+| 4 | 暖機期（`created_at` 起 24 小時內上限 `min(quota, 5)`，C2） | — |
+| 5 | **原子扣配額**（`sent_today < 有效上限`，看 `meta.changes`）→ 不通過 | `429 QUOTA_EXCEEDED` |
+| 6 | 每小時限流（近 60 分鐘寄件備份 ≥ 10，C3）→ 不通過（**並回補步驟 5 的扣額**） | `429 RATE_LIMITED` |
+| 7 | 實際寄送（既有邏輯）；寄送失敗 → 回補配額 | 既有錯誤（502 `SEND_FAILED`） |
+
+配額常數單一來源：`packages/api/src/index.ts` 的 `QUOTA`（每日 20／暖機 5 封 24 小時／每小時 10；`13` §6.5 C1–C3）。
+
+**新增錯誤碼**
+
+| 碼 | HTTP | 情境 |
+|---|---|---|
+| `INVITE_INVALID` | 400 | 邀請碼不存在／已撤銷／已過期 |
+| `INVITE_EXHAUSTED` | 400 | 邀請碼使用次數用盡 |
+| `ADDRESS_TAKEN` | 400 | `username` 或 `local_part` 重複 |
+| `INVALID_LOCAL_PART` | 400 | 格式不符（1–64 字元 `[a-z0-9._-]`） |
+| `WEAK_PASSWORD` | 400 | 註冊密碼不符（≥10 字元、非純數字）※既有端點仍為 422 |
+| `REGISTRATION_DISABLED` | 403 | 全站關閉註冊（Worker var `REGISTRATION_DISABLED="true"`，預設未設＝開放） |
+| `QUOTA_EXCEEDED` | 429 | 超過每日配額／暖機上限 |
+| `RATE_LIMITED` | 429 | 超過每小時限流，或註冊／登入嘗試過多 |
+| `ACCOUNT_SUSPENDED` | 403 | 帳號被停權（登入與寄信皆擋） |
+| `SEND_NOT_ALLOWED` | 403 | `can_send=0`（安全閥 C8） |
+
+**稽核**：`registration_audit` 記錄 `register_ok`／`register_rejected`／`login_failed`／`send_rejected_quota`／`send_rejected_rate`／`send_rejected_notallowed`（以 `waitUntil` 非阻塞寫入；**不納入備份鏡像**）。
 
 ## 3. 通用原則
 

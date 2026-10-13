@@ -174,6 +174,26 @@ export async function clearFailures(db: D1Database, key: string): Promise<void> 
 }
 
 // ───────────────────────── 中介層 ─────────────────────────
+/**
+ * 找出 owner 的 user id —— **以角色查找，不依賴帳號名稱**（D11，docs/14 §4.7）。
+ *
+ * 為何不能寫死 `username = 'owner'`：owner 一改名，救援通道（x-admin-token）與所有
+ * owner 範圍端點會同時失效。改為：
+ *   1. 先查 `role = 'owner'`（0006 起有 role 欄位）
+ *   2. 查不到（或舊 schema 還沒有 role 欄位）→ **回退** `username = 'owner'`（相容過渡）
+ * 注意：`/api/auth/login` 不受影響——它仍以使用者輸入的 username 查找。
+ */
+export async function findOwnerId(db: D1Database): Promise<number | null> {
+  try {
+    const byRole = await db.prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1").first<{ id: number }>();
+    if (byRole) return byRole.id;
+  } catch {
+    // role 欄位不存在（migration 0006 尚未套用）→ 走下方回退
+  }
+  const byName = await db.prepare("SELECT id FROM users WHERE username = 'owner' LIMIT 1").first<{ id: number }>();
+  return byName ? byName.id : null;
+}
+
 async function rescueScope(env: Env, provided: string): Promise<SessionInfo | null> {
   const token = env.ADMIN_TOKEN;
   if (!token) return null;
@@ -183,9 +203,9 @@ async function rescueScope(env: Env, provided: string): Promise<SessionInfo | nu
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
   if (diff !== 0) return null;
-  const owner = await env.DB.prepare("SELECT id FROM users WHERE username = 'owner'").first<{ id: number }>();
-  return owner
-    ? { scope: { kind: "owner", userId: owner.id, via: "rescue" }, iat: Math.floor(Date.now() / 1000), pca: Number.MAX_SAFE_INTEGER }
+  const ownerId = await findOwnerId(env.DB);
+  return ownerId !== null
+    ? { scope: { kind: "owner", userId: ownerId, via: "rescue" }, iat: Math.floor(Date.now() / 1000), pca: Number.MAX_SAFE_INTEGER }
     : null;
 }
 

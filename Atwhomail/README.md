@@ -31,6 +31,7 @@ git grep --cached -l -F "$(cat ~/.atwhomail-cf-token)" ; git diff --cached --nam
 | `packages/api` | REST API（Hono）+ Auth（Owner / Mailbox 雙 session） |
 | `packages/email-handler` | 收信 Catch-all Worker（routing → R2 → D1） |
 | `packages/shared` | 共用型別 / 驗證 / sanitize |
+| `web` | **內建前端**（Vite + React 19 + TS；Yahoo Mail 風格收發信 UI） |
 
 套件管理：**pnpm**（workspace 定義在 `pnpm-workspace.yaml`，lockfile = `pnpm-lock.yaml`）
 
@@ -38,6 +39,9 @@ git grep --cached -l -F "$(cat ~/.atwhomail-cf-token)" ; git diff --cached --nam
 
 ```bash
 pnpm install             # 安裝全部 workspace 依賴
+pnpm dev:web             # ★ 啟動內建前端（http://localhost:5173；/api 由 proxy 轉往 production API）
+#                         改打本機 API：VITE_API_PROXY_TARGET=http://127.0.0.1:8787 pnpm dev:web
+pnpm build:web           # 前端 production build（→ web/dist）
 pnpm dev:api             # 本機啟動 API worker（預設 http://127.0.0.1:8787）
 pnpm dev:email           # 本機啟動收信 worker（email 事件模擬）
 pnpm typecheck           # 全部套件型別檢查

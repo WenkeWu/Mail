@@ -15,6 +15,10 @@ mail-backup/
 dist/
 build/
 
+# 前端本機環境覆寫
+web/.env.local
+web/.env.*.local
+
 # 系統
 .DS_Store
 Thumbs.db

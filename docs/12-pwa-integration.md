@@ -1,6 +1,8 @@
 # 12. 外部 App／PWA 收發信整合指南
 
-> **適用對象**：在**別的系統**自行開發、只想透過本系統「收信＋寄信」、**不需要任何管理功能**的 App／PWA。
+> **2026-10-07 補充**：本 repo 已內建 `web/`（Yahoo Mail 風格 UI，`pnpm dev:web`，見 `06` §2.1）供自己使用；
+> **本文仍是外部 App 的正式契約**，未受影響。新增的三個端點（`/api/mail/counts`、`/api/mail/:id/text`、
+> inbox 的 `q` / `folder=all` / `address_id`）外部 App 也可使用，見 `05` §2.4。
 > **認證模型**：Phase 11 Model C 的 **mailbox scope**（逐信箱隔離，SQL 層強制）。
 > **最後驗證**：2026-10-06（所有端點皆以實際 HTTP 請求驗證過）。
 

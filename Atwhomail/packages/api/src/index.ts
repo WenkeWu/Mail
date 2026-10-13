@@ -13,7 +13,8 @@
  * - mailbox → messages.address_id    = sub（僅自己的信箱，跨信箱完全隔離）
  * - 越權一律 404（不洩漏資源存在性）
  */
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import PostalMime from "postal-mime";
 import {
   hashPassword,
   verifyPassword,
@@ -23,6 +24,7 @@ import {
   checkLocked,
   recordFailure,
   clearFailures,
+  findOwnerId,
   requireOwner,
   requireSession,
   resolveScope,
@@ -86,9 +88,9 @@ function err(c: { json: (x: unknown, s?: number) => Response }, code: string, me
   return c.json({ error: { code, message } }, status);
 }
 
+/** owner 的 user id（D11：改以「角色」查找，實作集中在 auth.ts 的 findOwnerId） */
 async function getOwnerId(db: D1Database): Promise<number | null> {
-  const row = await db.prepare("SELECT id FROM users WHERE username = 'owner'").first<{ id: number }>();
-  return row ? row.id : null;
+  return findOwnerId(db);
 }
 
 function validLocalPart(lp: string): boolean {
@@ -105,6 +107,11 @@ function scopeWhere(scope: Scope, alias = "m"): { sql: string; binds: unknown[] 
 /** scope 是否可見此訊息列（附件下載用） */
 function scopeAllows(scope: Scope, row: { owner_user_id?: number; address_id?: number }): boolean {
   return scope.kind === "owner" ? row.owner_user_id === scope.userId : row.address_id === scope.addressId;
+}
+
+/** LIKE 搜尋字串：escape \ % _ 後前後加 %（SQL 端需搭配 ESCAPE '\'） */
+function likePattern(q: string): string {
+  return `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 }
 
 function normalizeRecipients(input: unknown): string[] {
@@ -125,6 +132,119 @@ interface SendAttachment {
   type: string;
   content_base64: string;
   disposition?: "attachment" | "inline";
+}
+
+// ══════════════════════ Phase 1：訪客註冊（docs/13 v0.2、docs/14 §4）══════════════════════
+
+/**
+ * 配額常數 —— **單一來源**（docs/13 §6.5 C1–C3、docs/14 §4.3）。
+ * 調整配額只需改這裡；不得把 20/5/10 散落在多處。
+ */
+const QUOTA = {
+  /** C1 訪客每日寄信上限（新地址的 daily_send_quota 預設值） */
+  DEFAULT_VISITOR_DAILY_QUOTA: 20,
+  /** C2 暖機期上限（註冊後 WARMUP_HOURS 內適用） */
+  WARMUP_QUOTA: 5,
+  /** C2 暖機期長度（小時） */
+  WARMUP_HOURS: 24,
+  /** C3 每小時寄信上限 */
+  HOURLY_SEND_LIMIT: 10,
+} as const;
+
+/** Cloudflare Access 帶來的邊緣身分標頭（僅供稽核，非授權依據） */
+const ACCESS_EMAIL_HEADER = "cf-access-authenticated-user-email";
+
+/**
+ * 註冊密碼規則：既有政策（≥8、≤128）＋訪客加嚴（≥10 且非純數字）。
+ * 既有端點仍用 `validatePasswordPolicy`（本次不得改動既有語意）。
+ */
+function validateRegistrationPassword(pw: string): string | null {
+  const base = validatePasswordPolicy(pw);
+  if (base) return base;
+  if (pw.length < 10) return "密碼至少 10 個字元";
+  if (/^\d+$/.test(pw)) return "密碼不能是純數字";
+  return null;
+}
+
+/** 邀請碼：crypto 隨機 18 bytes → base64url 24 字元（不可預測；不得寫入 log） */
+function randomInviteCode(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(18));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** 列表用遮罩：只露前 4 碼（避免全碼外洩） */
+function maskCode(code: string): string {
+  return `${code.slice(0, 4)}…`;
+}
+
+/** 來源 IP（Cloudflare 優先；測試可帶 cf-connecting-ip） */
+function clientIp(c: Context<AuthEnv>): string | null {
+  const cf = c.req.header("cf-connecting-ip");
+  if (cf?.trim()) return cf.trim();
+  const xff = c.req.header("x-forwarded-for");
+  const first = xff?.split(",")[0]?.trim();
+  return first ? first : null;
+}
+
+interface AuditEntry {
+  event: string;
+  userId?: number | null;
+  addressId?: number | null;
+  accessEmail?: string | null;
+  ip?: string | null;
+  userAgent?: string | null;
+  detail?: unknown;
+}
+
+/** 稽核寫入（N7：detail 不得含邀請碼全碼／密碼／token；失敗只記 console，不影響主流程） */
+function writeAudit(db: D1Database, e: AuditEntry): Promise<void> {
+  const detail = e.detail === undefined ? null : JSON.stringify(e.detail);
+  return db
+    .prepare(
+      `INSERT INTO registration_audit (event, user_id, address_id, access_email, ip, user_agent, detail, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
+    )
+    .bind(
+      e.event,
+      e.userId ?? null,
+      e.addressId ?? null,
+      e.accessEmail ?? null,
+      e.ip ?? null,
+      e.userAgent ?? null,
+      detail,
+      now()
+    )
+    .run()
+    .then(() => undefined)
+    .catch((err) => {
+      console.error("[atwhomail-api] audit write failed", { event: e.event, error: String(err) });
+    });
+}
+
+/** 不阻塞回應地寫稽核（正式環境用 executionCtx；測試環境沒有 → 直接執行） */
+function auditAsync(c: Context<AuthEnv>, entry: AuditEntry): void {
+  const p = writeAudit(c.env.DB, entry);
+  try {
+    c.executionCtx.waitUntil(p);
+  } catch {
+    void p;
+  }
+}
+
+/** 寄信配額回補（寄送失敗或後續檢查被拒時，避免誤扣） */
+function refundQuota(db: D1Database, addressId: number): Promise<void> {
+  return db
+    .prepare(
+      `UPDATE email_addresses
+       SET sent_today = CASE WHEN sent_today > 0 THEN sent_today - 1 ELSE 0 END, updated_at = ?1
+       WHERE id = ?2`
+    )
+    .bind(now(), addressId)
+    .run()
+    .then(() => undefined)
+    .catch((err) => {
+      console.error("[atwhomail-api] quota refund failed", { addressId, error: String(err) });
+    });
 }
 
 // ══════════════════════ 公開 ══════════════════════
@@ -157,8 +277,10 @@ app.post("/api/auth/login", async (c) => {
   const lockedUntil = await checkLocked(c.env.DB, key);
   if (lockedUntil) return err(c, "LOCKED", `嘗試次數過多，請於 ${new Date(lockedUntil).toISOString()} 後再試`, 429);
 
+  // role='owner' 限定（Phase 1）：訪客帳號若取得 owner scope token，即可觸及 owner 專屬端點
+  // （／api/email-addresses、／api/invites、／api/backup/*）→ 一律不得簽發
   const user = await c.env.DB.prepare(
-    "SELECT id, username, password_hash, status, password_changed_at FROM users WHERE username = ?1"
+    "SELECT id, username, password_hash, status, password_changed_at FROM users WHERE username = ?1 AND role = 'owner'"
   )
     .bind(username)
     .first<{ id: number; username: string; password_hash: string; status: string; password_changed_at: number }>();
@@ -183,10 +305,19 @@ app.post("/api/auth/mailbox-login", async (c) => {
   if (lockedUntil) return err(c, "LOCKED", `嘗試次數過多，請於 ${new Date(lockedUntil).toISOString()} 後再試`, 429);
 
   const addr = await c.env.DB.prepare(
-    "SELECT id, email, password_hash, status, password_changed_at FROM email_addresses WHERE email = ?1 AND deleted_at IS NULL"
+    `SELECT a.id, a.email, a.password_hash, a.status, a.password_changed_at, u.status AS user_status
+     FROM email_addresses a JOIN users u ON u.id = a.user_id
+     WHERE a.email = ?1 AND a.deleted_at IS NULL`
   )
     .bind(email)
-    .first<{ id: number; email: string; password_hash: string | null; status: string; password_changed_at: number }>();
+    .first<{
+      id: number;
+      email: string;
+      password_hash: string | null;
+      status: string;
+      password_changed_at: number;
+      user_status: string;
+    }>();
 
   const okPw =
     addr && addr.status === "active" && addr.password_hash
@@ -195,6 +326,17 @@ app.post("/api/auth/mailbox-login", async (c) => {
   if (!addr || !okPw) {
     await recordFailure(c.env.DB, key);
     return err(c, "INVALID_CREDENTIALS", "地址或密碼錯誤", 401);
+  }
+  // 帳號停權（C7）：密碼驗證通過後才判——避免對未持密碼者洩漏帳號狀態
+  if (addr.user_status !== "active") {
+    auditAsync(c, {
+      event: "login_failed",
+      addressId: addr.id,
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+      detail: { reason: "ACCOUNT_SUSPENDED" },
+    });
+    return err(c, "ACCOUNT_SUSPENDED", "此帳號已停權，請聯絡管理者", 403);
   }
   await clearFailures(c.env.DB, key);
   const token = await signMailboxToken(c.env, addr.id, addr.email, Number(addr.password_changed_at ?? 0));
@@ -225,6 +367,295 @@ app.post("/api/auth/owner-password", async (c) => {
     .bind(hash, ts, ownerId)
     .run();
   return c.json({ ok: true, user_id: ownerId });
+});
+
+// ══════════════════════ Phase 1：邀請碼（owner）══════════════════════
+/** POST /api/invites — 產生邀請碼（owner 或 x-admin-token）；碼為 crypto 隨機、不可預測 */
+app.post("/api/invites", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const body = await c.req
+    .json<{ max_uses?: unknown; expires_in_hours?: unknown; note?: unknown }>()
+    .catch(() => ({}) as { max_uses?: unknown; expires_in_hours?: unknown; note?: unknown });
+
+  let maxUses = 1;
+  if (body?.max_uses !== undefined) {
+    const n = Number(body.max_uses);
+    if (!Number.isInteger(n) || n < 1 || n > 100) {
+      return err(c, "INVALID_BODY", "max_uses 需為 1–100 的整數", 400);
+    }
+    maxUses = n;
+  }
+  let expiresAt: number | null = null;
+  if (body?.expires_in_hours !== undefined && body.expires_in_hours !== null) {
+    const h = Number(body.expires_in_hours);
+    if (!Number.isFinite(h) || h < 1 || h > 24 * 365) {
+      return err(c, "INVALID_BODY", "expires_in_hours 需為 1–8760", 400);
+    }
+    expiresAt = now() + Math.trunc(h * 3600_000);
+  }
+  const note = typeof body?.note === "string" ? body.note.trim().slice(0, 200) : null;
+
+  const ts = now();
+  const code = randomInviteCode();
+  const res = await c.env.DB.prepare(
+    `INSERT INTO invites (code, created_by, max_uses, used_count, expires_at, note, status, created_at, updated_at)
+     VALUES (?1, ?2, ?3, 0, ?4, ?5, 'active', ?6, ?6)`
+  )
+    .bind(code, scope.kind === "owner" ? scope.userId : 0, maxUses, expiresAt, note, ts)
+    .run();
+  return c.json({ id: res.meta.last_row_id, code, max_uses: maxUses, expires_at: expiresAt }, 201);
+});
+
+/** GET /api/invites — 列表（只回遮罩碼；全碼僅在建立當下回傳一次） */
+app.get("/api/invites", requireOwner, async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, code, max_uses, used_count, expires_at, status, note, created_at
+     FROM invites ORDER BY id DESC LIMIT 200`
+  ).all<{ id: number; code: string; max_uses: number; used_count: number; expires_at: number | null; status: string; note: string | null; created_at: number }>();
+  return c.json({
+    invites: results.map((r) => ({
+      id: r.id,
+      masked_code: maskCode(r.code),
+      max_uses: r.max_uses,
+      used_count: r.used_count,
+      expires_at: r.expires_at,
+      status: r.status,
+      note: r.note,
+      created_at: r.created_at,
+    })),
+  });
+});
+
+/** DELETE /api/invites/:id — 撤銷（軟停用：status='revoked'，永不 DELETE 資料列） */
+app.delete("/api/invites/:id", requireOwner, async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
+  const res = await c.env.DB.prepare("UPDATE invites SET status = 'revoked', updated_at = ?1 WHERE id = ?2 AND status = 'active'")
+    .bind(now(), id)
+    .run();
+  if (res.meta.changes !== 1) {
+    const exists = await c.env.DB.prepare("SELECT id FROM invites WHERE id = ?1").bind(id).first();
+    if (!exists) return err(c, "INVITE_NOT_FOUND", "invite not found", 404);
+  }
+  return c.json({ ok: true, id }); // 重複撤銷視為冪等成功
+});
+
+// ══════════════════════ Phase 1：訪客註冊（公開，需邀請碼）══════════════════════
+/**
+ * POST /api/auth/register — 憑邀請碼註冊訪客帳號（docs/14 §4.2 的 9 步嚴格順序）
+ * 注意：API Worker 直連不受 Cloudflare Access 保護 → 防護全靠邀請碼＋限流＋配額＋稽核。
+ */
+app.post("/api/auth/register", async (c) => {
+  const db = c.env.DB;
+  const ip = clientIp(c);
+  const ipKey = `ip:${ip ?? "unknown"}`;
+  const userAgent = c.req.header("user-agent") ?? null;
+  const accessEmail = c.req.header(ACCESS_EMAIL_HEADER)?.trim().toLowerCase() ?? null;
+  // REGISTRATION_DISABLED 為選配 var（預設未設 = 開放）；本檔不新增 wrangler var（P2/P7）
+  const env = c.env as Env & { REGISTRATION_DISABLED?: string };
+
+  // 步驟 1：限流（沿用 auth_attempts，key = ip:<ip>）
+  const lockedUntil = await checkLocked(db, ipKey);
+  if (lockedUntil) {
+    return err(c, "RATE_LIMITED", `嘗試次數過多，請於 ${new Date(lockedUntil).toISOString()} 後再試`, 429);
+  }
+
+  // 步驟 2：全站開關
+  if ((env.REGISTRATION_DISABLED ?? "false").toLowerCase() === "true") {
+    return err(c, "REGISTRATION_DISABLED", "目前未開放註冊", 403);
+  }
+
+  const body = await c.req
+    .json<{ invite_code?: string; username?: string; password?: string; local_part?: string }>()
+    .catch(() => null);
+  if (!body?.invite_code || !body?.username || !body?.password) {
+    return err(c, "INVALID_BODY", "invite_code、username、password 必填", 400);
+  }
+
+  // 步驟 3：驗邀請碼（存在 / active / 未過期 / 尚有次數）
+  const invite = await db
+    .prepare("SELECT id, max_uses, used_count, expires_at, status FROM invites WHERE code = ?1")
+    .bind(body.invite_code.trim())
+    .first<{ id: number; max_uses: number; used_count: number; expires_at: number | null; status: string }>();
+  const ts = now();
+  const inviteInvalid =
+    !invite || invite.status !== "active" || (invite.expires_at !== null && invite.expires_at <= ts);
+  const rejected = async (code: string, message: string, detail: Record<string, unknown>) => {
+    await recordFailure(db, ipKey);
+    auditAsync(c, { event: "register_rejected", ip, userAgent, accessEmail, detail });
+    return err(c, code, message, 400);
+  };
+  if (inviteInvalid) {
+    // detail 只放 id（N7：不得放全碼）
+    return rejected("INVITE_INVALID", "邀請碼無效、已撤銷或已過期", {
+      reason: "INVITE_INVALID",
+      invite: invite ? `#${invite.id}` : null,
+    });
+  }
+  if (invite.used_count >= invite.max_uses) {
+    return rejected("INVITE_EXHAUSTED", "邀請碼已使用完畢", { reason: "INVITE_EXHAUSTED", invite: `#${invite.id}` });
+  }
+
+  // 步驟 4：username / local_part 格式與唯一性
+  const username = body.username.trim().toLowerCase();
+  const localPart = (body.local_part ?? body.username).trim().toLowerCase();
+  if (!validLocalPart(username) || !validLocalPart(localPart)) {
+    return rejected("INVALID_LOCAL_PART", "1-64 chars, [a-z0-9._-]，不能以 ./- 開頭或結尾", {
+      reason: "INVALID_LOCAL_PART",
+      invite: `#${invite.id}`,
+    });
+  }
+  const email = `${localPart}@${DOMAIN}`;
+  // 唯一性：email_addresses.email 為 UNIQUE（含軟刪除列）→ 一律不得重複
+  const dupAddr = await db.prepare("SELECT id FROM email_addresses WHERE email = ?1").bind(email).first();
+  const dupUser = await db.prepare("SELECT id FROM users WHERE username = ?1").bind(username).first();
+  if (dupAddr || dupUser) {
+    return rejected("ADDRESS_TAKEN", "此地址或使用者名稱已被使用", {
+      reason: "ADDRESS_TAKEN",
+      invite: `#${invite.id}`,
+    });
+  }
+
+  // 步驟 5：密碼強度
+  const pwErr = validateRegistrationPassword(body.password);
+  if (pwErr) {
+    return rejected("WEAK_PASSWORD", pwErr, { reason: "WEAK_PASSWORD", invite: `#${invite.id}` });
+  }
+
+  // 步驟 6：原子扣次數（不得先 SELECT 再 UPDATE）
+  const claim = await db
+    .prepare(
+      `UPDATE invites SET used_count = used_count + 1, updated_at = ?1
+       WHERE id = ?2 AND status = 'active' AND used_count < max_uses`
+    )
+    .bind(ts, invite.id)
+    .run();
+  if (claim.meta.changes !== 1) {
+    return rejected("INVITE_EXHAUSTED", "邀請碼已使用完畢", { reason: "INVITE_EXHAUSTED", invite: `#${invite.id}` });
+  }
+
+  // 步驟 7：建 users(role=visitor) ＋ 1 個 email_addresses（可寄信，配額見 QUOTA）
+  const pwHash = await hashPassword(body.password);
+  try {
+    const userRes = await db
+      .prepare(
+        `INSERT INTO users (username, display_name, password_hash, status, role, access_email, created_at, updated_at)
+         VALUES (?1, NULL, ?2, 'active', 'visitor', ?3, ?4, ?4)`
+      )
+      .bind(username, pwHash, accessEmail, ts)
+      .run();
+    const userId = Number(userRes.meta.last_row_id);
+
+    const addrRes = await db
+      .prepare(
+        `INSERT INTO email_addresses
+           (user_id, local_part, domain, email, password_hash, password_changed_at, status,
+            can_send, daily_send_quota, sent_today, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', 1, ?7, 0, ?6, ?6)`
+      )
+      .bind(userId, localPart, DOMAIN, email, pwHash, ts, QUOTA.DEFAULT_VISITOR_DAILY_QUOTA)
+      .run();
+    const addressId = Number(addrRes.meta.last_row_id);
+
+    // 步驟 8：簽發 mailbox scope JWT（沿用既有簽發路徑與 24h 效期）
+    const token = await signMailboxToken(c.env, addressId, email, ts);
+
+    // 步驟 9：稽核
+    auditAsync(c, {
+      event: "register_ok",
+      userId,
+      addressId,
+      accessEmail,
+      ip,
+      userAgent,
+      detail: { invite: `#${invite.id}` },
+    });
+    await clearFailures(db, ipKey);
+    return c.json({ token, session: "mailbox", address: { id: addressId, email } }, 201);
+  } catch (e) {
+    // 建帳號失敗 → 回補邀請碼次數（避免白白消耗）
+    await db
+      .prepare(
+        `UPDATE invites SET used_count = CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END, updated_at = ?1 WHERE id = ?2`
+      )
+      .bind(now(), invite.id)
+      .run();
+    console.error("[atwhomail-api] register failed", { invite: invite.id, error: String(e) });
+    return err(c, "REGISTER_FAILED", "註冊失敗，請稍後再試", 500);
+  }
+});
+
+// ══════════════════════ Phase 1：身分與配額（／api/me）══════════════════════
+app.get("/api/me", requireSession, async (c) => {
+  const scope = c.get("scope");
+  if (scope.kind === "owner") {
+    const user = await c.env.DB.prepare("SELECT username, role FROM users WHERE id = ?1")
+      .bind(scope.userId)
+      .first<{ username: string; role: string }>();
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, email, can_send, daily_send_quota, sent_today, quota_reset_at
+       FROM email_addresses WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY id`
+    )
+      .bind(scope.userId)
+      .all();
+    return c.json({
+      role: user?.role ?? "owner",
+      session: "owner",
+      username: user?.username ?? null,
+      addresses: results,
+    });
+  }
+
+  const row = await c.env.DB.prepare(
+    `SELECT a.id, a.email, a.can_send, a.daily_send_quota, a.sent_today, a.quota_reset_at,
+            u.username, u.role
+     FROM email_addresses a JOIN users u ON u.id = a.user_id
+     WHERE a.id = ?1 AND a.deleted_at IS NULL`
+  )
+    .bind(scope.addressId)
+    .first<{
+      id: number;
+      email: string;
+      can_send: number;
+      daily_send_quota: number;
+      sent_today: number;
+      quota_reset_at: number | null;
+      username: string;
+      role: string;
+    }>();
+  if (!row) return err(c, "NOT_FOUND", "address not found", 404);
+  return c.json({
+    role: row.role,
+    session: "mailbox",
+    username: row.username,
+    addresses: [
+      {
+        id: row.id,
+        email: row.email,
+        can_send: row.can_send,
+        daily_send_quota: row.daily_send_quota,
+        sent_today: row.sent_today,
+        quota_reset_at: row.quota_reset_at,
+      },
+    ],
+  });
+});
+
+// ══════════════════════ Phase 1：停權（owner；C7 一鍵止血）══════════════════════
+app.patch("/api/users/:id/status", requireOwner, async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
+  const body = await c.req.json<{ status?: string }>().catch(() => null);
+  // API 詞彙 active/suspended；DB 詞彙 active/disabled（0001 的 CHECK 僅允許後者）
+  if (body?.status !== "active" && body?.status !== "suspended") {
+    return err(c, "INVALID_STATUS", 'status 只能是 "active" 或 "suspended"', 400);
+  }
+  const dbStatus = body.status === "active" ? "active" : "disabled";
+  const res = await c.env.DB.prepare("UPDATE users SET status = ?1, updated_at = ?2 WHERE id = ?3")
+    .bind(dbStatus, now(), id)
+    .run();
+  if (res.meta.changes !== 1) return err(c, "NOT_FOUND", "user not found", 404);
+  return c.json({ ok: true, id, status: body.status });
 });
 
 // ══════════════════════ Phase 7：地址 CRUD（owner）══════════════════════
@@ -369,7 +800,10 @@ app.patch("/api/email-addresses/:id/password", requireSession, async (c) => {
 app.get("/api/mail/inbox", requireSession, async (c) => {
   const scope = c.get("scope");
   const folder = c.req.query("folder") ?? "inbox";
-  if (!FOLDERS.includes(folder)) return err(c, "INVALID_FOLDER", "folder 必須是 inbox/sent/archive/trash/spam", 400);
+  const allFolders = folder === "all"; // 跨資料夾（搜尋用）
+  if (!allFolders && !FOLDERS.includes(folder)) {
+    return err(c, "INVALID_FOLDER", "folder 必須是 inbox/sent/archive/trash/spam/all", 400);
+  }
   const limitRaw = Number(c.req.query("limit") ?? 50);
   const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 50, 1), 100);
   const cursor = c.req.query("cursor");
@@ -379,8 +813,32 @@ app.get("/api/mail/inbox", requireSession, async (c) => {
                     m.folder, m.read_at, m.received_at,
                     (SELECT COUNT(*) FROM attachments a WHERE a.message_id = m.id) AS att_count
              FROM messages m
-             WHERE ${sw.sql} AND m.folder = ? AND m.deleted_at IS NULL`;
-  const binds: unknown[] = [...sw.binds, folder];
+             WHERE ${sw.sql} AND m.deleted_at IS NULL`;
+  const binds: unknown[] = [...sw.binds];
+  if (!allFolders) {
+    sql += ` AND m.folder = ?`;
+    binds.push(folder);
+  }
+
+  // 全文搜尋（MVP：LIKE；SQLite 對 ASCII 不分大小寫，CJK 無大小寫問題）
+  const q = (c.req.query("q") ?? "").trim().slice(0, 200);
+  if (q) {
+    const pat = likePattern(q);
+    sql += ` AND (m.subject LIKE ? ESCAPE '\\' OR m.from_address LIKE ? ESCAPE '\\' OR m.text_preview LIKE ? ESCAPE '\\')`;
+    binds.push(pat, pat, pat);
+  }
+
+  // owner 專用：依地址過濾（mailbox 一律忽略 —— scope 已強制隔離）
+  const addressIdRaw = c.req.query("address_id");
+  if (addressIdRaw !== undefined && addressIdRaw !== "" && scope.kind === "owner") {
+    const addressId = Number(addressIdRaw);
+    if (!Number.isInteger(addressId) || addressId <= 0) {
+      return err(c, "INVALID_ADDRESS_ID", "address_id 需為正整數", 400);
+    }
+    sql += ` AND m.address_id = ?`;
+    binds.push(addressId);
+  }
+
   if (cursor) {
     const m = /^(\d+)_(\d+)$/.exec(cursor);
     if (!m) return err(c, "BAD_CURSOR", "cursor 格式錯誤", 400);
@@ -405,6 +863,48 @@ app.get("/api/mail/inbox", requireSession, async (c) => {
   }));
   const last = page[page.length - 1];
   return c.json({ items, nextCursor: hasMore && last ? `${last.received_at}_${last.id}` : null });
+});
+
+/**
+ * GET /api/mail/counts — 側欄 badge：各 folder 總數與未讀；owner 另附各地址（僅 inbox）統計。
+ * ⚠️ 必須註冊在 `/api/mail/:id` 之前，否則會被 :id 攔截。
+ * sent 為寄件備份（read_at 恆為 NULL）→ 不計未讀。
+ */
+app.get("/api/mail/counts", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const sw = scopeWhere(scope);
+  const { results } = await c.env.DB.prepare(
+    `SELECT m.folder AS folder,
+            COUNT(*) AS total,
+            SUM(CASE WHEN m.read_at IS NULL AND m.folder <> 'sent' THEN 1 ELSE 0 END) AS unread
+     FROM messages m
+     WHERE ${sw.sql} AND m.deleted_at IS NULL
+     GROUP BY m.folder`
+  )
+    .bind(...sw.binds)
+    .all<{ folder: string; total: number; unread: number }>();
+
+  const folders: Record<string, { total: number; unread: number }> = {};
+  for (const f of FOLDERS) folders[f] = { total: 0, unread: 0 };
+  for (const r of results) folders[r.folder] = { total: Number(r.total), unread: Number(r.unread) };
+
+  let addresses: Array<{ id: number; email: string; total: number; unread: number }> | null = null;
+  if (scope.kind === "owner") {
+    const { results: rows } = await c.env.DB.prepare(
+      `SELECT a.id AS id, a.email AS email,
+              COUNT(m.id) AS total,
+              SUM(CASE WHEN m.id IS NOT NULL AND m.read_at IS NULL THEN 1 ELSE 0 END) AS unread
+       FROM email_addresses a
+       LEFT JOIN messages m ON m.address_id = a.id AND m.deleted_at IS NULL AND m.folder = 'inbox'
+       WHERE a.user_id = ?1 AND a.deleted_at IS NULL
+       GROUP BY a.id, a.email ORDER BY a.id`
+    )
+      .bind(scope.userId)
+      .all<{ id: number; email: string; total: number; unread: number }>();
+    addresses = rows.map((r) => ({ id: Number(r.id), email: r.email, total: Number(r.total), unread: Number(r.unread) }));
+  }
+
+  return c.json({ folders, addresses });
 });
 
 app.get("/api/mail/:id", requireSession, async (c) => {
@@ -525,6 +1025,41 @@ app.get("/api/mail/:id/html", requireSession, async (c) => {
   });
 });
 
+/**
+ * GET /api/mail/:id/text — 完整純文字內文（UI 讀信／回覆引言用）。
+ * D1 只存 200 字 preview（email-handler preview()）：長度 < 200 可直接回；
+ * 否則由 R2 的 raw .eml 以 postal-mime 解析（HTML-only 信件亦會自動轉出 text）。
+ * R2 遺失／解析失敗 → 退回 preview，不回 500。scope 同其他信件端點（越權 404）。
+ */
+app.get("/api/mail/:id/text", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "MAIL_NOT_FOUND", "mail not found", 404);
+  const sw = scopeWhere(scope);
+  const row = await c.env.DB.prepare(
+    `SELECT m.id, m.text_preview, m.raw_r2_key FROM messages m
+     WHERE m.id = ? AND m.deleted_at IS NULL AND ${sw.sql}`
+  )
+    .bind(id, ...sw.binds)
+    .first<{ id: number; text_preview: string | null; raw_r2_key: string }>();
+  if (!row) return err(c, "MAIL_NOT_FOUND", "mail not found", 404);
+
+  // preview 只在 body > 200 字時才被截斷 → < 200 即為全文（含 null）
+  if (row.text_preview === null || row.text_preview.length < 200) {
+    return c.json({ id: row.id, text: row.text_preview });
+  }
+
+  const obj = await c.env.MAIL.get(row.raw_r2_key);
+  if (!obj) return c.json({ id: row.id, text: row.text_preview });
+  try {
+    const parsed = await PostalMime.parse(await obj.arrayBuffer());
+    return c.json({ id: row.id, text: parsed.text ?? row.text_preview });
+  } catch (e) {
+    console.error("[atwhomail-api] text parse failed", { id: row.id, error: String(e) });
+    return c.json({ id: row.id, text: row.text_preview });
+  }
+});
+
 // ══════════════════════ Phase 9：Attachment ══════════════════════
 app.get("/api/mail/:id/attachments", requireSession, async (c) => {
   const scope = c.get("scope");
@@ -589,20 +1124,31 @@ app.post("/api/mail/send", requireSession, async (c) => {
     return err(c, "INVALID_FROM", "from 必填且需為完整地址", 400);
   }
   const fromEmail = body.from.trim().toLowerCase();
+  type FromRow = {
+    id: number;
+    email: string;
+    user_id: number;
+    can_send: number;
+    daily_send_quota: number;
+    sent_today: number;
+    quota_reset_at: number | null;
+    created_at: number;
+  };
+  const fromCols = "id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at";
   const fromAddr =
     scope.kind === "owner"
       ? await c.env.DB.prepare(
-          `SELECT id, email FROM email_addresses
+          `SELECT ${fromCols} FROM email_addresses
            WHERE email = ?1 AND user_id = ?2 AND status = 'active' AND deleted_at IS NULL`
         )
           .bind(fromEmail, scope.userId)
-          .first<{ id: number; email: string }>()
+          .first<FromRow>()
       : await c.env.DB.prepare(
-          `SELECT id, email FROM email_addresses
+          `SELECT ${fromCols} FROM email_addresses
            WHERE email = ?1 AND id = ?2 AND status = 'active' AND deleted_at IS NULL`
         )
           .bind(fromEmail, scope.addressId)
-          .first<{ id: number; email: string }>();
+          .first<FromRow>();
   if (!fromAddr) return err(c, "FROM_NOT_ALLOWED", "from 不屬於此 session 的 active 地址", 403);
 
   const toList = normalizeRecipients(body.to);
@@ -623,6 +1169,86 @@ app.post("/api/mail/send", requireSession, async (c) => {
   }
   if (estBytes > 5 * 1024 * 1024) {
     return err(c, "PAYLOAD_TOO_LARGE", `訊息總大小約 ${estBytes} bytes 超過 5 MiB 上限`, 413);
+  }
+
+  // ── Phase 1：帳號狀態與寄信配額（docs/13 §6.5、docs/14 §4.2；以下即判定順序）──
+  // 置於既有輸入驗證之後、實際寄送之前：無效請求不消耗配額，且扣額與寄送相鄰（避免 TOCTOU）
+  const auditCtx = {
+    addressId: fromAddr.id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+  };
+  const ts0 = now();
+
+  // 1) 帳號狀態（停權 → 立即擋）
+  const acct = await c.env.DB.prepare("SELECT status FROM users WHERE id = ?1")
+    .bind(fromAddr.user_id)
+    .first<{ status: string }>();
+  if (!acct || acct.status !== "active") {
+    auditAsync(c, { ...auditCtx, event: "send_rejected_notallowed", detail: { reason: "ACCOUNT_SUSPENDED" } });
+    return err(c, "ACCOUNT_SUSPENDED", "此帳號已停權，無法寄信", 403);
+  }
+
+  // 2) 寄信權限（安全閥 C8：can_send=0 → 秒級生效）
+  if (fromAddr.can_send !== 1) {
+    auditAsync(c, { ...auditCtx, event: "send_rejected_notallowed", detail: { reason: "SEND_NOT_ALLOWED" } });
+    return err(c, "SEND_NOT_ALLOWED", "此地址目前不可寄信", 403);
+  }
+
+  // 3) 配額重置（每日 00:00 UTC）
+  if (fromAddr.quota_reset_at === null || fromAddr.quota_reset_at <= ts0) {
+    const d = new Date(ts0);
+    const nextReset = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
+    await c.env.DB.prepare(
+      `UPDATE email_addresses SET sent_today = 0, quota_reset_at = ?1, updated_at = ?2
+       WHERE id = ?3 AND (quota_reset_at IS NULL OR quota_reset_at <= ?2)`
+    )
+      .bind(nextReset, ts0, fromAddr.id)
+      .run();
+  }
+
+  // 4) 暖機期（C2）：註冊後 WARMUP_HOURS 內 → 有效上限 = min(daily_send_quota, WARMUP_QUOTA)
+  const inWarmup = ts0 < Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000;
+  const effectiveLimit = inWarmup
+    ? Math.min(Number(fromAddr.daily_send_quota), QUOTA.WARMUP_QUOTA)
+    : Number(fromAddr.daily_send_quota);
+
+  // 5) 原子扣配額（硬性要求：不得寫成「先 SELECT 再 UPDATE」→ 併發下才不會超額）
+  const deduct = await c.env.DB.prepare(
+    `UPDATE email_addresses
+     SET sent_today = sent_today + 1, first_send_at = COALESCE(first_send_at, ?1), updated_at = ?1
+     WHERE id = ?2 AND status = 'active' AND can_send = 1 AND sent_today < ?3`
+  )
+    .bind(ts0, fromAddr.id, effectiveLimit)
+    .run();
+  if (deduct.meta.changes !== 1) {
+    auditAsync(c, {
+      ...auditCtx,
+      event: "send_rejected_quota",
+      detail: { limit: effectiveLimit, warmup: inWarmup },
+    });
+    return err(
+      c,
+      "QUOTA_EXCEEDED",
+      `已達寄信上限（${effectiveLimit} 封／${inWarmup ? "註冊後 24 小時暖機期" : "每日"}）`,
+      429
+    );
+  }
+
+  // 6) 每小時限流（C3）：以近 60 分鐘的寄件備份為計數來源
+  const recent = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM messages WHERE address_id = ?1 AND folder = 'sent' AND received_at >= ?2`
+  )
+    .bind(fromAddr.id, ts0 - 3600_000)
+    .first<{ n: number }>();
+  if ((recent?.n ?? 0) >= QUOTA.HOURLY_SEND_LIMIT) {
+    await refundQuota(c.env.DB, fromAddr.id); // 步驟 5 已扣 → 此處未寄出，回補
+    auditAsync(c, {
+      ...auditCtx,
+      event: "send_rejected_rate",
+      detail: { hourly_limit: QUOTA.HOURLY_SEND_LIMIT, recent: recent?.n ?? 0 },
+    });
+    return err(c, "RATE_LIMITED", `每小時最多寄 ${QUOTA.HOURLY_SEND_LIMIT} 封，請稍後再試`, 429);
   }
 
   let result: { messageId: string };
@@ -647,6 +1273,7 @@ app.post("/api/mail/send", requireSession, async (c) => {
   } catch (e) {
     const code = (e as { code?: string })?.code ?? "SEND_FAILED";
     console.error("[atwhomail-api] send failed", { from: fromAddr.email, code, error: String(e) });
+    await refundQuota(c.env.DB, fromAddr.id); // 未寄出 → 回補配額（避免誤扣）
     return err(c, "SEND_FAILED", `${code}: ${String(e)}`, 502);
   }
 

@@ -30,6 +30,7 @@ flowchart TD
 > - `packages/api` **未拆** `routes/`、`services/`、`middleware/`；實際是 `src/index.ts`（Hono 路由全部在此）＋ `src/auth.ts`（Model C 認證）＋ `src/backup.ts`（備份游標工具）＋ `src/index.test` 系列的 `test/`
 > - `packages/backup-agent` 是 **Node/TypeScript**（非 Python），入口 `src/index.ts`
 > - `web/`（React PWA）**不在本 repo**：改由**外部自建 App** 透過 API 收發信 → 見 `12-pwa-integration.md`
+> - ⚠️ **2026-10-07 起 `web/` 已建立**（見下方 §2.1）：內建 Yahoo Mail 風格 UI，`pnpm dev:web` 啟動；`12-pwa-integration.md` 仍適用於外部 App
 > - 新增 `scripts/`：`register-backup-tasks.ps1`（註冊 Windows 排程）、`backup-agent.cmd`（監督迴圈 wrapper）、`backup-verify.cmd`、`backup-watchdog.cmd`、`backup_watchdog.py`（每 10 分鐘健檢＋郵件告警＋雲端心跳＋**DKIM 記錄完整性**）、`run-hidden.vbs`（**隱藏視窗啟動器**：排程動作經 `wscript.exe` 以視窗狀態 0 執行，否則每 10 分鐘會在桌面彈出 cmd 視窗）、`dkim_verify.py`（**端到端 DKIM 驗證**：寄測試信 → 取回**收到的**已簽章正本 → 用公開金鑰做密碼學驗算；已處理 RFC 6376 的摺疊空白、不存在的 h= 標頭、以及寄件備份未加簽等陷阱）
 > - 新增第 4 個 Worker `packages/heartbeat`（`atwhomail-heartbeat`，2026-10-06）：D1 `system_heartbeat` ＋ Cron 每 15 分鐘，補上「整台機器關機」的告警盲區（`11` §2-5、§5 #13）
 
@@ -88,6 +89,40 @@ mail-system/
 │   ├── r2sync.py                   # 列舉 R2 → 下載未備份 → 本地磁碟 + checksum
 │   └── config.yaml                 # token、endpoint、路徑
 └── docs/                           # 本文件群 + PRD
+```
+
+## 2.1 `web/` 實況（2026-10-07 建立）
+
+Vite + React 19 + TypeScript（**無 router / 狀態庫 / UI kit；單一 styles.css + 手寫 inline SVG**）。
+加入 pnpm workspace（`pnpm-workspace.yaml` 的 `web`）。
+
+```text
+web/
+├── index.html / vite.config.ts / tsconfig.json / .env.example
+├── public/{favicon.svg, manifest.webmanifest}
+└── src/
+    ├── main.tsx, App.tsx（session 復原 + 全域 401 → 回登入頁）, styles.css
+    ├── api/{client.ts, types.ts, endpoints.ts}   # fetch 包裝：Bearer、ApiError{status,code}、401 事件
+    ├── auth/session.ts                           # sessionStorage（不用 localStorage）
+    ├── lib/{format.ts, recipients.ts, files.ts, labels.ts}
+    ├── hooks/{useMailList.ts, useCounts.ts}      # 游標分頁（丟棄過期回應）/ 60 秒輪詢
+    └── components/  LoginPage, AppShell, Header, FolderSidebar, MessageList(+Item),
+                     ReadingPane, HtmlBody, PlainTextBody, ComposeWindow,
+                     AddressManager, Modal, Toast, icons
+```
+
+要點：
+- **登入**：兩種身分（信箱帳號 / owner）——Model C 雙 session
+- **HTML 信件渲染**：`fetch(/api/mail/:id/html)` 帶 Bearer → `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc>`（無 `allow-scripts`／`allow-same-origin`；另加 meta CSP）。
+  不可用 `<iframe src>`：API 有 `X-Frame-Options: DENY`，且 iframe 無法帶 Authorization
+- **純文字信** → `GET /api/mail/:id/text`（新端點）→ `<pre>`
+- **附件下載** → `requestBlob`（需 Bearer，故不能用 `<a href>`）
+- **開發 proxy**：`/api` → `VITE_API_PROXY_TARGET`（預設 production API；可改 `http://127.0.0.1:8787`）→ 開發期同源、無 CORS 問題
+
+啟動（根目錄）：
+```bash
+pnpm dev:web      # http://localhost:5173
+pnpm build:web    # → web/dist
 ```
 
 ## 3. 每個目錄的用途（速查）
