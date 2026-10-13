@@ -167,7 +167,13 @@ beforeEach(async () => {
     .run();
 });
 
-describe("T1–T5：邀請碼與註冊", () => {
+/**
+ * ⏱️ 逾時：本檔的案例要跑真實 argon2id（每次雜湊／驗證約 0.7–0.9 秒），
+ * 「登入鎖定／註冊／配額」一個案例會做 4–6 次 → 實測最慢 4.6 秒，逼近 vitest 預設 5 秒。
+ * 全套件並行 + 機器有負載（例如排程備份同時在跑）時會整批 timeout → 這裡明確指定 30 秒
+ * （與 vitest.config.ts 的全域 testTimeout 一致；約 6 倍餘裕）。
+ */
+describe("T1–T5：邀請碼與註冊", { timeout: 30_000 }, () => {
   it("T1 有效邀請碼註冊 → 201 + mailbox token，且該 token 可讀 inbox", async () => {
     const invite = await createInvite(1, 72);
     const res = await register({ invite_code: invite.code, username: "friend01", password: VISITOR_PW });
@@ -286,7 +292,7 @@ describe("T1–T5：邀請碼與註冊", () => {
   });
 });
 
-describe("T6–T10：寄信配額與限流", () => {
+describe("T6–T10：寄信配額與限流", { timeout: 30_000 }, () => {
   it("T6 配額內寄信 → 200，且 /api/me 的 sent_today +1", async () => {
     const invite = await createInvite(1);
     const reg = await register({ invite_code: invite.code, username: "sender01", password: VISITOR_PW }, "203.0.113.61");
@@ -414,7 +420,7 @@ describe("T6–T10：寄信配額與限流", () => {
   });
 });
 
-describe("T11–T13：停權、隔離、/api/me", () => {
+describe("T11–T13：停權、隔離、/api/me", { timeout: 30_000 }, () => {
   it("T11 停權後登入與寄信皆 403 ACCOUNT_SUSPENDED；復權後可再登入", async () => {
     const invite = await createInvite(1);
     const reg = await register({ invite_code: invite.code, username: "suspend01", password: VISITOR_PW }, "203.0.113.111");
@@ -507,7 +513,7 @@ describe("T11–T13：停權、隔離、/api/me", () => {
   });
 });
 
-describe("T15：併發扣配額（原子性）", () => {
+describe("T15：併發扣配額（原子性）", { timeout: 30_000 }, () => {
   it("同時送 2 封、上限 1 → 只有 1 封成功", async () => {
     const { addressId } = await seedVisitor({
       email: "race01@atwho.org",
@@ -541,7 +547,7 @@ describe("T15：併發扣配額（原子性）", () => {
   });
 });
 
-describe("T16：owner 查找不依賴名稱（D11，docs/14 §4.7）", () => {
+describe("T16：owner 查找不依賴名稱（D11，docs/14 §4.7）", { timeout: 30_000 }, () => {
   /** vitest.config.ts 注入的測試 binding（公開的測試常數，非機密） */
   const ADMIN = "test-admin-token";
 
