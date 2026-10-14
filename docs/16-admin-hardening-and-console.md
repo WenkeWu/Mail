@@ -172,3 +172,36 @@
 - [ ] `docs/05`（API 規格）與 `docs/11`（上線檢查清單）同步更新
 - [ ] 未部署、未跑遠端 migration、未動 N6–N8 列出的檔案
 - [ ] 依 §7 回報
+
+---
+
+## 9. 實作進度紀錄
+
+### 階段 1 — ✅ 完成並上線（2026-10-14）
+
+| 項目 | 結果 |
+|---|---|
+| 實作 | commit `695ff37`（D1：`web/src/lib/hostMode.ts`＋`LoginPage` mode ＋ `App.tsx`；D3：`web/functions/api/[[path]].ts`；測試 `web/test/hostMode.spec.ts`）|
+| canonical 三指令 | ✅ `lint` 0／`build` 0／`test` **10 files / 135 tests** 全綠 |
+| N1–N8 合規 | ✅ 後端未加入 Access JWT 驗證（N1）、`ALLOWED_ORIGINS` 未變（N4）、docs 未動（N8）|
+| Pages 部署 | ✅ `atwhomail-web`（**含 Functions bundle**）；新版 JS `index-DS0eyND7.js` 已上線 |
+| 自訂網域 | ✅ `mail.atwho.org`、`app.atwho.org` 皆 → `atwhomail-web.pages.dev` |
+| `mail.atwho.org` Access | ✅ 仍 302 至 Cloudflare Access（僅 owner 可通過）|
+| D3 代理實測 | ✅ `/api/health` → 200（真實 API 回應）；`/api/backup/changes?limit=1` → 401 UNAUTHORIZED（證明路徑與 query 皆正確轉發）|
+| D2（後端驗 JWT） | ⬜ 尚未實作（依規格留待階段 2 ✅）|
+
+> 部署指令（**必須在 `web/` 目錄執行**，否則 Pages 不會打包 `functions/`）：
+> ```bash
+> cd web
+> VITE_API_BASE=https://atwhomail-api.ulhome.workers.dev pnpm build
+> pnpm exec wrangler pages deploy dist --project-name atwhomail-web --branch main
+> ```
+
+### 階段 2 需要的值（已查得）
+
+| 名稱 | 值 | 用途 |
+|---|---|---|
+| `ACCESS_TEAM_DOMAIN` | `steep-queen-06be.cloudflareaccess.com` | 取 Access 公鑰驗簽 |
+| `ACCESS_MAIL_AUD` | `48c19f72b4892912c5176b3f88ce1fdae27ff6461eb85ef52b928e688567d077` | 驗證 JWT 的 `aud` 必須等於 `mail.atwho.org` 應用 |
+
+> 這兩個值建議設為 Worker 環境變數（`vars`；非機密 ✅），**不要硬編碼在程式內**。
