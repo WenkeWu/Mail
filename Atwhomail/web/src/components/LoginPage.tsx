@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { mailboxLogin, ownerLogin, register } from "../api/endpoints";
 import type { Session } from "../api/types";
+import type { LoginMode } from "../lib/hostMode";
 import { IconMail } from "./icons";
 
 interface Props {
@@ -9,6 +10,14 @@ interface Props {
   onLogin: (session: Session) => void;
   /** 是否顯示「註冊」分頁（Phase 1 訪客邀請制；預設 true） */
   showRegister?: boolean;
+  /**
+   * 顯示模式（docs/16 D1；由 App 依 hostname 決定）：
+   * - `admin`：只顯示「管理員登入」（mail.atwho.org）
+   * - `public`：只顯示「信箱登入」＋「註冊」（app.atwho.org）
+   * - `all`：三分頁全顯示（localhost／pages.dev 等；預設值，維持既有行為）
+   * ⚠️ 僅影響 UI；權限一律由後端判定
+   */
+  mode?: LoginMode;
 }
 
 const LAST_EMAIL_KEY = "atwhomail.lastEmail";
@@ -26,9 +35,31 @@ const REGISTER_HINTS: Record<string, string> = {
 
 type Tab = "mailbox" | "owner" | "register";
 
+const TAB_LABEL: Record<Tab, string> = {
+  mailbox: "信箱登入",
+  owner: "管理員登入",
+  register: "註冊",
+};
+
 /** 登入頁：Model C 的兩種身分（信箱／管理員）＋ Phase 1 的訪客註冊（邀請碼） */
-export function LoginPage({ notice, onLogin, showRegister = true }: Props) {
-  const [tab, setTab] = useState<Tab>("mailbox");
+export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }: Props) {
+  /**
+   * 分頁清單依模式決定（docs/16 D1；僅顯示面）：
+   * - admin（mail.）→ 只有管理員登入
+   * - public（app.）→ 信箱登入（＋註冊，若 showRegister）
+   * - all（其他）  → 信箱登入（＋註冊）＋管理員登入
+   */
+  const tabList: Tab[] =
+    mode === "admin"
+      ? ["owner"]
+      : mode === "public"
+        ? showRegister
+          ? ["mailbox", "register"]
+          : ["mailbox"]
+        : showRegister
+          ? ["mailbox", "register", "owner"]
+          : ["mailbox", "owner"];
+  const [tab, setTab] = useState<Tab>(mode === "admin" ? "owner" : "mailbox");
   const [email, setEmail] = useState(() => {
     try {
       return localStorage.getItem(LAST_EMAIL_KEY) ?? "";
@@ -105,40 +136,23 @@ export function LoginPage({ notice, onLogin, showRegister = true }: Props) {
           </span>
           <div>
             <h1>AtWhoMail</h1>
-            <p>虛擬地址收發信</p>
+            <p>{mode === "admin" ? "管理員入口" : "虛擬地址收發信"}</p>
           </div>
         </div>
 
         <div className="login-tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "mailbox"}
-            className={tab === "mailbox" ? "active" : ""}
-            onClick={() => switchTab("mailbox")}
-          >
-            信箱登入
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "owner"}
-            className={tab === "owner" ? "active" : ""}
-            onClick={() => switchTab("owner")}
-          >
-            管理員登入
-          </button>
-          {showRegister && (
+          {tabList.map((t) => (
             <button
+              key={t}
               type="button"
               role="tab"
-              aria-selected={tab === "register"}
-              className={tab === "register" ? "active" : ""}
-              onClick={() => switchTab("register")}
+              aria-selected={tab === t}
+              className={tab === t ? "active" : ""}
+              onClick={() => switchTab(t)}
             >
-              註冊
+              {TAB_LABEL[t]}
             </button>
-          )}
+          ))}
         </div>
 
         {notice && <p className="login-notice">{notice}</p>}

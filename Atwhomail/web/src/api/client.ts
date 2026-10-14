@@ -6,6 +6,7 @@
  *   並顯示「登入已過期」；登入端點本身的 401（密碼錯）不會觸發
  */
 import { loadSession } from "../auth/session";
+import { usesSameOriginApi } from "../lib/hostMode";
 
 export const UNAUTHORIZED_EVENT = "atwhomail:unauthorized";
 
@@ -21,7 +22,21 @@ export class ApiError extends Error {
   }
 }
 
-export const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/+$/, "");
+/** 建置期注入的 API 基底（正式站以 `VITE_API_BASE=https://atwhomail-api.ulhome.workers.dev` 建置） */
+const ENV_API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/+$/, "");
+
+/**
+ * API 基底網址（docs/16 D3）：
+ * - `mail.atwho.org` → **空字串＝同源**：由 Pages Function `functions/api/[[path]].ts` 代理到 API Worker，
+ *   並沿路轉發 Cloudflare Access 的 JWT（Access 只保護這個 hostname）
+ * - 其餘（localhost／127.0.0.1／app.atwho.org／*.pages.dev）→ **維持原行為**（建置期的 VITE_API_BASE；
+ *   開發時為相對路徑，交由 Vite proxy 轉往本機 API）
+ *
+ * ⚠️ 這只決定「請求送往哪裡」，不是權限判定（後端一律依 session 授權，docs/16 N3）。
+ */
+export const API_BASE = usesSameOriginApi(typeof window === "undefined" ? "" : window.location.hostname)
+  ? ""
+  : ENV_API_BASE;
 
 /** 相對 API 路徑（例如信件詳情的 html_url）需經此轉為實際 URL */
 export const apiUrl = (path: string): string => `${API_BASE}${path}`;

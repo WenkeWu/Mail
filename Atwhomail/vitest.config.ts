@@ -29,7 +29,9 @@ export default defineConfig({
     }),
   ],
   test: {
-    include: ["packages/*/test/**/*.spec.ts"],
+    // 2026-10-14：加入 web/ 的測試（D1 的 hostname→顯示模式純函式，docs/16 §6 T7；
+    // 前端只有純函式可在此 pool 測，JSX 渲染需 DOM 環境，本 repo 尚無該 runner）
+    include: ["packages/*/test/**/*.spec.ts", "web/test/**/*.spec.ts"],
     setupFiles: ["./test/apply-migrations.ts"],
     /**
      * 2026-10-13：逾時由預設 5s 放寬到 30s。

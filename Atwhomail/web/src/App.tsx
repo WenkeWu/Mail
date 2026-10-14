@@ -4,6 +4,14 @@ import type { Session } from "./api/types";
 import { clearSession, loadSession, saveSession } from "./auth/session";
 import { AppShell } from "./components/AppShell";
 import { LoginPage } from "./components/LoginPage";
+import { loginModeFor } from "./lib/hostMode";
+
+/**
+ * 登入頁顯示模式：依 hostname 決定一次（docs/16 D1）
+ * mail.atwho.org → 只顯示管理員登入｜app.atwho.org → 只顯示信箱／註冊｜其餘 → 全部
+ * ⚠️ 僅影響 UI 顯示；權限一律由後端的 session 判定（N3）
+ */
+const LOGIN_MODE = loginModeFor(window.location.hostname);
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(() => loadSession());
@@ -24,6 +32,7 @@ export default function App() {
     return (
       <LoginPage
         notice={notice}
+        mode={LOGIN_MODE}
         onLogin={(next) => {
           saveSession(next);
           setNotice(null);
