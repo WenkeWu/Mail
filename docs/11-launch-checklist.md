@@ -222,11 +222,15 @@
 | `POST /api/auth/mailbox-login` | 公開（5 次失敗鎖 15 分） | 信箱 session（**不受 Access 影響**） |
 | `PATCH /api/auth/owner-password/self` | owner session ＋ 舊密碼 | owner 自助改密碼（階段 2／D7） |
 | `POST /api/auth/register` | **公開（需邀請碼）** | 訪客註冊（Phase 1）→ mailbox session |
-| `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（只回遮罩碼）／撤銷 |
+| `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（**預設只回遮罩碼**；`?reveal=1` 額外回全碼並寫稽核）／撤銷 |
 | `GET /api/me` | owner 或 mailbox | 身分與寄信配額（供前端顯示） |
 | `PATCH /api/users/:id/status` | owner 或 rescue | 停權／復權（立即生效） |
-| `/api/email-addresses*`（含密碼） | owner 或 rescue | 地址管理 |
-| `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**） |
+| `GET /api/users?role=visitor` | owner 或 rescue | 訪客清單（**只回數量與時間**：信件數／最近活動，N9） |
+| `PATCH /api/users/:id/quota` | owner 或 rescue | 調整每日配額（1–200）＋寄信安全閥（階段 3／D5） |
+| `PATCH /api/users/:id/warmup` | owner 或 rescue | 暖機豁免（需 migration 0007；階段 3／D5） |
+| `/api/email-addresses*`（含密碼） | owner 或 rescue | 地址管理（**自身名下**） |
+| `PATCH /api/email-addresses/:id/status` | owner 或 rescue | 停用／啟用**訪客**地址（階段 3／D5；解 404 缺口） |
+| `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9） |
 | `/api/backup/changes`、`/api/backup/r2/*` | owner 或 rescue | 備份拉取（**含 password_hash → 僅維運**） |
 | restore | **僅本機腳本 + CF token** | 手動還原（production 無寫入端點） |
 

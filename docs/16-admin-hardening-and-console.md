@@ -245,6 +245,19 @@
 > pnpm exec wrangler pages deploy dist --project-name atwhomail-web --branch main
 > ```
 
+### 階段 3–4 — ✅ 程式完成（2026-10-14；**未部署、migration 0007 未套用**）
+
+| 項目 | 結果 |
+|---|---|
+| 實作 | commit `9e37aec`（D4：`GET /api/invites?reveal=1`＋稽核 `invite_revealed`、`web/src/components/InviteManager.tsx`；D5：`GET /api/users?role=visitor`、`PATCH /api/users/:id/quota`、`PATCH /api/users/:id/warmup`、`PATCH /api/email-addresses/:id/status`、`web/src/components/VisitorManager.tsx`）|
+| canonical 三指令 | ✅ `lint` 0／`build` 0／`test` **13 files / 171 tests** 全綠 |
+| 測試（T12–T16） | ✅ `packages/api/test/admin-console.spec.ts`（18 案例：T12–T16 ＋ 值域／狀態／N9 邊界）、`web/test/adminConsole.spec.ts`（4 案例：顯示開關、邀請碼狀態推導）|
+| N 系列合規 | ✅ 訪客公開路徑未變（N2）、未以 hostname 判定權限（N3）、`ALLOWED_ORIGINS` 未變（N4）、rescue 與 `/api/backup/*` 未變（N5）、未部署亦未跑遠端 migration（N6／N10）、未寫入任何 secret（N7）、docs/13–15 與 `scripts/` 未動（N8）|
+| N9 權限邊界 | ✅ 訪客清單只回**數量與時間**（信件數／最近活動），不含主旨／寄件者／內文；`/api/mail/*` 授權未放寬，且 `?address_id=` 收緊為「僅限 owner 名下地址」（他人地址 → 404，不再回空清單）|
+| migration | ⬜ `migrations/0007_warmup_exempt.sql`（`email_addresses.warmup_exempt INTEGER NOT NULL DEFAULT 0`）**只新增檔案、未套用到任何環境**；套用命令見 `docs/11` §2-10 |
+| 部署 | ⬜ 未部署（前端新版需在 `web/` 目錄 build 後 deploy，指令見上方階段 1；後端部署前**先套用 migration 0007**）|
+| 文件 | ✅ `docs/05` §2.9（端點／錯誤碼／稽核事件／N9 收緊）、`docs/11` §2-10（上線檢查）與 §3 端點矩陣 |
+
 ### 階段 2 需要的值（已查得）
 
 | 名稱 | 值 | 用途 |
