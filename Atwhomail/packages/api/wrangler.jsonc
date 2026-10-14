@@ -26,10 +26,13 @@
     }
   ],
   "vars": {
-    // CORS 白名單（2026-10-06）：逗號分隔的來源；"*" = 允許任何來源。
-    // 目前為 "*" 以便外部 App 開發串接；取得正式網域後請收斂成明確白名單，例如：
-    //   "ALLOWED_ORIGINS": "https://app.example.com,capacitor://localhost"
-    "ALLOWED_ORIGINS": "*"
+    // CORS 白名單（2026-10-08 收斂；原為 "*"）：逗號分隔來源，程式端做精確比對（src/index.ts 的 allowedOrigin()）。
+    //   https://mail.atwho.org     本機 dev server 經 Cloudflare Tunnel 的對外網址（owner 使用）
+    //   https://app.atwho.org      訪客入口（Phase 1 開放後使用）
+    //   http://localhost:5173      不經 tunnel、直接開本機 Vite 時
+    //   http://127.0.0.1:5173      同上（以 127.0.0.1 開啟時）
+    // ⚠️ 未列出的來源一律拒絕：不回 Access-Control-Allow-Origin，且 Cross-Origin-Resource-Policy 退回 same-origin。
+    "ALLOWED_ORIGINS": "https://mail.atwho.org,https://app.atwho.org,http://localhost:5173,http://127.0.0.1:5173"
   }
   // Phase 11 加入：vars / secrets（JWT_SECRET 等，用 .dev.vars 與 wrangler secret put）
 }
