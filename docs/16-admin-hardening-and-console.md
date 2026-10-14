@@ -104,6 +104,23 @@
   - **`PATCH /api/email-addresses/:id/status`（新；owner 專用）** ← 解掉「owner 無法停用訪客地址」的 404 缺口（`docs/14` 附錄 B.5 待辦 1）
 - UI：訪客表格 ＋ 一鍵停權／復權 ＋（選）「寄信安全閥 `can_send=0`」開關
 
+**D5 補充規格（2026-10-14 增補）**
+
+| 端點 | 內容 |
+|---|---|
+| `GET /api/users?role=visitor`（新） | 回傳每位訪客：`id`、`username`、`status`、`created_at`、地址（`id`／`email`／`status`／`can_send`／`daily_send_quota`／`sent_today`）、**信件數量**、**最近活動時間** |
+| `PATCH /api/users/:id/status`（既有） | 停權／復權（`active`／`suspended`／`disabled`）|
+| `PATCH /api/email-addresses/:id/status`（新，owner 專用） | 停用／啟用**訪客**地址（解 404 缺口）|
+| `PATCH /api/users/:id/quota`（新） | 調整 `daily_send_quota`（值域 1–200，超出 → 422）＋ `can_send` 安全閥；寫稽核 `quota_changed` |
+| `PATCH /api/users/:id/warmup`（新，可選） | 設定 `warmup_exempt`（跳過註冊後 24 小時的 5 封暖機上限）；需 migration `0007` 新增欄位 `email_addresses.warmup_exempt INTEGER NOT NULL DEFAULT 0` |
+
+**UI（僅 `mail.`／localhost 顯示）**：訪客表格（帳號／地址／狀態／配額／今日已寄／信件數／最近活動）＋ 一鍵**停權／復權**＋**地址停用／啟用**＋**配額調整**＋（可選）**暖機豁免**勾選（附警示文字）
+
+**⚠️ N9（權限邊界，必須遵守）**：owner **不得**讀取訪客的信件內容（`/api/mail/*` 一律依 session 的 `address_id` / `owner_user_id` 授權）。
+訪客管理頁只能顯示**數量與時間**（信件數、最近活動），**不得**顯示主旨／寄件者／內文。
+
+**⚠️ 現有 UI 文案修正**：側欄「全部信箱」語意為「**你名下**全部地址」（`owner_user_id`），不是全站所有使用者 → 文案改為「我的全部信箱」或加註說明，避免誤解 ✅
+
 ### D6 —（選配，建議）owner 登入 TOTP
 
 - `ALTER TABLE users ADD COLUMN totp_secret TEXT`（migration `0007`）
@@ -144,6 +161,8 @@
 | N6 | 不可部署、不可執行遠端 migration |
 | N7 | 不可把任何 secret 寫入 repo（JWT_SECRET／ADMIN_TOKEN／AUD 以外的機密） |
 | N8 | 不可動 `docs/13`、`docs/14`、`docs/15`、`scripts/`（屬 owner／助手檔案） |
+| N9 | **owner 不得讀取訪客信件內容**（只能看數量／時間）；不得為了管理方便而放寬 `/api/mail/*` 的授權 |
+| N10 | 不可對 production D1 執行任何寫入（含 UPDATE／DELETE／INSERT）；migration 只**新增檔案**，由 owner／助手套用 |
 
 ---
 
@@ -176,6 +195,11 @@
 | T9 | `PATCH /api/auth/owner-password/self` 舊密碼錯誤 → 401 `INVALID_OLD_PASSWORD` |
 | T10 | 新密碼不符政策 → 422 `WEAK_PASSWORD`；成功 → 200 且寫入稽核 `owner_password_changed` |
 | T11 | 成功改密碼後，**舊的 owner JWT 立即失效**（`password_changed_at` 檢查）→ 401 `TOKEN_STALE` |
+| T12 | `GET /api/users?role=visitor` 僅 owner 可用（訪客 JWT → 403）；回傳含信件數與最近活動時間 |
+| T13 | owner 以訪客的地址 id 呼叫 `/api/mail/*` → **403／404**（不得讀取訪客信件內容，N9）|
+| T14 | `PATCH /api/users/:id/quota` 值域 1–200；超出 → 422；成功 → 稽核 `quota_changed` |
+| T15 | `warmup_exempt=1` 的地址不受註冊後 24 小時 5 封上限限制（仍受 `daily_send_quota` 限制）|
+| T16 | `GET /api/invites?reveal=1` 僅 owner 可用；使用時寫入稽核（記錄 owner id 與時間）|
 
 ---
 
@@ -193,6 +217,7 @@
 - [ ] D1–D5 與 **D7** 全部交付（D6 為選配）
 - [ ] canonical 三指令全綠；T1–T11 通過
 - [ ] `docs/05`（API 規格）與 `docs/11`（上線檢查清單）同步更新
+- [ ] 若新增 migration（`0007`）：只新增檔案，**不套用** ✅
 - [ ] 未部署、未跑遠端 migration、未動 N6–N8 列出的檔案
 - [ ] 依 §7 回報
 
