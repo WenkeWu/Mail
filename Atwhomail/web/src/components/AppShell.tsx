@@ -25,16 +25,18 @@ import type {
 import { useCounts } from "../hooks/useCounts";
 import { useMailList } from "../hooks/useMailList";
 import { displaySender, formatFullDate, parseAddress } from "../lib/format";
-import type { LoginMode } from "../lib/hostMode";
+import { showsAdminConsole, type LoginMode } from "../lib/hostMode";
 import { joinRecipients, quoteText, withPrefix } from "../lib/recipients";
 import { AccountSettings } from "./AccountSettings";
 import { AddressManager } from "./AddressManager";
 import { ComposeWindow, type Draft, type DraftMode } from "./ComposeWindow";
-import { FolderSidebar } from "./FolderSidebar";
+import { FolderSidebar, type AppPage } from "./FolderSidebar";
 import { Header } from "./Header";
+import { InviteManager } from "./InviteManager";
 import { MessageList } from "./MessageList";
 import { ReadingPane } from "./ReadingPane";
 import { Toast } from "./Toast";
+import { VisitorManager } from "./VisitorManager";
 import { IconRefresh } from "./icons";
 
 const LAST_FROM_KEY = "atwhomail.lastFrom";
@@ -63,7 +65,7 @@ export function AppShell({
   hostMode: LoginMode;
   onLogout: () => void;
 }) {
-  const [page, setPage] = useState<"mail" | "addresses" | "account">("mail");
+  const [page, setPage] = useState<AppPage>("mail");
   const [folder, setFolder] = useState<Folder>("inbox");
   const [addressFilter, setAddressFilter] = useState<number | null>(null);
   const [searchInput, setSearchInput] = useState("");
@@ -84,10 +86,10 @@ export function AppShell({
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
 
   /**
-   * D7：帳號設定（owner 自助改密碼）只在 `mail.`（admin）與本機開發（all）顯示；
+   * 管理主控台頁面（D7 帳號設定、D4 邀請碼管理、D5 訪客管理）只在 `mail.`（admin）與本機開發（all）顯示；
    * `app.`（public，訪客入口）不顯示。⚠️ 純 UI 收斂——後端仍以 session 的 owner scope 判定（N3）。
    */
-  const canUseAccountSettings = session.kind === "owner" && hostMode !== "public";
+  const canUseAdminConsole = session.kind === "owner" && showsAdminConsole(hostMode);
 
   const searchActive = query !== "";
   const listFolder: string = searchActive ? "all" : folder;
@@ -459,7 +461,9 @@ export function AppShell({
         onOpenAddresses={() => setPage("addresses")}
         onChangePassword={() => setPage("addresses")}
         onOpenAccountSettings={() => setPage("account")}
-        showAccountSettings={canUseAccountSettings}
+        onOpenInvites={() => setPage("invites")}
+        onOpenVisitors={() => setPage("visitors")}
+        showAdminConsole={canUseAdminConsole}
         onLogout={onLogout}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         composeBlockedReason={composeBlockedReason}
@@ -471,13 +475,17 @@ export function AppShell({
           onBack={() => setPage("mail")}
           onToast={showToast}
         />
-      ) : page === "account" && canUseAccountSettings ? (
+      ) : page === "account" && canUseAdminConsole ? (
         <AccountSettings
           session={session}
           onBack={() => setPage("mail")}
           onLogout={onLogout}
           onToast={showToast}
         />
+      ) : page === "invites" && canUseAdminConsole ? (
+        <InviteManager onBack={() => setPage("mail")} onToast={showToast} />
+      ) : page === "visitors" && canUseAdminConsole ? (
+        <VisitorManager onBack={() => setPage("mail")} onToast={showToast} />
       ) : (
         <>
           <FolderSidebar
@@ -491,7 +499,9 @@ export function AppShell({
             onSelectAddress={selectAddress}
             onOpenAddresses={() => setPage("addresses")}
             onOpenAccountSettings={() => setPage("account")}
-            showAccountSettings={canUseAccountSettings}
+            onOpenInvites={() => setPage("invites")}
+            onOpenVisitors={() => setPage("visitors")}
+            showAdminConsole={canUseAdminConsole}
             onCompose={openCompose}
             open={sidebarOpen}
             quotaLine={quotaLine}

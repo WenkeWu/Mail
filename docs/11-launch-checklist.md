@@ -190,6 +190,29 @@
       - [ ] owner 自助改密碼：網頁右上帳號選單 →「帳號設定」（舊密碼錯誤 401、成功後所有裝置的 session 立即失效）
       - [ ] 監控：`registration_audit` 應出現 `owner_password_changed`；`ACCESS_MAIL_AUD` 未設定時 Worker log 會有過渡 warning
 
+- [ ] **10. 階段 3／4：管理主控台（D5 訪客管理、D4 邀請碼管理）**（2026-10-14 程式完成；**未部署、migration 0007 未套用**）
+      - [ ] ⚠️ **部署前先套用 migration 0007**（由 owner 執行；實作 agent 不得跑 `--remote`）：
+            ```powershell
+            cd D:\Mail\Atwhomail
+            pnpm --filter @atwhomail/api exec wrangler d1 migrations apply mail-d1 --remote
+            ```
+            內容：`email_addresses` 新增 `warmup_exempt INTEGER NOT NULL DEFAULT 0`（純新增，**不改既有資料行為**）。
+            未套用時程式仍可運作：寄信走原本的暖機限制，`PATCH /api/users/:id/warmup` 回
+            `409 MIGRATION_REQUIRED`（不假裝成功）。
+      - [ ] 部署後驗收（對應 `docs/16` §6 T12–T16）：
+            ① `GET /api/users?role=visitor`（owner）回訪客清單，含 `mail_count`／`last_activity_at`；
+               訪客 JWT → 403 ✅
+            ② owner 以訪客地址 id 呼叫 `/api/mail/*` → **403／404**（N9：不得讀取訪客信件內容）✅
+            ③ `PATCH /api/users/:id/quota`：值域 1–200（超出 422）、成功寫稽核 `quota_changed` ✅
+            ④ `PATCH /api/email-addresses/:id/status`：owner 可停用訪客地址（**不再 404**）；
+               停用後該訪客無法登入（401）、無法寄信（403 FROM_NOT_ALLOWED）✅
+            ⑤ `GET /api/invites?reveal=1`（owner）回全碼並寫稽核 `invite_revealed`；未帶 reveal 仍只回遮罩碼 ✅
+      - [ ] 網頁驗收：`mail.atwho.org` 側欄出現「邀請碼管理」「訪客管理」（`app.atwho.org` **不**出現）；
+            邀請碼可建立／複製／撤銷（撤銷需二次確認）；訪客可停權／復權、地址停用／啟用、調整配額；
+            側欄文案為「我的全部信箱」
+      - [ ] 暖機豁免（可選）：勾選後該帳號不受註冊後 24 小時 5 封限制，**仍受每日配額**；
+            ⚠️ 新網域聲譽期不建議大量開啟
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |

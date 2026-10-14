@@ -17,10 +17,14 @@
 | Auth | PATCH | `/api/auth/owner-password/self` | **owner 本人變更自己的密碼**（session ＋ 舊密碼；docs/16 D7） |
 | Auth | PATCH | `/api/email-addresses/:id/password` | 重設地址密碼（owner 或本人） |
 | Invite | POST | `/api/invites` | 產生邀請碼（owner / x-admin-token） |
-| Invite | GET | `/api/invites` | 列出邀請碼（只回遮罩碼） |
+| Invite | GET | `/api/invites` | 列出邀請碼（只回遮罩碼；`?reveal=1` 回全碼並寫稽核，docs/16 D4） |
 | Invite | DELETE | `/api/invites/:id` | 撤銷邀請碼（soft：`status='revoked'`） |
 | Me | GET | `/api/me` | 目前 session 的 role／username／各地址寄信配額 |
+| 使用者 | GET | `/api/users?role=visitor` | **訪客清單（owner；只回數量與時間）**（docs/16 D5） |
 | 使用者 | PATCH | `/api/users/:id/status` | 停權／復權（owner；C7 立即生效） |
+| 使用者 | PATCH | `/api/users/:id/quota` | **調整每日配額（1–200）＋寄信安全閥**（docs/16 D5） |
+| 使用者 | PATCH | `/api/users/:id/warmup` | **暖機豁免**（需 migration 0007；docs/16 D5） |
+| 地址 | PATCH | `/api/email-addresses/:id/status` | **停用／啟用訪客地址**（owner 專用；解 404 缺口，docs/16 D5） |
 | 地址 | POST | `/api/email-addresses` | 建立虛擬地址 |
 | 地址 | GET | `/api/email-addresses` | 列出我的地址（含 disabled） |
 | 地址 | GET | `/api/email-addresses/:id` | 單一地址 |
@@ -217,7 +221,7 @@ POST /api/invites                       Authorization: owner / x-admin-token
 
 GET  /api/invites                       → 200 { "invites": [ { "id", "masked_code": "Xk3…",
                                              "max_uses", "used_count", "expires_at", "status", "note", "created_at" } ] }
-  // ⚠️ 列表只回遮罩碼（前 4 碼）；不提供全碼查詢
+  // ⚠️ 列表只回遮罩碼（前 4 碼）；全碼取得方式見下方 ?reveal=1
 
 DELETE /api/invites/:id                 → 200 { "ok": true, "id": 7 }   // soft：status='revoked'，不刪資料列
 
@@ -246,7 +250,7 @@ PATCH /api/users/:id/status             Authorization: owner
 | 1 | 帳號 `users.status='active'` | `403 ACCOUNT_SUSPENDED` |
 | 2 | 地址 `status='active'` 且 `can_send=1` | `403 SEND_NOT_ALLOWED` |
 | 3 | 配額重置（`quota_reset_at` 過期 → `sent_today=0`，次日 00:00 UTC） | — |
-| 4 | 暖機期（`created_at` 起 24 小時內上限 `min(quota, 5)`，C2） | — |
+| 4 | 暖機期（`created_at` 起 24 小時內上限 `min(quota, 5)`，C2）；`warmup_exempt=1` 者**跳過**此上限（仍受每日配額） | — |
 | 5 | **原子扣配額**（`sent_today < 有效上限`，看 `meta.changes`）→ 不通過 | `429 QUOTA_EXCEEDED` |
 | 6 | 每小時限流（近 60 分鐘寄件備份 ≥ 10，C3）→ 不通過（**並回補步驟 5 的扣額**） | `429 RATE_LIMITED` |
 | 7 | 實際寄送（既有邏輯）；寄送失敗 → 回補配額 | 既有錯誤（502 `SEND_FAILED`） |
@@ -305,6 +309,70 @@ PATCH /api/auth/owner-password/self     Authorization: owner session（Bearer JW
 | `INVALID_OLD_PASSWORD` | 401 | owner 自助改密碼時舊密碼錯誤 |
 
 **訪客路徑完全不受影響（N2）**：`/api/auth/register`、`/api/auth/mailbox-login`、`/api/me`、`/api/mail/*` 的認證要求與行為不變。
+
+### 2.9 階段 3／4：管理主控台後端（D4 邀請碼全碼、D5 訪客清單／停權／配額，2026-10-14）
+
+> 前端頁面：`web/src/components/InviteManager.tsx`、`VisitorManager.tsx`（**僅 `mail.` 與 localhost 顯示**；
+> `app.` 不顯示 —— 僅 UI 收斂，權限一律由後端判定，docs/16 N3）。
+
+```http
+GET /api/invites?reveal=1                 Authorization: owner（訪客 JWT → 403）
+→ 200 { "invites": [ { "id", "masked_code", "code": "Xk3…", "max_uses", "used_count",
+                       "expires_at", "status", "note", "created_at" } ] }
+  // 未帶 reveal → 回應與 §2.7 完全相同（**只新增欄位，不改變既有結構**）
+  // 帶 reveal → 額外回傳 code 全碼（供管理頁「複製邀請碼」）
+  // 稽核：invite_revealed（owner id ＋ 時間；detail 只記筆數，**不含全碼**，N7）
+
+GET /api/users?role=visitor               Authorization: owner（訪客 JWT → 403；無 session → 401）
+→ 200 { "users": [ {
+        "id": 2, "username": "friend01", "status": "active"|"suspended", "created_at": 1789…,
+        "address": { "id": 12, "email": "friend01@atwho.org", "status": "active"|"disabled"|"deleted",
+                     "can_send": 1, "daily_send_quota": 20, "sent_today": 3, "warmup_exempt": 0 },
+        "mail_count": 17,                 // 該地址信件數（僅數量）
+        "last_activity_at": 1789…         // 最近活動時間（最近一封信；無信 → 帳號 updated_at）
+      } ] }
+  // ⚠️ N9：**只回數量與時間**，不含主旨／寄件者／內文；owner 不得藉此讀取訪客信件
+  // status 為 API 詞彙（DB 端停權存 'disabled'）；一位訪客一列（多地址取第一筆）
+
+PATCH /api/users/:id/quota                Authorization: owner
+{ "daily_send_quota": 30, "can_send": true }     // 兩者可單獨提供，至少一個
+→ 200 { "ok": true, "user_id": 2, "addresses": 1, "daily_send_quota": 30, "can_send": 1 }
+  // daily_send_quota 值域 **1–200**，超出／非整數 → 422 INVALID_QUOTA
+  // can_send＝安全閥（C8）：false → 該使用者立即無法寄信（403 SEND_NOT_ALLOWED）
+  // 套用到該使用者名下所有未刪除地址；稽核：quota_changed
+
+PATCH /api/users/:id/warmup               Authorization: owner
+{ "warmup_exempt": true }                 → 200 { "ok": true, "user_id": 2, "warmup_exempt": 1, "addresses": 1 }
+  // 1 = 不受「註冊後 24 小時 5 封」暖機上限（C2），但**仍受 daily_send_quota** 與每小時限流
+  // ⚠️ 需 migration 0007；未套用 → 409 MIGRATION_REQUIRED（不假裝成功）
+  // 稽核：warmup_changed
+
+PATCH /api/email-addresses/:id/status     Authorization: owner（mailbox → 403）
+{ "status": "disabled" | "active" }       → 200 { "ok": true, "id": 12, "email": "friend01@atwho.org", "status": "disabled" }
+  // **新增端點**：既有的 PATCH /api/email-addresses/:id 只認「自己名下」地址 → 對訪客地址一律 404
+  //   （docs/14 附錄 B.5 待辦 1 的缺口）。本端點不受 user_id 限制（端點本身 requireOwner）
+  // 立即生效：disabled → 該地址無法 mailbox-login、也不在寄信允許範圍（403 FROM_NOT_ALLOWED）
+  // 停用 ≠ 刪除（刪除走 DELETE /api/email-addresses/:id）；稽核：address_status_changed
+```
+
+**N9 權限邊界（同步收緊）**：`GET /api/mail/inbox?address_id=<id>` 現在會檢查該地址屬於 owner 本人
+（`user_id = scope.userId`），**他人地址（例如訪客的）→ 404**（先前只會回空清單，掩蓋越權嘗試）。
+`/api/mail/*` 其餘端點與附件一律維持 session scope（`address_id`／`owner_user_id`）授權，**未放寬**。
+
+**新增錯誤碼**
+
+| 碼 | HTTP | 情境 |
+|---|---|---|
+| `INVALID_ROLE` | 400 | `GET /api/users` 的 `role` 不是 `visitor` |
+| `INVALID_QUOTA` | 422 | `daily_send_quota` 不在 1–200（或非整數） |
+| `MIGRATION_REQUIRED` | 409 | 暖機豁免需要 migration 0007（`warmup_exempt` 欄位不存在） |
+| `NO_ADDRESS` | 404 | 目標使用者沒有任何未刪除的地址（配額／暖機無處可套用） |
+
+**稽核新增事件**（皆寫入 `registration_audit`，`waitUntil` 非阻塞）：`quota_changed`、`warmup_changed`、
+`address_status_changed`、`invite_revealed`（`detail` 一律不含邀請碼全碼／密碼／token，N7）。
+
+**前端文案修正**：側欄「全部信箱」語意為「**你名下**全部地址」（`owner_user_id`），已改為「我的全部信箱」
+（docs/16 §3 D5）。
 
 ## 3. 通用原則
 

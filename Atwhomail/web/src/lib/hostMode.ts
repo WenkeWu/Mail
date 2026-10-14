@@ -35,3 +35,17 @@ export function loginModeFor(hostname: string): LoginMode {
 export function usesSameOriginApi(hostname: string): boolean {
   return (hostname ?? "").toLowerCase() === MAIL_HOST;
 }
+
+/**
+ * 管理主控台（帳號設定、邀請碼管理、訪客管理）是否**顯示**（docs/16 D4／D5／D7）。
+ *
+ * - `admin`（`mail.atwho.org`，Cloudflare Access 之後）→ 顯示
+ * - `all`（localhost／`*.pages.dev` 預覽）→ 顯示（開發方便）
+ * - `public`（`app.atwho.org`，訪客入口）→ **不顯示**
+ *
+ * ⚠️ 與 `loginModeFor` 相同：**僅 UI 收斂**。真正的權限一律由後端依 session 的 owner scope 判定（N3）；
+ *    訪客就算手動打開頁面，所有 `/api/invites`、`/api/users` 呼叫仍會拿到 403。
+ */
+export function showsAdminConsole(mode: LoginMode): boolean {
+  return mode !== "public";
+}

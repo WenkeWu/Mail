@@ -123,6 +123,51 @@ export interface MeResponse {
   addresses: MeAddress[];
 }
 
+/** 邀請碼（GET /api/invites；`code` 全碼僅在 `?reveal=1` 時出現，docs/16 D4） */
+export interface Invite {
+  id: number;
+  /** 前 4 碼 + "…"（預設列表即為此遮罩） */
+  masked_code: string;
+  /** 全碼；僅 `GET /api/invites?reveal=1`（owner）會回傳，且寫入稽核 */
+  code?: string;
+  max_uses: number;
+  used_count: number;
+  expires_at: number | null;
+  status: "active" | "revoked";
+  note: string | null;
+  created_at: number;
+}
+
+/**
+ * 訪客清單（GET /api/users?role=visitor，owner 專用，docs/16 D5）
+ * ⚠️ N9：只含**數量與時間**（mail_count／last_activity_at），不含主旨／寄件者／內文。
+ */
+export interface VisitorAddress {
+  id: number;
+  email: string;
+  status: "active" | "disabled" | "deleted";
+  /** 1 = 可寄信；0 = 已關閉（安全閥） */
+  can_send: number;
+  daily_send_quota: number;
+  sent_today: number;
+  /** 1 = 不受註冊後 24 小時的暖機上限（migration 0007） */
+  warmup_exempt: number;
+}
+
+export interface VisitorUser {
+  id: number;
+  username: string;
+  /** API 詞彙（DB 端停權存為 'disabled'） */
+  status: "active" | "suspended";
+  created_at: number;
+  /** 訪客的主要地址；尚未建立地址時為 null */
+  address: VisitorAddress | null;
+  /** 該地址信件數（僅數量，不含內容） */
+  mail_count: number;
+  /** 最近活動時間（最近一封信的時間；沒有信則為帳號更新時間） */
+  last_activity_at: number | null;
+}
+
 /** 閱讀窗格的內文狀態（UI 專用） */
 export type BodyState =
   | { kind: "none" }

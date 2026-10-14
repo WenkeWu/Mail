@@ -3,11 +3,13 @@ import { request, requestBlob, requestText } from "./client";
 import type {
   CountsResponse,
   EmailAddressInfo,
+  Invite,
   MailDetail,
   MailListResponse,
   MeResponse,
   SendPayload,
   SendResult,
+  VisitorUser,
 } from "./types";
 
 // ── Auth ──
@@ -107,3 +109,48 @@ export const setAddressPassword = (id: number, newPassword: string, oldPassword?
   });
 
 export const deleteAddress = (id: number) => request<void>(`/api/email-addresses/${id}`, { method: "DELETE" });
+
+// ── 管理主控台（owner；僅 mail. 與 localhost 顯示的頁面，docs/16 D4／D5）──
+
+/**
+ * 邀請碼列表。`reveal=true` 時**額外**回傳全碼（後端寫稽核 `invite_revealed`）→ 僅在「複製」當下呼叫。
+ */
+export const listInvites = (reveal = false) =>
+  request<{ invites: Invite[] }>(`/api/invites${reveal ? "?reveal=1" : ""}`);
+
+export const createInvite = (payload: { max_uses?: number; expires_in_hours?: number | null; note?: string }) =>
+  request<{ id: number; code: string; max_uses: number; expires_at: number | null }>("/api/invites", {
+    method: "POST",
+    json: payload,
+  });
+
+/** 撤銷邀請碼（soft：status='revoked'；冪等） */
+export const revokeInvite = (id: number) => request<{ ok: boolean; id: number }>(`/api/invites/${id}`, { method: "DELETE" });
+
+/** 訪客清單（owner；只含數量與時間 —— N9） */
+export const listVisitors = () => request<{ users: VisitorUser[] }>("/api/users?role=visitor");
+
+/** 停權／復權（C7 立即生效；DB 端 suspended → 'disabled'） */
+export const setUserStatus = (id: number, status: "active" | "suspended") =>
+  request<{ ok: boolean; id: number; status: string }>(`/api/users/${id}/status`, { method: "PATCH", json: { status } });
+
+/** 調整每日寄信配額（1–200）與寄信安全閥 can_send（docs/16 D5） */
+export const setUserQuota = (id: number, payload: { daily_send_quota?: number; can_send?: boolean }) =>
+  request<{ ok: boolean; user_id: number; daily_send_quota: number | null; can_send: number | null }>(
+    `/api/users/${id}/quota`,
+    { method: "PATCH", json: payload }
+  );
+
+/** 暖機豁免（需 migration 0007；未套用時後端回 409 MIGRATION_REQUIRED） */
+export const setUserWarmup = (id: number, warmupExempt: boolean) =>
+  request<{ ok: boolean; user_id: number; warmup_exempt: number }>(`/api/users/${id}/warmup`, {
+    method: "PATCH",
+    json: { warmup_exempt: warmupExempt },
+  });
+
+/** 停用／啟用**訪客**地址（owner 專用；既有的 PATCH /api/email-addresses/:id 只認自己名下 → 對訪客 404） */
+export const setVisitorAddressStatus = (id: number, status: "active" | "disabled") =>
+  request<{ ok: boolean; id: number; email: string; status: string }>(`/api/email-addresses/${id}/status`, {
+    method: "PATCH",
+    json: { status },
+  });

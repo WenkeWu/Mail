@@ -498,16 +498,44 @@ app.post("/api/invites", requireOwner, async (c) => {
   return c.json({ id: res.meta.last_row_id, code, max_uses: maxUses, expires_at: expiresAt }, 201);
 });
 
-/** GET /api/invites — 列表（只回遮罩碼；全碼僅在建立當下回傳一次） */
+/** 邀請碼列表上限（避免一次拉爆；owner 端點，資料量極小） */
+const INVITE_LIST_LIMIT = 200;
+
+/**
+ * GET /api/invites — 列表。
+ *
+ * - 預設：**只回遮罩碼**（`masked_code`，前 4 碼）——既有行為與回應結構完全不變。
+ * - `?reveal=1`（D4，docs/16 §3）：**額外**回傳 `code` 全碼，供管理頁「複製邀請碼」使用。
+ *   為什麼要 flag 而不是直接回全碼：全碼即註冊憑證，只有需要複製的那一刻才揭露 → 並寫入稽核留痕
+ *   （`invite_revealed`，含 owner id 與時間；`detail` 只放筆數，**不含全碼**，N7）。
+ *   ⚠️ 非 owner 一律 403（`requireOwner`），訪客 JWT 拿不到（T16）。
+ */
 app.get("/api/invites", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const reveal = c.req.query("reveal") === "1";
   const { results } = await c.env.DB.prepare(
     `SELECT id, code, max_uses, used_count, expires_at, status, note, created_at
-     FROM invites ORDER BY id DESC LIMIT 200`
-  ).all<{ id: number; code: string; max_uses: number; used_count: number; expires_at: number | null; status: string; note: string | null; created_at: number }>();
+     FROM invites ORDER BY id DESC LIMIT ?1`
+  )
+    .bind(INVITE_LIST_LIMIT)
+    .all<{ id: number; code: string; max_uses: number; used_count: number; expires_at: number | null; status: string; note: string | null; created_at: number }>();
+
+  if (reveal) {
+    auditAsync(c, {
+      event: "invite_revealed",
+      userId: scope.kind === "owner" ? scope.userId : null,
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+      detail: { count: results.length, via: scope.kind === "owner" ? scope.via : "unknown" },
+    });
+  }
+
   return c.json({
     invites: results.map((r) => ({
       id: r.id,
       masked_code: maskCode(r.code),
+      // 僅在 reveal=1 時新增此欄位；其餘情況回應與既有完全相同
+      ...(reveal ? { code: r.code } : {}),
       max_uses: r.max_uses,
       used_count: r.used_count,
       expires_at: r.expires_at,
@@ -750,6 +778,276 @@ app.patch("/api/users/:id/status", requireOwner, async (c) => {
   return c.json({ ok: true, id, status: body.status });
 });
 
+// ══════════════════════ Phase 16（D5）：訪客清單／停權／配額（owner）══════════════════════
+
+/** 每日寄信配額值域（D5；超出 → 422） */
+const QUOTA_MIN = 1;
+const QUOTA_MAX = 200;
+
+/**
+ * migration `0007_warmup_exempt` 是否已套用（`email_addresses.warmup_exempt` 是否存在）。
+ *
+ * ⚠️ 部署順序可能是「先部署程式、後套 migration」→ 沒有這個欄位時端點仍須可用，
+ *    只是暖機豁免一律視為關閉（與本次變更前的行為完全相同）。
+ */
+async function hasWarmupExemptColumn(db: D1Database): Promise<boolean> {
+  try {
+    await db.prepare("SELECT warmup_exempt FROM email_addresses LIMIT 1").first();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 單一地址是否暖機豁免（欄位不存在／查詢失敗 → false，回退為一般暖機限制） */
+async function isWarmupExempt(db: D1Database, addressId: number): Promise<boolean> {
+  try {
+    const row = await db
+      .prepare("SELECT warmup_exempt FROM email_addresses WHERE id = ?1")
+      .bind(addressId)
+      .first<{ warmup_exempt: number }>();
+    return row?.warmup_exempt === 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * GET /api/users?role=visitor — 訪客清單（owner 專用；docs/16 §3 D5 補充規格）
+ *
+ * 每位訪客回傳：`id`／`username`／`status`／`created_at`／`address`（主要地址）／
+ * `mail_count`（該地址信件數）／`last_activity_at`（最近活動時間）。
+ *
+ * ⚠️ **N9（權限邊界）**：這裡只回**數量與時間**，**絕不**回主旨／寄件者／內文；
+ *    owner 不得透過管理介面讀取訪客信件內容（信件一律走 `/api/mail/*` 的 session 授權）。
+ * ⚠️ `status` 以 API 詞彙回傳（`active`／`suspended`），與 `PATCH /api/users/:id/status` 對稱；
+ *    DB 端停權仍存為 `disabled`（0001 的 CHECK 只允許 active/disabled）。
+ */
+app.get("/api/users", requireOwner, async (c) => {
+  const role = c.req.query("role");
+  if (role !== "visitor") return err(c, "INVALID_ROLE", 'role 只能是 "visitor"', 400);
+
+  const warmupCol = (await hasWarmupExemptColumn(c.env.DB)) ? "a.warmup_exempt" : "0";
+  const { results } = await c.env.DB.prepare(
+    `SELECT u.id AS id, u.username AS username, u.status AS status,
+            u.created_at AS created_at, u.updated_at AS updated_at,
+            a.id AS address_id, a.email AS email, a.status AS address_status,
+            a.can_send AS can_send, a.daily_send_quota AS daily_send_quota,
+            a.sent_today AS sent_today, ${warmupCol} AS warmup_exempt,
+            (SELECT COUNT(*) FROM messages m
+              WHERE m.address_id = a.id AND m.deleted_at IS NULL) AS mail_count,
+            (SELECT MAX(m.received_at) FROM messages m
+              WHERE m.address_id = a.id AND m.deleted_at IS NULL) AS last_mail_at
+     FROM users u
+     LEFT JOIN email_addresses a ON a.user_id = u.id AND a.deleted_at IS NULL
+     WHERE u.role = 'visitor'
+     ORDER BY u.id, a.id`
+  ).all<{
+    id: number;
+    username: string;
+    status: string;
+    created_at: number;
+    updated_at: number;
+    address_id: number | null;
+    email: string | null;
+    address_status: string | null;
+    can_send: number | null;
+    daily_send_quota: number | null;
+    sent_today: number | null;
+    warmup_exempt: number;
+    mail_count: number;
+    last_mail_at: number | null;
+  }>();
+
+  // 一位訪客一列（LEFT JOIN 可能因多地址產生多列 → 取第一個地址，與 UI 的「地址」欄一致）
+  const seen = new Set<number>();
+  const users: unknown[] = [];
+  for (const r of results) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    users.push({
+      id: r.id,
+      username: r.username,
+      status: r.status === "active" ? "active" : "suspended",
+      created_at: r.created_at,
+      address:
+        r.address_id === null
+          ? null
+          : {
+              id: r.address_id,
+              email: r.email,
+              status: r.address_status,
+              can_send: r.can_send,
+              daily_send_quota: r.daily_send_quota,
+              sent_today: r.sent_today,
+              warmup_exempt: r.warmup_exempt,
+            },
+      mail_count: Number(r.mail_count ?? 0),
+      last_activity_at: r.last_mail_at ?? r.updated_at ?? null,
+    });
+  }
+  return c.json({ users });
+});
+
+/**
+ * PATCH /api/users/:id/quota — 調整每日寄信配額與寄信安全閥（owner；D5）
+ *
+ * - `daily_send_quota`：整數 **1–200**，超出 → `422 INVALID_QUOTA`
+ * - `can_send`：boolean（或 0／1）＝安全閥 C8，`false` 立即停止該使用者的寄信
+ * - 套用到該使用者名下**所有未刪除**的地址（訪客通常只有一個）
+ * - 稽核：`quota_changed`（含 owner id、目標 user id 與新值）
+ */
+app.patch("/api/users/:id/quota", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
+
+  const body = await c.req
+    .json<{ daily_send_quota?: unknown; can_send?: unknown }>()
+    .catch(() => null);
+  if (!body || (body.daily_send_quota === undefined && body.can_send === undefined)) {
+    return err(c, "NO_UPDATE_FIELD", "需提供 daily_send_quota 或 can_send", 400);
+  }
+
+  let quota: number | null = null;
+  if (body.daily_send_quota !== undefined) {
+    const n = Number(body.daily_send_quota);
+    if (!Number.isInteger(n) || n < QUOTA_MIN || n > QUOTA_MAX) {
+      return err(c, "INVALID_QUOTA", `daily_send_quota 需為 ${QUOTA_MIN}–${QUOTA_MAX} 的整數`, 422);
+    }
+    quota = n;
+  }
+  let canSend: number | null = null;
+  if (body.can_send !== undefined) {
+    if (typeof body.can_send !== "boolean" && body.can_send !== 0 && body.can_send !== 1) {
+      return err(c, "INVALID_BODY", "can_send 需為 boolean（或 0／1）", 400);
+    }
+    canSend = body.can_send === true || body.can_send === 1 ? 1 : 0;
+  }
+
+  const user = await c.env.DB.prepare("SELECT id FROM users WHERE id = ?1").bind(id).first<{ id: number }>();
+  if (!user) return err(c, "NOT_FOUND", "user not found", 404);
+
+  const res = await c.env.DB.prepare(
+    `UPDATE email_addresses
+     SET daily_send_quota = COALESCE(?1, daily_send_quota),
+         can_send         = COALESCE(?2, can_send),
+         updated_at       = ?3
+     WHERE user_id = ?4 AND deleted_at IS NULL`
+  )
+    .bind(quota, canSend, now(), id)
+    .run();
+  if (res.meta.changes < 1) return err(c, "NO_ADDRESS", "此使用者沒有可設定的地址", 404);
+
+  auditAsync(c, {
+    event: "quota_changed",
+    userId: id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: {
+      by: scope.kind === "owner" ? scope.userId : null,
+      addresses: res.meta.changes,
+      daily_send_quota: quota,
+      can_send: canSend,
+    },
+  });
+  return c.json({
+    ok: true,
+    user_id: id,
+    addresses: res.meta.changes,
+    daily_send_quota: quota,
+    can_send: canSend,
+  });
+});
+
+/**
+ * PATCH /api/users/:id/warmup — 暖機豁免（owner；D5，可選）
+ *
+ * `warmup_exempt = 1` → 該使用者的地址**不受**「註冊後 24 小時 5 封」上限（C2），
+ * 但**仍受 `daily_send_quota`** 與每小時限流約束（不是無上限）。
+ * ⚠️ 需要 migration `0007`；未套用時回 `409 MIGRATION_REQUIRED`（不假裝成功）。
+ */
+app.patch("/api/users/:id/warmup", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
+
+  const body = await c.req.json<{ warmup_exempt?: unknown }>().catch(() => null);
+  const raw = body?.warmup_exempt;
+  if (typeof raw !== "boolean" && raw !== 0 && raw !== 1) {
+    return err(c, "INVALID_BODY", "warmup_exempt 需為 boolean（或 0／1）", 400);
+  }
+  const value = raw === true || raw === 1 ? 1 : 0;
+
+  if (!(await hasWarmupExemptColumn(c.env.DB))) {
+    return err(c, "MIGRATION_REQUIRED", "此功能需要先套用 migration 0007（warmup_exempt）", 409);
+  }
+
+  const user = await c.env.DB.prepare("SELECT id FROM users WHERE id = ?1").bind(id).first<{ id: number }>();
+  if (!user) return err(c, "NOT_FOUND", "user not found", 404);
+
+  const res = await c.env.DB.prepare(
+    `UPDATE email_addresses SET warmup_exempt = ?1, updated_at = ?2
+     WHERE user_id = ?3 AND deleted_at IS NULL`
+  )
+    .bind(value, now(), id)
+    .run();
+  if (res.meta.changes < 1) return err(c, "NO_ADDRESS", "此使用者沒有可設定的地址", 404);
+
+  auditAsync(c, {
+    event: "warmup_changed",
+    userId: id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { by: scope.kind === "owner" ? scope.userId : null, warmup_exempt: value, addresses: res.meta.changes },
+  });
+  return c.json({ ok: true, user_id: id, warmup_exempt: value, addresses: res.meta.changes });
+});
+
+/**
+ * PATCH /api/email-addresses/:id/status — 停用／啟用**訪客**地址（owner 專用；D5）
+ *
+ * 為什麼要另開端點：既有的 `PATCH /api/email-addresses/:id` 只認 `user_id = 自己`，
+ * owner 拿訪客的地址 id 去打**一律 404** → 無法停用訪客地址（`docs/14` 附錄 B.5 待辦 1 的缺口）。
+ * 本端點不做 `user_id` 限制（端點本身已 `requireOwner`），但仍排除軟刪除的地址
+ * （停用 ≠ 刪除；刪除請用 `DELETE /api/email-addresses/:id`）。
+ *
+ * 立即生效：地址 `status='disabled'` → 該地址無法用 `mailbox-login` 登入、也不在寄信允許範圍。
+ */
+app.patch("/api/email-addresses/:id/status", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
+
+  const body = await c.req.json<{ status?: string }>().catch(() => null);
+  if (body?.status !== "active" && body?.status !== "disabled") {
+    return err(c, "INVALID_STATUS", 'status 只能是 "active" 或 "disabled"（刪除用 DELETE）', 400);
+  }
+
+  const row = await c.env.DB.prepare(
+    `SELECT a.id, a.email, a.user_id, u.role AS user_role
+     FROM email_addresses a JOIN users u ON u.id = a.user_id
+     WHERE a.id = ?1 AND a.deleted_at IS NULL`
+  )
+    .bind(id)
+    .first<{ id: number; email: string; user_id: number; user_role: string }>();
+  if (!row) return err(c, "NOT_FOUND", "address not found", 404);
+
+  await c.env.DB.prepare("UPDATE email_addresses SET status = ?1, updated_at = ?2 WHERE id = ?3")
+    .bind(body.status, now(), id)
+    .run();
+
+  auditAsync(c, {
+    event: "address_status_changed",
+    userId: row.user_id,
+    addressId: row.id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { by: scope.kind === "owner" ? scope.userId : null, status: body.status, target_role: row.user_role },
+  });
+  return c.json({ ok: true, id: row.id, email: row.email, status: body.status });
+});
+
 // ══════════════════════ Phase 7：地址 CRUD（owner）══════════════════════
 app.post("/api/email-addresses", requireOwner, async (c) => {
   const scope = c.get("scope");
@@ -927,6 +1225,14 @@ app.get("/api/mail/inbox", requireSession, async (c) => {
     if (!Number.isInteger(addressId) || addressId <= 0) {
       return err(c, "INVALID_ADDRESS_ID", "address_id 需為正整數", 400);
     }
+    // N9：owner 只能過濾**自己名下**的地址；他人地址（例如訪客的）一律 404（不確認資源存在性）。
+    //     這道檢查必須在下方的 SQL 之外獨立做——否則只會回空清單，掩蓋越權嘗試。
+    const owned = await c.env.DB.prepare(
+      "SELECT id FROM email_addresses WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL"
+    )
+      .bind(addressId, scope.userId)
+      .first();
+    if (!owned) return err(c, "MAIL_NOT_FOUND", "mail not found", 404);
     sql += ` AND m.address_id = ?`;
     binds.push(addressId);
   }
@@ -1300,8 +1606,11 @@ app.post("/api/mail/send", requireSession, async (c) => {
   }
 
   // 4) 暖機期（C2）：註冊後 WARMUP_HOURS 內 → 有效上限 = min(daily_send_quota, WARMUP_QUOTA)
+  //    D5：地址若被 owner 設為 `warmup_exempt=1`（migration 0007）→ **跳過**暖機上限，
+  //    但仍受 daily_send_quota（每日上限）約束；migration 未套用時此查詢回 false（行為不變）。
   const inWarmup = ts0 < Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000;
-  const effectiveLimit = inWarmup
+  const warmupApplies = inWarmup && !(await isWarmupExempt(c.env.DB, fromAddr.id));
+  const effectiveLimit = warmupApplies
     ? Math.min(Number(fromAddr.daily_send_quota), QUOTA.WARMUP_QUOTA)
     : Number(fromAddr.daily_send_quota);
 
@@ -1317,12 +1626,12 @@ app.post("/api/mail/send", requireSession, async (c) => {
     auditAsync(c, {
       ...auditCtx,
       event: "send_rejected_quota",
-      detail: { limit: effectiveLimit, warmup: inWarmup },
+      detail: { limit: effectiveLimit, warmup: warmupApplies },
     });
     return err(
       c,
       "QUOTA_EXCEEDED",
-      `已達寄信上限（${effectiveLimit} 封／${inWarmup ? "註冊後 24 小時暖機期" : "每日"}）`,
+      `已達寄信上限（${effectiveLimit} 封／${warmupApplies ? "註冊後 24 小時暖機期" : "每日"}）`,
       429
     );
   }

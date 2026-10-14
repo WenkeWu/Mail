@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import type { Session } from "../api/types";
-import { IconCompose, IconKey, IconLogout, IconMail, IconMenu, IconSearch, IconUsers } from "./icons";
+import { IconCompose, IconKey, IconLogout, IconMail, IconMenu, IconSearch, IconTicket, IconUsers } from "./icons";
 
 interface Props {
   session: Session;
@@ -12,8 +12,15 @@ interface Props {
   onChangePassword: () => void;
   /** D7：owner 的帳號設定（自行變更密碼） */
   onOpenAccountSettings: () => void;
-  /** D7：帳號設定的顯示開關（mail.／localhost 顯示；app. 不顯示） */
-  showAccountSettings: boolean;
+  /** D4：邀請碼管理 */
+  onOpenInvites: () => void;
+  /** D5：訪客管理（清單／停權／配額） */
+  onOpenVisitors: () => void;
+  /**
+   * 管理主控台（帳號設定／邀請碼／訪客管理）的顯示開關
+   * （`mail.`／localhost 顯示；`app.` 不顯示 —— 僅 UI 收斂，權限仍由後端判定）
+   */
+  showAdminConsole: boolean;
   onLogout: () => void;
   onToggleSidebar: () => void;
   /** Phase 1：配額用盡／寄信權限關閉時停用撰寫（null = 可寄信） */
@@ -29,7 +36,9 @@ export function Header({
   onOpenAddresses,
   onChangePassword,
   onOpenAccountSettings,
-  showAccountSettings,
+  onOpenInvites,
+  onOpenVisitors,
+  showAdminConsole,
   onLogout,
   onToggleSidebar,
   composeBlockedReason = null,
@@ -121,16 +130,37 @@ export function Header({
                 <IconUsers size={16} /> 地址管理
               </button>
             )}
-            {showAccountSettings && (
-              <button
-                type="button"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onOpenAccountSettings();
-                }}
-              >
-                <IconKey size={16} /> 帳號設定（變更密碼）
-              </button>
+            {/* D4／D5／D7：管理主控台（僅 mail.／localhost 顯示；app. 不顯示） */}
+            {showAdminConsole && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onOpenInvites();
+                  }}
+                >
+                  <IconTicket size={16} /> 邀請碼管理
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onOpenVisitors();
+                  }}
+                >
+                  <IconUsers size={16} /> 訪客管理
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onOpenAccountSettings();
+                  }}
+                >
+                  <IconKey size={16} /> 帳號設定（變更密碼）
+                </button>
+              </>
             )}
             {session.kind === "mailbox" && (
               <button

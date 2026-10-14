@@ -1351,6 +1351,147 @@ select {
   color: var(--danger);
 }
 
+.row-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ───────────── 管理主控台（D4 邀請碼／D5 訪客）───────────── */
+/* 邀請碼：等寬、可整段選取（reveal 後可直接手動複製） */
+.invite-code {
+  letter-spacing: 0.02em;
+  user-select: all;
+  word-break: break-all;
+  max-width: 260px;
+}
+
+.status-pill.suspended,
+.status-pill.revoked,
+.status-pill.expired {
+  background: #fdeaea;
+  color: var(--danger);
+}
+
+.status-pill.exhausted {
+  background: #fdf3e0;
+  color: #8a5a00;
+}
+
+.pill-inline {
+  margin-left: 6px;
+}
+
+/* 暖機豁免的警示文字（僅在勾選處旁，刻意顯眼） */
+.warn-text {
+  margin: 0;
+  background: #fdf3e0;
+  border: 1px solid #f0dcb4;
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #7a4d00;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13.5px;
+}
+
+.field-row > input[type="number"] {
+  width: 110px;
+}
+
+.checkbox-row {
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+
+.checkbox-row input {
+  margin-top: 2px;
+}
+
+.row-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.row-actions button:disabled:hover {
+  border-color: var(--border);
+  color: inherit;
+}
+
+/* ───────────── 管理主控台：邀請碼／訪客管理（docs/16 D4／D5） ───────────── */
+.status-pill.suspended {
+  background: #fdeaea;
+  color: var(--danger);
+}
+
+.status-pill.exhausted,
+.status-pill.expired {
+  background: #eee;
+  color: var(--muted);
+}
+
+/* 同一儲存格內並排的多個狀態 pill（帳號／地址／寄信權限） */
+.pill-inline {
+  margin-left: 6px;
+}
+
+/* 邀請碼：等寬字型，避免 0/O、1/l 混淆 */
+.invite-code {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Modal 內的欄位列（配額／暖機豁免） */
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.field-row > span {
+  flex: 1;
+  font-size: 13.5px;
+}
+
+.field-row > input[type="number"] {
+  width: 90px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.checkbox-row {
+  align-items: flex-start;
+}
+
+.checkbox-row > input[type="checkbox"] {
+  margin-top: 2px;
+  flex: none;
+}
+
+/* 警示文字（暖機豁免等有風險的操作） */
+.warn-text {
+  background: #fff8e6;
+  border: 1px solid #f0d9a0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #7a5b12;
+  margin: 0 0 14px;
+}
+
 /* ───────────── 響應式 ───────────── */
 @media (max-width: 1180px) {
   .app {
