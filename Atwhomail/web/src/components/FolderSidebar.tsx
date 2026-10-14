@@ -3,6 +3,7 @@ import {
   IconArchive,
   IconCompose,
   IconInbox,
+  IconKey,
   IconSend,
   IconSpam,
   IconTrash,
@@ -11,7 +12,7 @@ import {
 
 interface Props {
   session: Session;
-  currentPage: "mail" | "addresses";
+  currentPage: "mail" | "addresses" | "account";
   folder: FolderQuery;
   /** 搜尋中 → 資料夾選取暫不作用（列表為 folder=all） */
   queryActive: boolean;
@@ -20,6 +21,10 @@ interface Props {
   onSelectFolder: (folder: Folder) => void;
   onSelectAddress: (id: number | null) => void;
   onOpenAddresses: () => void;
+  /** D7：owner 的帳號設定（自行變更密碼） */
+  onOpenAccountSettings: () => void;
+  /** D7：帳號設定的顯示開關（mail.／localhost 顯示；app. 不顯示） */
+  showAccountSettings: boolean;
   onCompose: () => void;
   open: boolean;
   /** Phase 1：visitor 的寄信配額顯示（owner 為 null） */
@@ -46,6 +51,8 @@ export function FolderSidebar({
   onSelectFolder,
   onSelectAddress,
   onOpenAddresses,
+  onOpenAccountSettings,
+  showAccountSettings,
   onCompose,
   open,
   quotaLine = null,
@@ -132,6 +139,18 @@ export function FolderSidebar({
                 <span className="folder-label">地址管理</span>
               </button>
             </li>
+            {showAccountSettings && (
+              <li>
+                <button
+                  type="button"
+                  className={`folder-item ${currentPage === "account" ? "active" : ""}`}
+                  onClick={onOpenAccountSettings}
+                >
+                  <IconKey size={18} />
+                  <span className="folder-label">帳號設定</span>
+                </button>
+              </li>
+            )}
           </ul>
         </>
       )}

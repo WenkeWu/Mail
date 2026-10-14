@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import type { Session } from "../api/types";
-import { IconCompose, IconLogout, IconMail, IconMenu, IconSearch, IconUsers } from "./icons";
+import { IconCompose, IconKey, IconLogout, IconMail, IconMenu, IconSearch, IconUsers } from "./icons";
 
 interface Props {
   session: Session;
@@ -10,6 +10,10 @@ interface Props {
   onCompose: () => void;
   onOpenAddresses: () => void;
   onChangePassword: () => void;
+  /** D7：owner 的帳號設定（自行變更密碼） */
+  onOpenAccountSettings: () => void;
+  /** D7：帳號設定的顯示開關（mail.／localhost 顯示；app. 不顯示） */
+  showAccountSettings: boolean;
   onLogout: () => void;
   onToggleSidebar: () => void;
   /** Phase 1：配額用盡／寄信權限關閉時停用撰寫（null = 可寄信） */
@@ -24,6 +28,8 @@ export function Header({
   onCompose,
   onOpenAddresses,
   onChangePassword,
+  onOpenAccountSettings,
+  showAccountSettings,
   onLogout,
   onToggleSidebar,
   composeBlockedReason = null,
@@ -113,6 +119,17 @@ export function Header({
                 }}
               >
                 <IconUsers size={16} /> 地址管理
+              </button>
+            )}
+            {showAccountSettings && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onOpenAccountSettings();
+                }}
+              >
+                <IconKey size={16} /> 帳號設定（變更密碼）
               </button>
             )}
             {session.kind === "mailbox" && (

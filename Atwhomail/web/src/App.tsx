@@ -45,6 +45,7 @@ export default function App() {
   return (
     <AppShell
       session={session}
+      hostMode={LOGIN_MODE}
       onLogout={() => {
         clearSession();
         setSession(null);

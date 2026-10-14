@@ -14,6 +14,7 @@
 | Auth | POST | `/api/auth/login` | Owner（username + 密碼）登入 |
 | Auth | POST | `/api/auth/mailbox-login` | 信箱帳號（email address + 密碼）登入 |
 | Auth | POST | `/api/auth/register` | **訪客註冊（公開，需邀請碼）** → mailbox session |
+| Auth | PATCH | `/api/auth/owner-password/self` | **owner 本人變更自己的密碼**（session ＋ 舊密碼；docs/16 D7） |
 | Auth | PATCH | `/api/email-addresses/:id/password` | 重設地址密碼（owner 或本人） |
 | Invite | POST | `/api/invites` | 產生邀請碼（owner / x-admin-token） |
 | Invite | GET | `/api/invites` | 列出邀請碼（只回遮罩碼） |
@@ -268,6 +269,42 @@ PATCH /api/users/:id/status             Authorization: owner
 | `SEND_NOT_ALLOWED` | 403 | `can_send=0`（安全閥 C8） |
 
 **稽核**：`registration_audit` 記錄 `register_ok`／`register_rejected`／`login_failed`／`send_rejected_quota`／`send_rejected_rate`／`send_rejected_notallowed`（以 `waitUntil` 非阻塞寫入；**不納入備份鏡像**）。
+
+### 2.8 階段 2：管理登入的 Access 閘門 ＋ owner 自助改密碼（2026-10-14，docs/16 D2／D7）
+
+```http
+POST /api/auth/login                    // ⚠️ 新增前置條件（D2）
+Headers: Cf-Access-Jwt-Assertion: <Cloudflare Access JWT>
+→ 403 { "error": { "code": "ADMIN_LOGIN_REQUIRES_ACCESS",
+                   "message": "管理員登入僅能從 mail.atwho.org 進行" } }
+  // 標頭缺失／驗簽失敗／過期／iss 不符／aud 不符 → 一律 403（不區分原因，避免洩漏細節）
+  // 通過後才進入既有帳密驗證（既有 401 INVALID_CREDENTIALS／429 LOCKED 行為不變）
+
+PATCH /api/auth/owner-password/self     Authorization: owner session（Bearer JWT）
+{ "old_password": "…", "new_password": "…" }
+→ 200 { "ok": true }
+  // 401 INVALID_OLD_PASSWORD（舊密碼錯，連續 5 次鎖 15 分鐘，與登入共用 auth_attempts）
+  // 422 WEAK_PASSWORD（政策：≥8 字元、≤128）
+  // 成功後更新 password_changed_at → **所有既有 JWT 立即失效**（下次請求 401 TOKEN_STALE）
+  // 稽核：owner_password_changed
+  // ⚠️ rescue 路徑 `POST /api/auth/owner-password`（x-admin-token）行為完全不變
+```
+
+**環境變數（非機密，放 `vars`）**
+
+| 名稱 | 用途 | 未設定時的行為 |
+|---|---|---|
+| `ACCESS_TEAM_DOMAIN` | Access 團隊網域（`https://<team>/cdn-cgi/access/certs` 取公鑰，JWKS 快取 10 分鐘） | 驗證失敗 → 403（fail-closed） |
+| `ACCESS_MAIL_AUD` | `mail.atwho.org` 應用的 Audience（`aud` 比對；支援字串或陣列） | ⚠️ **過渡放行**：只記 warning 並允許登入（**回退閥門**，移除即恢復舊行為；僅為過渡期設計） |
+
+**新增錯誤碼**
+
+| 碼 | HTTP | 情境 |
+|---|---|---|
+| `ADMIN_LOGIN_REQUIRES_ACCESS` | 403 | 管理登入未帶有效 Access JWT（或 aud／iss／簽章／期限不符） |
+| `INVALID_OLD_PASSWORD` | 401 | owner 自助改密碼時舊密碼錯誤 |
+
+**訪客路徑完全不受影響（N2）**：`/api/auth/register`、`/api/auth/mailbox-login`、`/api/me`、`/api/mail/*` 的認證要求與行為不變。
 
 ## 3. 通用原則
 

@@ -36,6 +36,13 @@ export interface Env {
   JWT_SECRET?: string;
   /** CORS 白名單（逗號分隔來源；`*` = 允許任何來源）。2026-10-06 加入，供外部 App 呼叫。 */
   ALLOWED_ORIGINS?: string;
+  /** Cloudflare Access 團隊網域（D2）。例：`steep-queen-06be.cloudflareaccess.com`（非機密，放 vars） */
+  ACCESS_TEAM_DOMAIN?: string;
+  /**
+   * `mail.atwho.org` Access 應用的 Audience（D2；非機密，放 vars）。
+   * ⚠️ 未設定／空字串 → 進入**過渡放行**模式（僅警告），見 verifyAccessJwt 與 docs/16 §5（回退閥門）。
+   */
+  ACCESS_MAIL_AUD?: string;
 }
 
 export type Scope =
@@ -140,6 +147,143 @@ async function isFresh(env: Env, s: SessionInfo): Promise<boolean> {
       ? (await env.DB.prepare("SELECT password_changed_at AS pca FROM users WHERE id = ?1").bind(s.scope.userId).first<{ pca: number }>())?.pca
       : (await env.DB.prepare("SELECT password_changed_at AS pca FROM email_addresses WHERE id = ?1").bind(s.scope.addressId).first<{ pca: number }>())?.pca;
   return s.pca >= Number(current ?? 0);
+}
+
+// ───────────────────────── Cloudflare Access JWT（D2，docs/16 §3）─────────────────────────
+/**
+ * `/api/auth/login`（管理員登入）必須帶有效的 Cloudflare Access JWT。
+ *
+ * 為什麼：Access 只保護 `mail.atwho.org` 這個**頁面**網域，而管理憑證的發放點在公開的 API 上。
+ * 由 Pages Function（`web/functions/api/[[path]].ts`）把 Access 加在請求上的
+ * `Cf-Access-Jwt-Assertion` 沿路轉發到 Worker，這裡驗簽 → 只有真的從 `mail.*`（通過 Access）
+ * 進來的請求能登入；`curl` 直打 API 或從 `app.atwho.org` 都會被擋（docs/16 §5 階段 2）。
+ *
+ * ⚠️ **過渡／回退**：`ACCESS_MAIL_AUD` 未設定或為空字串時 → 只記 warning 並**放行**。
+ *    這是刻意保留的回退閥門（移除環境變數即恢復舊行為），**不是**長期設計；設定後即生效驗證。
+ */
+
+const ACCESS_JWKS_TTL_MS = 10 * 60 * 1000; // 公鑰快取 10 分鐘（Access 金鑰輪替頻率低）
+const ACCESS_JWKS_TIMEOUT_MS = 5000;
+
+/** 預設 JWKS 取得：帶逾時；失敗丟錯（呼叫端轉為 403，fail-closed） */
+const defaultFetchJwks = async (url: string): Promise<unknown> => {
+  const res = await fetch(url, { signal: AbortSignal.timeout(ACCESS_JWKS_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`JWKS HTTP ${res.status}`);
+  return (await res.json()) as unknown;
+};
+const defaultNowMs = () => Date.now();
+
+/** 可注入（測試會覆寫）：JWKS 取得與時間來源 */
+let fetchJwks: (url: string) => Promise<unknown> = defaultFetchJwks;
+let nowMs: () => number = defaultNowMs;
+
+/** JWKS 快取（模組層記憶體；僅在成功取得後寫入） */
+let jwksCache: { url: string; keys: Map<string, JsonWebKey>; fetchedAt: number } | null = null;
+
+/**
+ * ⚠️ 僅供測試：覆寫 JWKS 取得與時間來源（傳 `null` 還原預設），並清掉 JWKS 快取避免跨案例污染。
+ * 例：`setAccessJwtTestHooks({ fetchJwks: async () => ({ keys: [publicJwk] }), nowMs: () => 0 })`
+ */
+export function setAccessJwtTestHooks(hooks: {
+  fetchJwks?: ((url: string) => Promise<unknown>) | null;
+  nowMs?: (() => number) | null;
+}): void {
+  if (hooks.fetchJwks !== undefined) fetchJwks = hooks.fetchJwks ?? defaultFetchJwks;
+  if (hooks.nowMs !== undefined) nowMs = hooks.nowMs ?? defaultNowMs;
+  jwksCache = null;
+}
+
+/** base64url → bytes（JWT 各段都是 base64url，無 padding） */
+function b64urlToBytes(input: string): Uint8Array {
+  const b64 = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+  const bin = atob(padded);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** 取 JWKS 公鑰（`kid` → JWK）；快取有效期內不重抓 */
+async function getAccessKeys(domain: string): Promise<Map<string, JsonWebKey>> {
+  const url = `https://${domain}/cdn-cgi/access/certs`;
+  if (jwksCache && jwksCache.url === url && nowMs() - jwksCache.fetchedAt < ACCESS_JWKS_TTL_MS) {
+    return jwksCache.keys;
+  }
+  const body = (await fetchJwks(url)) as { keys?: Array<JsonWebKey & { kid?: string }> } | null;
+  const keys = new Map<string, JsonWebKey>();
+  for (const k of body?.keys ?? []) {
+    if (typeof k?.kid === "string" && k.kid) keys.set(k.kid, k);
+  }
+  if (keys.size === 0) throw new Error("JWKS 沒有可用的金鑰");
+  jwksCache = { url, keys, fetchedAt: nowMs() };
+  return keys;
+}
+
+export type AccessJwtResult = { ok: true } | { ok: false; reason: string };
+
+/**
+ * 驗證 Cloudflare Access JWT（RS256）。
+ * - 成功 → `{ ok: true }`
+ * - 失敗 → `{ ok: false, reason }`（reason 只寫進伺服器 log，**不回給客戶端**，避免洩漏細節）
+ * 註：`aud` 在 Access 的 token 可能是字串或陣列，兩種都支援。
+ */
+export async function verifyAccessJwt(env: Env, token: string): Promise<AccessJwtResult> {
+  const domain = (env.ACCESS_TEAM_DOMAIN ?? "").trim();
+  const aud = (env.ACCESS_MAIL_AUD ?? "").trim();
+  // 呼叫端應先處理「aud 未設定＝過渡放行」；這裡仍以防禦性回錯處理（fail-closed）
+  if (!domain) return { ok: false, reason: "ACCESS_TEAM_DOMAIN 未設定" };
+  if (!aud) return { ok: false, reason: "ACCESS_MAIL_AUD 未設定（呼叫端應走過渡放行）" };
+
+  const parts = token.split(".");
+  if (parts.length !== 3) return { ok: false, reason: "JWT 格式錯誤" };
+  const [headerB64, payloadB64, sigB64] = parts as [string, string, string];
+
+  let header: { alg?: string; kid?: string };
+  let payload: { iss?: string; aud?: string | string[]; exp?: number };
+  try {
+    header = JSON.parse(new TextDecoder().decode(b64urlToBytes(headerB64))) as typeof header;
+    payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(payloadB64))) as typeof payload;
+  } catch {
+    return { ok: false, reason: "JWT 解析失敗" };
+  }
+  if (header.alg !== "RS256") return { ok: false, reason: `不支援的 alg: ${String(header.alg)}` };
+  if (!header.kid) return { ok: false, reason: "JWT 缺少 kid" };
+
+  let jwk: JsonWebKey | undefined;
+  try {
+    jwk = (await getAccessKeys(domain)).get(header.kid);
+  } catch (e) {
+    return { ok: false, reason: `JWKS 取得失敗：${String(e)}` };
+  }
+  if (!jwk) return { ok: false, reason: "JWKS 找不到對應的 kid（金鑰可能已輪替）" };
+
+  try {
+    const key = await crypto.subtle.importKey(
+      "jwk",
+      jwk,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    const ok = await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      key,
+      b64urlToBytes(sigB64),
+      new TextEncoder().encode(`${headerB64}.${payloadB64}`)
+    );
+    if (!ok) return { ok: false, reason: "簽章驗證失敗" };
+  } catch (e) {
+    return { ok: false, reason: `簽章驗證錯誤：${String(e)}` };
+  }
+
+  // claims
+  const nowSec = Math.floor(nowMs() / 1000);
+  if (typeof payload.exp !== "number" || payload.exp <= nowSec) return { ok: false, reason: "JWT 已過期" };
+  if (payload.iss !== `https://${domain}`) return { ok: false, reason: "iss 不符" };
+  const audOk = Array.isArray(payload.aud) ? payload.aud.includes(aud) : payload.aud === aud;
+  if (!audOk) return { ok: false, reason: "aud 不符" };
+
+  return { ok: true };
 }
 
 // ───────────────────────── 登入鎖定 ─────────────────────────

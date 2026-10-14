@@ -177,12 +177,27 @@
       - ⚠️ **尚未交付**（`docs/13` §6.5 的 C5／C6）：寄信量告警（達 80% 或全帳號 >200 封/日）與
             「連續 3 日觸頂自動停權」不在本次 `docs/14` §4 規格內 → 需 owner 決定是否納入下一階段
 
+- [ ] **9. 階段 2：管理登入 Access 閘門（D2）＋ owner 自助改密碼（D7）**（2026-10-14 程式完成；**未部署**）
+      - [ ] **部署前先設定兩個環境變數**（非機密，放 `vars`；實際值見 `docs/16` §9）：
+            `ACCESS_TEAM_DOMAIN`（Access 團隊網域）、`ACCESS_MAIL_AUD`（`mail.atwho.org` 應用的 Audience）
+      - [ ] ⚠️ **未設定 `ACCESS_MAIL_AUD` ＝ 過渡放行**（管理登入不驗 Access JWT，只記 warning）→
+            設定後才真正生效；這是刻意的**回退閥門**（出事就移除該變數）
+      - [ ] 部署後驗收（`docs/16` §5 階段 2）：
+            ① 從 `mail.atwho.org`（通過 Access）可登入 ✅
+            ② `curl` 直打 `https://atwhomail-api.ulhome.workers.dev/api/auth/login` → **403 `ADMIN_LOGIN_REQUIRES_ACCESS`** ✅
+            ③ 從 `app.atwho.org` 用 owner 帳號 → **403** ✅
+            ④ 訪客 `register`／`mailbox-login`／`/api/me`／`/api/mail/*` 不受影響 ✅
+      - [ ] owner 自助改密碼：網頁右上帳號選單 →「帳號設定」（舊密碼錯誤 401、成功後所有裝置的 session 立即失效）
+      - [ ] 監控：`registration_audit` 應出現 `owner_password_changed`；`ACCESS_MAIL_AUD` 未設定時 Worker log 會有過渡 warning
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
 |---|---|---|
 | `GET /api/health`、`GET /` | 公開 | 健康檢查 |
-| `POST /api/auth/login`、`/api/auth/mailbox-login` | 公開（5 次失敗鎖 15 分） | 取得 session |
+| `POST /api/auth/login` | 公開 **＋需 Cloudflare Access JWT**（`ACCESS_MAIL_AUD` 設定後生效；5 次失敗鎖 15 分） | 管理員 session（階段 2／D2） |
+| `POST /api/auth/mailbox-login` | 公開（5 次失敗鎖 15 分） | 信箱 session（**不受 Access 影響**） |
+| `PATCH /api/auth/owner-password/self` | owner session ＋ 舊密碼 | owner 自助改密碼（階段 2／D7） |
 | `POST /api/auth/register` | **公開（需邀請碼）** | 訪客註冊（Phase 1）→ mailbox session |
 | `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（只回遮罩碼）／撤銷 |
 | `GET /api/me` | owner 或 mailbox | 身分與寄信配額（供前端顯示） |

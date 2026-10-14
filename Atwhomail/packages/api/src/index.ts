@@ -28,6 +28,7 @@ import {
   requireOwner,
   requireSession,
   resolveScope,
+  verifyAccessJwt,
   type AuthEnv,
   type Env,
   type Scope,
@@ -268,7 +269,38 @@ app.get("/api/health", async (c) => {
 });
 
 // ══════════════════════ Phase 11：認證 ══════════════════════
+
+/** D2：管理員登入的 Access 閘門（對外的統一訊息，不區分失敗原因以免洩漏細節） */
+const ACCESS_LOGIN_DENIED = "管理員登入僅能從 mail.atwho.org 進行";
+
+/**
+ * D2（docs/16 §3）—— `/api/auth/login` **最前面**的 Cloudflare Access JWT 檢查。
+ * 回傳 Response = 直接擋掉；null = 通過，繼續既有帳密流程（既有邏輯不變）。
+ *
+ * ⚠️ 過渡／回退設計：`ACCESS_MAIL_AUD` 未設定或空字串 → 只記 warning 並**放行**
+ *    （移除該環境變數即恢復舊行為；docs/16 §5 的回退閥門，**僅為過渡期**）。
+ */
+async function requireAccessForOwnerLogin(c: Context<AuthEnv>): Promise<Response | null> {
+  const aud = (c.env.ACCESS_MAIL_AUD ?? "").trim();
+  if (!aud) {
+    console.warn("[atwhomail-api] ACCESS_MAIL_AUD 未設定 → 略過 Access JWT 驗證（過渡行為；設定後即生效）");
+    return null;
+  }
+  const token = c.req.header("cf-access-jwt-assertion");
+  if (!token) return err(c, "ADMIN_LOGIN_REQUIRES_ACCESS", ACCESS_LOGIN_DENIED, 403);
+  const result = await verifyAccessJwt(c.env, token);
+  if (!result.ok) {
+    console.warn("[atwhomail-api] access jwt rejected", { reason: result.reason }); // 只記原因，不記 token（N7）
+    return err(c, "ADMIN_LOGIN_REQUIRES_ACCESS", ACCESS_LOGIN_DENIED, 403);
+  }
+  return null;
+}
+
 app.post("/api/auth/login", async (c) => {
+  // D2：必須來自 mail.atwho.org（經 Cloudflare Access）——置於最前面，未通過就不進入帳密流程
+  const accessDenied = await requireAccessForOwnerLogin(c);
+  if (accessDenied) return accessDenied;
+
   const body = await c.req.json<{ username?: string; password?: string }>().catch(() => null);
   if (!body?.username || !body?.password) return err(c, "INVALID_BODY", "username 與 password 必填", 400);
   const username = body.username.trim().toLowerCase();
@@ -367,6 +399,66 @@ app.post("/api/auth/owner-password", async (c) => {
     .bind(hash, ts, ownerId)
     .run();
   return c.json({ ok: true, user_id: ownerId });
+});
+
+/**
+ * PATCH /api/auth/owner-password/self — owner 本人變更自己的密碼（D7，docs/16 §3）
+ *
+ * 為什麼需要：`POST /api/auth/owner-password` 只接受 rescue token（`x-admin-token`），
+ * 一般 owner 登入的 JWT 用不了 → 網頁上沒有「改自己密碼」的入口。
+ * 這裡用 owner session（Bearer JWT）＋ 舊密碼驗證。
+ *
+ * ⚠️ rescue 路徑（`POST /api/auth/owner-password`）行為完全不變（N5）。
+ * ⚠️ 成功後會更新 `password_changed_at` → 既有 JWT 立即失效（TOKEN_STALE）＝預期的安全行為。
+ */
+app.patch("/api/auth/owner-password/self", requireSession, async (c) => {
+  const scope = c.get("scope");
+  if (scope.kind !== "owner") return err(c, "FORBIDDEN", "owner scope required", 403);
+
+  const body = await c.req
+    .json<{ old_password?: string; new_password?: string }>()
+    .catch(() => null);
+  if (typeof body?.old_password !== "string" || typeof body?.new_password !== "string") {
+    return err(c, "INVALID_BODY", "old_password 與 new_password 必填", 400);
+  }
+
+  const user = await c.env.DB.prepare("SELECT id, username, password_hash FROM users WHERE id = ?1")
+    .bind(scope.userId)
+    .first<{ id: number; username: string; password_hash: string }>();
+  if (!user) return err(c, "NOT_FOUND", "user not found", 404);
+
+  // 沿用既有鎖定機制（auth_attempts）：與 /api/auth/login 共用同一組 key → 猜舊密碼同樣會被鎖
+  const key = `owner:${user.username}`;
+  const lockedUntil = await checkLocked(c.env.DB, key);
+  if (lockedUntil) {
+    return err(c, "LOCKED", `嘗試次數過多，請於 ${new Date(lockedUntil).toISOString()} 後再試`, 429);
+  }
+
+  const oldOk = await verifyPassword(body.old_password, user.password_hash);
+  if (!oldOk) {
+    await recordFailure(c.env.DB, key);
+    return err(c, "INVALID_OLD_PASSWORD", "舊密碼錯誤", 401);
+  }
+
+  const pwErr = validatePasswordPolicy(body.new_password);
+  if (pwErr) return err(c, "WEAK_PASSWORD", pwErr, 422);
+
+  await clearFailures(c.env.DB, key);
+  const hash = await hashPassword(body.new_password);
+  const ts = now();
+  await c.env.DB.prepare(
+    "UPDATE users SET password_hash = ?1, password_changed_at = ?2, updated_at = ?2 WHERE id = ?3"
+  )
+    .bind(hash, ts, user.id)
+    .run();
+
+  auditAsync(c, {
+    event: "owner_password_changed",
+    userId: user.id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+  });
+  return c.json({ ok: true });
 });
 
 // ══════════════════════ Phase 1：邀請碼（owner）══════════════════════

@@ -41,6 +41,16 @@ export function register(payload: {
 /** 目前 session 的身分與寄信配額（Phase 1） */
 export const getMe = () => request<MeResponse>("/api/me");
 
+/**
+ * owner 本人變更自己的密碼（D7，docs/16 §3；需舊密碼）
+ * 成功後所有既有 JWT 立即失效（`password_changed_at`）→ 前端須重新登入
+ */
+export const changeOwnerPassword = (oldPassword: string, newPassword: string) =>
+  request<{ ok: boolean }>("/api/auth/owner-password/self", {
+    method: "PATCH",
+    json: { old_password: oldPassword, new_password: newPassword },
+  });
+
 // ── 信件列表 ──
 export interface ListMailParams {
   folder: string;

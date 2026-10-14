@@ -25,7 +25,9 @@ import type {
 import { useCounts } from "../hooks/useCounts";
 import { useMailList } from "../hooks/useMailList";
 import { displaySender, formatFullDate, parseAddress } from "../lib/format";
+import type { LoginMode } from "../lib/hostMode";
 import { joinRecipients, quoteText, withPrefix } from "../lib/recipients";
+import { AccountSettings } from "./AccountSettings";
 import { AddressManager } from "./AddressManager";
 import { ComposeWindow, type Draft, type DraftMode } from "./ComposeWindow";
 import { FolderSidebar } from "./FolderSidebar";
@@ -51,8 +53,17 @@ interface ToastState {
   kind: "info" | "error";
 }
 
-export function AppShell({ session, onLogout }: { session: Session; onLogout: () => void }) {
-  const [page, setPage] = useState<"mail" | "addresses">("mail");
+export function AppShell({
+  session,
+  hostMode,
+  onLogout,
+}: {
+  session: Session;
+  /** 顯示模式（由 App 依 hostname 決定；docs/16 D1）——僅用於 UI 收斂，權限仍由後端判定 */
+  hostMode: LoginMode;
+  onLogout: () => void;
+}) {
+  const [page, setPage] = useState<"mail" | "addresses" | "account">("mail");
   const [folder, setFolder] = useState<Folder>("inbox");
   const [addressFilter, setAddressFilter] = useState<number | null>(null);
   const [searchInput, setSearchInput] = useState("");
@@ -71,6 +82,12 @@ export function AppShell({ session, onLogout }: { session: Session; onLogout: ()
   const [toast, setToast] = useState<ToastState | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
+
+  /**
+   * D7：帳號設定（owner 自助改密碼）只在 `mail.`（admin）與本機開發（all）顯示；
+   * `app.`（public，訪客入口）不顯示。⚠️ 純 UI 收斂——後端仍以 session 的 owner scope 判定（N3）。
+   */
+  const canUseAccountSettings = session.kind === "owner" && hostMode !== "public";
 
   const searchActive = query !== "";
   const listFolder: string = searchActive ? "all" : folder;
@@ -432,7 +449,7 @@ export function AppShell({ session, onLogout }: { session: Session; onLogout: ()
       : FOLDER_TITLE[folder];
 
   return (
-    <div className={`app ${page === "addresses" ? "app-page" : ""}`}>
+    <div className={`app ${page !== "mail" ? "app-page" : ""}`}>
       <Header
         session={session}
         searchInput={searchInput}
@@ -441,6 +458,8 @@ export function AppShell({ session, onLogout }: { session: Session; onLogout: ()
         onCompose={openCompose}
         onOpenAddresses={() => setPage("addresses")}
         onChangePassword={() => setPage("addresses")}
+        onOpenAccountSettings={() => setPage("account")}
+        showAccountSettings={canUseAccountSettings}
         onLogout={onLogout}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         composeBlockedReason={composeBlockedReason}
@@ -450,6 +469,13 @@ export function AppShell({ session, onLogout }: { session: Session; onLogout: ()
         <AddressManager
           session={session}
           onBack={() => setPage("mail")}
+          onToast={showToast}
+        />
+      ) : page === "account" && canUseAccountSettings ? (
+        <AccountSettings
+          session={session}
+          onBack={() => setPage("mail")}
+          onLogout={onLogout}
           onToast={showToast}
         />
       ) : (
@@ -464,6 +490,8 @@ export function AppShell({ session, onLogout }: { session: Session; onLogout: ()
             onSelectFolder={selectFolder}
             onSelectAddress={selectAddress}
             onOpenAddresses={() => setPage("addresses")}
+            onOpenAccountSettings={() => setPage("account")}
+            showAccountSettings={canUseAccountSettings}
             onCompose={openCompose}
             open={sidebarOpen}
             quotaLine={quotaLine}
