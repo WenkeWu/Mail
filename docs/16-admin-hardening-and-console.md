@@ -52,6 +52,7 @@
 | **D4** | 邀請碼管理頁（僅 `mail.` 可見） | `web/src/components/InviteManager.tsx`（新增）等 | 新檔／修改 |
 | **D5** | 訪客清單／停權頁（僅 `mail.`）＋ owner 專用端點（含停用訪客地址） | `packages/api/src/index.ts`、`web/src/components/VisitorManager.tsx` | 修改／新檔 |
 | **D6**（選配，建議） | owner 登入 TOTP 第二因素 | `packages/api/src/totp.ts`（新增）＋相關 | 新檔 |
+| **D7** | **owner 於網頁自行變更自己的密碼**（帳號設定頁；僅 `mail.` 顯示） | `packages/api/src/index.ts`、`web/src/components/AccountSettings.tsx` | 修改／新檔 |
 
 ---
 
@@ -112,6 +113,25 @@
 
 ---
 
+### D7 — owner 於網頁自行變更密碼（帳號設定）
+
+**現況問題**：`POST /api/auth/owner-password` 只接受 **rescue token**（`scope.via !== "rescue"` → 401），
+一般 owner 登入的 JWT 無法使用 → 網頁上**沒有**任何「改自己密碼」的入口（前端 `Header` 的「修改密碼」其實是
+跳到地址管理，改的是**地址**密碼）⚠️
+
+- 新增端點：`PATCH /api/auth/owner-password/self`（`requireSession`，且 `scope.kind === "owner"`）
+  - 請求：`{ "old_password": string, "new_password": string }`
+  - 驗舊密碼失敗 → `401` `INVALID_OLD_PASSWORD`
+  - 政策不符 → `422` `WEAK_PASSWORD`
+  - 成功 → 寫入新雜湊並更新 `password_changed_at`（＝既有 JWT 立即失效 ✅，屬預期安全行為）
+  - 稽核：`owner_password_changed`
+  - 沿用既有鎖定機制（`auth_attempts`，連續失敗 5 次鎖 15 分鐘）
+- 前端：`mail.` 模式的管理主控台新增「帳號設定」頁（舊密碼／新密碼／確認新密碼；成功後提示需重新登入）
+- ⚠️ 不可改動 rescue 路徑（`POST /api/auth/owner-password` 行為不變，N5）
+- ⚠️ 不改用 Cookie → 維持 Bearer，故無 CSRF 風險 ✅
+
+---
+
 ## 4. 不可做（N 系列）
 
 | # | 禁止 |
@@ -134,7 +154,7 @@
 | **1** | D1（前端角色分頁）＋ `mail.` 改指 Pages ＋ D3（同源代理，先不驗 JWT） | `mail.` 只看得到管理員登入；`app.` 看不到管理員登入；兩邊登入皆正常 ✅ |
 | **2** | D2（後端驗 Access JWT）＋ 設 `ACCESS_TEAM_DOMAIN`／`ACCESS_MAIL_AUD` | ① 從 `mail.`（通過 Access）可登入 ✅<br>② `curl` 直接打 `/api/auth/login` → **403** ✅<br>③ 從 `app.atwho.org` 用 `itag` → **403** ✅<br>④ 訪客 `register`／`mailbox-login` 不受影響 ✅ |
 | **3** | D5（訪客清單／停權 ＋ owner 地址停用端點） | owner 可停用訪客地址（不再 404）✅；被停用者立即無法登入 ✅ |
-| **4** | D4（邀請碼管理頁） | owner 可在網頁建立／撤銷／複製邀請碼 ✅ |
+| **4** | D4（邀請碼管理頁）＋ **D7（帳號設定／自行改密碼）** | owner 可在網頁建立／撤銷／複製邀請碼 ✅；可在網頁改自己的密碼（舊密碼錯誤 → 401、成功後其他 session 失效）✅ |
 | **5** | D6（TOTP，選配） | 啟用後登入需動態碼；錯誤碼正確 ✅ |
 
 **回退**：階段 2 若出問題 → 移除 `ACCESS_MAIL_AUD` 環境變數即恢復（程式需設計成「未設定時僅警告並放行」，**僅在過渡期** ✅）
@@ -153,6 +173,9 @@
 | T6 | `PATCH /api/email-addresses/:id/status`（owner）可停用訪客地址；訪客端點（mailbox session）呼叫 → 403 |
 | T7 | 前端 `mail.` 模式只渲染管理員分頁；`app.` 模式不渲染管理員分頁 |
 | T8 | 邀請碼 `reveal=1` 僅 owner 可用；非 owner → 403；且寫入稽核 |
+| T9 | `PATCH /api/auth/owner-password/self` 舊密碼錯誤 → 401 `INVALID_OLD_PASSWORD` |
+| T10 | 新密碼不符政策 → 422 `WEAK_PASSWORD`；成功 → 200 且寫入稽核 `owner_password_changed` |
+| T11 | 成功改密碼後，**舊的 owner JWT 立即失效**（`password_changed_at` 檢查）→ 401 `TOKEN_STALE` |
 
 ---
 
@@ -167,8 +190,8 @@
 
 ## 8. Definition of Done
 
-- [ ] D1–D5 全部交付（D6 為選配）
-- [ ] canonical 三指令全綠；T1–T8 通過
+- [ ] D1–D5 與 **D7** 全部交付（D6 為選配）
+- [ ] canonical 三指令全綠；T1–T11 通過
 - [ ] `docs/05`（API 規格）與 `docs/11`（上線檢查清單）同步更新
 - [ ] 未部署、未跑遠端 migration、未動 N6–N8 列出的檔案
 - [ ] 依 §7 回報
