@@ -53,6 +53,7 @@
 | **D5** | 訪客清單／停權頁（僅 `mail.`）＋ owner 專用端點（含停用訪客地址） | `packages/api/src/index.ts`、`web/src/components/VisitorManager.tsx` | 修改／新檔 |
 | **D6**（選配，建議） | owner 登入 TOTP 第二因素 | `packages/api/src/totp.ts`（新增）＋相關 | 新檔 |
 | **D7** | **owner 於網頁自行變更自己的密碼**（帳號設定頁；僅 `mail.` 顯示） | `packages/api/src/index.ts`、`web/src/components/AccountSettings.tsx` | 修改／新檔 |
+| **D8** | **停權／停用語意釐清 ＋ 立即生效**（訊息、文案、警告、session 即時失效） | `packages/api/src/index.ts`、`web/src/components/VisitorManager.tsx` | 修改 |
 
 ---
 
@@ -149,6 +150,35 @@
 
 ---
 
+### D8 — 停權（帳號）／停用（地址）語意釐清與立即生效
+
+**背景（實查現況）**：UI 上兩個動作差異不明；且停權後**已登入的 session 仍可讀信**直到 JWT 過期（24h）⚠️
+
+**兩者正確語意（實作證據）**
+
+| | 停權帳號（`users.status`） | 停用地址（`email_addresses.status`） |
+|---|---|---|
+| 影響範圍 | 該使用者**全部地址** | **僅該一個地址** |
+| 登入 | 擋（`403 ACCOUNT_SUSPENDED`）| 擋（目前誤回 `401 INVALID_CREDENTIALS` ⚠️）|
+| 寄信 | 擋 | 擋 |
+| **收信** | ✅ **照收**（email-handler 只看地址狀態）| ❌ **靜默丟棄該信**（不可逆）⚠️ |
+
+- **D8-1 後端登入訊息**：`mailbox-login` 調整為「**先驗密碼，再判狀態**」（沿用既有避免洩漏帳號狀態的模式）：
+  1. 密碼不符 → `401 INVALID_CREDENTIALS`
+  2. 密碼正確但地址 `status='disabled'` → `403 ADDRESS_DISABLED`「此地址已停用，請聯絡管理者」
+  3. 密碼正確、地址 active 但使用者 `status!='active'` → `403 ACCOUNT_SUSPENDED`（既有文案）
+- **D8-2 前端文案**：
+  - 停權按鈕 →「**停權帳號（所有地址；仍可收信）**」
+  - 停用按鈕 →「**停用地址（連收信都停止）**」
+  - 兩者皆附 tooltip 說明差異
+- **D8-3 前端二次確認**：停用地址前顯示警告：「此地址將**立即停止收信**，停用期間的來信不會保留」✅
+- **D8-4 立即生效（後端）**：`requireSession` 增加狀態檢查 —— 使用者必須 `active`；若為 mailbox session，其地址亦必須 `active`；
+  否則回 `403 ACCOUNT_SUSPENDED` 或 `403 ADDRESS_DISABLED`（讓停權／停用**立刻**踢掉現有 session，不必等 24h ✅）
+  - 以**單一索引查詢**為限（每次請求最多一次 `SELECT status`），保留既有 `TOKEN_STALE` 檢查
+  - ⚠️ 不得改動 `can_send` 語意；不得讓 owner 讀取訪客信件（N9）
+
+---
+
 ## 4. 不可做（N 系列）
 
 | # | 禁止 |
@@ -200,6 +230,9 @@
 | T14 | `PATCH /api/users/:id/quota` 值域 1–200；超出 → 422；成功 → 稽核 `quota_changed` |
 | T15 | `warmup_exempt=1` 的地址不受註冊後 24 小時 5 封上限限制（仍受 `daily_send_quota` 限制）|
 | T16 | `GET /api/invites?reveal=1` 僅 owner 可用；使用時寫入稽核（記錄 owner id 與時間）|
+| T17 | 使用者被停權後，**既有** mailbox JWT 立即失效 → 403 `ACCOUNT_SUSPENDED`（不必等 token 過期）|
+| T18 | 地址被停用後，**既有** mailbox JWT 立即失效 → 403 `ADDRESS_DISABLED` |
+| T19 | `mailbox-login`：密碼錯誤 → 401 `INVALID_CREDENTIALS`；密碼正確但地址停用 → 403 `ADDRESS_DISABLED`；帳號停權 → 403 `ACCOUNT_SUSPENDED` |
 
 ---
 
@@ -215,7 +248,7 @@
 ## 8. Definition of Done
 
 - [ ] D1–D5 與 **D7** 全部交付（D6 為選配）
-- [ ] canonical 三指令全綠；T1–T11 通過
+- [ ] canonical 三指令全綠；T1–T19 通過
 - [ ] `docs/05`（API 規格）與 `docs/11`（上線檢查清單）同步更新
 - [ ] 若新增 migration（`0007`）：只新增檔案，**不套用** ✅
 - [ ] 未部署、未跑遠端 migration、未動 N6–N8 列出的檔案
