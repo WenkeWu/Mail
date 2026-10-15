@@ -9,7 +9,7 @@
  * - 救援通道：ADMIN_TOKEN（保留，僅 owner 權限；Phase 11 後不再用於日常操作）
  */
 import { sign, verify } from "hono/jwt";
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { argon2idAsync } from "@noble/hashes/argon2.js";
 
 /** PHC 風格編碼：$argon2id$v=19$m=19456,t=3,p=1$<saltB64>$<hashB64> */
@@ -146,9 +146,13 @@ async function parseBearer(env: Env, token: string): Promise<SessionInfo | null>
  * active」。分成兩次查詢＝每個請求多打一次 D1（且是熱路徑上的每一個請求）。合併後仍是
  * **單一主鍵查詢**（`users.id` / `email_addresses.id`），符合 docs/16 §3 D8-4 的限制。
  *
- * 查無資料列 → `null`（目標已不存在）；呼叫端維持既有語意（`pca` 視為 0、不做狀態判定）。
+ * 查無資料列 → `null`（目標已不存在）→ 呼叫端**一律視為 session 失效**（D10，見 `loadLiveState`）。
  */
 type SessionState = { pca: number; userStatus: string | null; addressStatus: string | null };
+
+/** 401 TOKEN_STALE 的兩種原因（D10：查不到列與密碼已變更語意不同，訊息必須能分辨） */
+const STALE_NOT_FOUND = "session 已失效，請重新登入";
+const STALE_PASSWORD_CHANGED = "session 已失效（密碼已變更），請重新登入";
 
 async function loadSessionState(env: Env, scope: Scope): Promise<SessionState | null> {
   if (scope.kind === "owner") {
@@ -168,11 +172,26 @@ async function loadSessionState(env: Env, scope: Scope): Promise<SessionState | 
   return row ? { pca: Number(row.pca ?? 0), userStatus: row.user_status, addressStatus: row.address_status } : null;
 }
 
-/** 密碼重設後舊 token 失效（08 #44）：token 的 pca 必須 >= DB 現值 */
-async function isFresh(env: Env, s: SessionInfo): Promise<boolean> {
-  if (s.scope.kind === "owner" && s.scope.via === "rescue") return true;
-  const state = await loadSessionState(env, s.scope);
-  return s.pca >= Number(state?.pca ?? 0);
+/**
+ * 載入 session 目標現況，並在同處判定「token 是否仍有效」。
+ *
+ * 回傳 `SessionState` = 有效（呼叫端可續用狀態欄位）；回傳 `Response` = 直接回 401 `TOKEN_STALE`。
+ * 兩種失效原因：
+ *   1. **查不到列**（`loadSessionState` 回 `null`）——目標已不存在（例：owner 刪除訪客後，D9）
+ *   2. token 版本落後（`pca` < DB 現值）——密碼已變更（08 #44）
+ *
+ * ⚠️ **D10（docs/16 §3）**：舊版以 `state?.pca ?? 0` 判定，查不到列時等同「版本 0」而**放行**；
+ *    地址已被刪除的舊 JWT 因此可繼續通行。現在查不到列即失效，且必須是**明確的 401**
+ *    （不得因為查不到列而拋錯變成 500）。
+ * ⚠️ rescue（`x-admin-token`）不走這裡（N5）：呼叫端自行豁免，緊急救援通道語意不變。
+ */
+async function loadLiveState(c: Context<AuthEnv>, s: SessionInfo): Promise<SessionState | Response> {
+  const state = await loadSessionState(c.env, s.scope);
+  if (!state) return c.json({ error: { code: "TOKEN_STALE", message: STALE_NOT_FOUND } }, 401);
+  if (s.pca < state.pca) {
+    return c.json({ error: { code: "TOKEN_STALE", message: STALE_PASSWORD_CHANGED } }, 401);
+  }
+  return state;
 }
 
 // ───────────────────────── Cloudflare Access JWT（D2，docs/16 §3）─────────────────────────
@@ -402,13 +421,15 @@ export async function resolveScope(c: { req: { header: (n: string) => string | u
   return s ? s.scope : null;
 }
 
-/** owner 權限（JWT owner 或 rescue）；含 token 新鮮度檢查 */
+/** owner 權限（JWT owner 或 rescue）；含 token 新鮮度與存在性檢查（D10） */
 export const requireOwner: MiddlewareHandler<AuthEnv> = async (c, next) => {
   const s = await resolveSession(c);
   if (!s) return c.json({ error: { code: "UNAUTHORIZED", message: "needs owner session or rescue token" } }, 401);
   if (s.scope.kind !== "owner") return c.json({ error: { code: "FORBIDDEN", message: "owner scope required" } }, 403);
-  if (!(await isFresh(c.env, s))) {
-    return c.json({ error: { code: "TOKEN_STALE", message: "session 已失效（密碼已變更），請重新登入" } }, 401);
+  // ⚠️ rescue（x-admin-token）豁免（N5）：緊急救援通道不因查不到列或密碼版本而失效
+  if (s.scope.via !== "rescue") {
+    const state = await loadLiveState(c, s);
+    if (state instanceof Response) return state; // 401 TOKEN_STALE（查不到列／密碼已變更）
   }
   c.set("scope", s.scope);
   await next();
@@ -423,7 +444,10 @@ export const requireOwner: MiddlewareHandler<AuthEnv> = async (c, next) => {
  *   - mailbox session 的地址（`email_addresses.status`）亦必須為 `active` → 否則 `403 ADDRESS_DISABLED`
  * 只讀狀態、**不寫入任何資料**，也不觸碰 `can_send` 語意（寄信權限仍由 `send` handler 判定）。
  *
- * ⚠️ rescue（`x-admin-token`）不受影響（N5）：救援通道語意不變。
+ * **D10（docs/16 §3）：查不到列即失效。** 帳號或地址已被刪除（`loadSessionState` 回 `null`）→
+ * `401 TOKEN_STALE`「session 已失效，請重新登入」（**不是** 500，也不是放行）。
+ *
+ * ⚠️ rescue（`x-admin-token`）不受影響（N5）：救援通道語意不變（於下方提前返回）。
  */
 export const requireSession: MiddlewareHandler<AuthEnv> = async (c, next) => {
   const s = await resolveSession(c);
@@ -433,15 +457,13 @@ export const requireSession: MiddlewareHandler<AuthEnv> = async (c, next) => {
     await next();
     return;
   }
-  const state = await loadSessionState(c.env, s.scope);
-  if (s.pca < Number(state?.pca ?? 0)) {
-    return c.json({ error: { code: "TOKEN_STALE", message: "session 已失效（密碼已變更），請重新登入" } }, 401);
-  }
-  if (state && state.userStatus !== "active") {
+  const state = await loadLiveState(c, s);
+  if (state instanceof Response) return state; // 401 TOKEN_STALE（查不到列／密碼已變更）
+  if (state.userStatus !== "active") {
     return c.json({ error: { code: "ACCOUNT_SUSPENDED", message: "此帳號已停權，請聯絡管理者" } }, 403);
   }
   // 地址狀態只對 mailbox session 有意義（owner session 沒有 addressId）
-  if (s.scope.kind === "mailbox" && state && state.addressStatus !== "active") {
+  if (s.scope.kind === "mailbox" && state.addressStatus !== "active") {
     return c.json({ error: { code: "ADDRESS_DISABLED", message: "此地址已停用，請聯絡管理者" } }, 403);
   }
   c.set("scope", s.scope);

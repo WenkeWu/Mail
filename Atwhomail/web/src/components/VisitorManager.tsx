@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "../api/client";
-import { listVisitors, setUserQuota, setUserStatus, setUserWarmup, setVisitorAddressStatus } from "../api/endpoints";
+import {
+  deleteVisitor,
+  listVisitors,
+  setUserQuota,
+  setUserStatus,
+  setUserWarmup,
+  setVisitorAddressStatus,
+} from "../api/endpoints";
 import type { VisitorUser } from "../api/types";
 import {
   ADDRESS_DISABLE_WARNING,
+  USER_DELETE_LABEL,
+  USER_DELETE_WARNING,
   USER_SUSPEND_WARNING,
   addressStatusActionLabel,
   addressStatusTooltip,
+  userDeleteTooltip,
   userStatusActionLabel,
   userStatusTooltip,
 } from "../lib/statusSemantics";
@@ -14,13 +24,18 @@ import { IconBack, IconRefresh } from "./icons";
 import { Modal } from "./Modal";
 
 /**
- * 訪客管理（D5，docs/16 §3）—— 清單／停權／地址停用／配額／暖機豁免。
+ * 訪客管理（D5，docs/16 §3）—— 清單／停權／地址停用／配額／暖機豁免／刪除。
  *
  * D8（docs/16 §3）：**停權（帳號層）與停用（地址層）後果不同**，按鈕文案／tooltip／二次確認
  * 一律取自 `lib/statusSemantics.ts`（停權＝全部地址、**來信照收**；停用＝僅此地址且**連收信都停**）。
  *
+ * D9（docs/16 §3）：**刪除**（danger 樣式）永久移除該訪客的帳號、地址、所有信件與附件
+ * （後端 `DELETE /api/users/:id`，僅允許 `role='visitor'`）→ 二次確認必須明寫不可復原，
+ * 並把「只想暫停」的使用者導向**停權**。
+ *
  * ⚠️ **僅在 `mail.atwho.org` 與 localhost（`all` 模式）顯示**；`app.atwho.org` 不顯示（UI 收斂）。
- *    權限一律由後端判定：`GET /api/users?role=visitor` 與所有 PATCH 端點皆 `requireOwner`（N3）。
+ *    權限一律由後端判定：`GET /api/users?role=visitor` 與所有 PATCH／DELETE 端點皆 `requireOwner`（N3）
+ *    → 「刪除」按鈕只在 owner 的管理頁出現，且後端對非 owner 一律 403。
  * ⚠️ **N9（權限邊界）**：本頁只呈現**數量與時間**（信件數、最近活動）與帳號／地址狀態，
  *    **不顯示**任何主旨、寄件者或內文；owner 也無法藉 `/api/mail/*` 讀取訪客信件。
  */
@@ -56,7 +71,9 @@ export function VisitorManager({ onBack, onToast }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
-  const [confirm, setConfirm] = useState<{ user: VisitorUser; action: "suspend" | "address-off" } | null>(null);
+  const [confirm, setConfirm] = useState<{ user: VisitorUser; action: "suspend" | "address-off" | "delete" } | null>(
+    null
+  );
 
   const reload = useCallback(async () => {
     try {
@@ -98,6 +115,24 @@ export function VisitorManager({ onBack, onToast }: Props) {
       await reload();
     } catch (e) {
       onToast(e instanceof ApiError ? e.message : "操作失敗", "error");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /**
+   * 永久刪除訪客（D9）：後端一次清除帳號／地址／所有信件與附件／別名／登入計數
+   *（`registration_audit` 保留），且該地址的既有登入立即失效（後端 D10）。
+   */
+  const deleteUser = async (user: VisitorUser) => {
+    setBusyId(user.id);
+    try {
+      await deleteVisitor(user.id);
+      onToast(`${user.username} 已永久刪除`);
+      setConfirm(null);
+      await reload();
+    } catch (e) {
+      onToast(e instanceof ApiError ? e.message : "刪除失敗", "error");
     } finally {
       setBusyId(null);
     }
@@ -235,6 +270,16 @@ export function VisitorManager({ onBack, onToast }: Props) {
                       <button type="button" disabled={!a || busyId === u.id} onClick={() => openEdit(u)}>
                         寄信設定
                       </button>
+                      {/* D9：永久刪除（danger）；二次確認見下方 Modal */}
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busyId === u.id}
+                        title={userDeleteTooltip()}
+                        onClick={() => setConfirm({ user: u, action: "delete" })}
+                      >
+                        {USER_DELETE_LABEL}
+                      </button>
                     </td>
                   </tr>
                 );
@@ -251,7 +296,13 @@ export function VisitorManager({ onBack, onToast }: Props) {
 
       {confirm && (
         <Modal
-          title={confirm.action === "suspend" ? "停權／復權" : "停用／啟用地址"}
+          title={
+            confirm.action === "suspend"
+              ? "停權／復權"
+              : confirm.action === "delete"
+                ? "刪除訪客（無法復原）"
+                : "停用／啟用地址"
+          }
           onClose={() => setConfirm(null)}
         >
           {confirm.action === "suspend" ? (
@@ -275,6 +326,32 @@ export function VisitorManager({ onBack, onToast }: Props) {
                   onClick={() => void applyUserStatus(confirm.user, confirm.user.status === "active" ? "suspended" : "active")}
                 >
                   確定{confirm.user.status === "active" ? "停權" : "復權"}
+                </button>
+              </div>
+            </>
+          ) : confirm.action === "delete" ? (
+            <>
+              <p>
+                確定要<strong>永久刪除</strong>訪客 <strong>{confirm.user.username}</strong>
+                {confirm.user.address ? `（${confirm.user.address.email}）` : ""} 嗎？
+              </p>
+              {/* D9：刪除是不可逆的完整清除，警語必須逐字顯示，並導向「停權」 */}
+              <p className="warn-text">⚠️ {USER_DELETE_WARNING}</p>
+              <p className="muted small">
+                將一併清除該訪客的 {confirm.user.mail_count} 封信件與其附件，並立即讓其現有登入失效；
+                註冊與管理稽核紀錄會保留。此動作<strong>沒有</strong>復原方式。
+              </p>
+              <div className="modal-actions">
+                <button type="button" className="btn-secondary" onClick={() => setConfirm(null)}>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="btn-danger"
+                  disabled={busyId === confirm.user.id}
+                  onClick={() => void deleteUser(confirm.user)}
+                >
+                  {busyId === confirm.user.id ? "刪除中…" : "確定永久刪除"}
                 </button>
               </div>
             </>

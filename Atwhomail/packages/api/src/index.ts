@@ -1023,6 +1023,147 @@ app.patch("/api/users/:id/warmup", requireOwner, async (c) => {
 });
 
 /**
+ * R2 物件批次刪除（D9；R2 單次上限 1000 key）。
+ *
+ * ⚠️ **best-effort**：失敗只記 log，不讓整個刪除動作回報錯誤——D1 的列已刪除後，
+ *    這些物件已無法透過任何端點存取（沒有 DB 列就沒有 key），且 owner 若看到失敗訊息
+ *    會誤以為沒刪成功而重試（第二次只會拿到 404）。
+ */
+async function deleteR2Objects(bucket: R2Bucket, keys: string[]): Promise<number> {
+  let deleted = 0;
+  for (let i = 0; i < keys.length; i += 1000) {
+    const chunk = keys.slice(i, i + 1000);
+    try {
+      await bucket.delete(chunk);
+      deleted += chunk.length;
+    } catch (e) {
+      console.error("[atwhomail-api] R2 delete failed (D1 rows already removed)", {
+        count: chunk.length,
+        error: String(e),
+      });
+    }
+  }
+  return deleted;
+}
+
+/**
+ * DELETE /api/users/:id — 永久刪除**訪客**帳號與其全部資料（owner 專用；D9，docs/16 §3）
+ *
+ * ⚠️ **僅允許 `role='visitor'`**：對 owner 帳號（或任何非 visitor 角色）呼叫 → `403 FORBIDDEN`；
+ *    另以 `findOwnerId` 做縱深防禦（即使 role 欄位被誤設，也刪不到管理帳號）。
+ * ⚠️ **精準 id 操作**（`= ?` 與「取 id 的子查詢」），**禁止** LIKE 模糊比對；
+ *    先 `SELECT` 確認存在且角色正確才進入刪除。
+ * ⚠️ **不刪稽核**：`registration_audit` 是不可竄改的歷史（含本帳號的 register_ok／login_failed…），
+ *    一個字都不動；另外寫入管理稽核 `user_deleted`（操作 owner id、被刪 username／address／
+ *    信件數／附件數、時間）。
+ * ⚠️ 刪除後該地址的既有 mailbox JWT 立即失效 → `401 TOKEN_STALE`（D10，docs/16 §3 T23）。
+ *
+ * 刪除範圍與順序（依 FK，由子到父；整批 `batch`＝單一交易，任一句失敗即全部回滾，不留半刪狀態）：
+ *   `attachments`（透過 messages）→ `messages`（該地址與該 owner_user_id 的）
+ *   → `email_aliases`（指向該地址）→ `email_addresses`（該 user 名下，含已軟刪除者）
+ *   → `users` → `auth_attempts`（該地址的 mailbox 計數 key，逐一字串精準比對）
+ * 註：`attachments` 參照 `messages`，故必須**先於** messages 刪除（規格的「透過 messages」是範圍描述）。
+ */
+app.delete("/api/users/:id", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
+
+  // 1) 先 SELECT：存在且 role 正確才刪（保護管理帳號）
+  const user = await c.env.DB.prepare("SELECT id, username, role FROM users WHERE id = ?1")
+    .bind(id)
+    .first<{ id: number; username: string; role: string }>();
+  if (!user) return err(c, "NOT_FOUND", "user not found", 404);
+  if (user.role !== "visitor") return err(c, "FORBIDDEN", "只能刪除訪客帳號（owner 帳號受保護）", 403);
+  const ownerId = await getOwnerId(c.env.DB);
+  if (ownerId !== null && ownerId === id) {
+    return err(c, "FORBIDDEN", "只能刪除訪客帳號（owner 帳號受保護）", 403);
+  }
+
+  // 2) 先收集刪除後就查不到的東西：地址清單與 R2 物件 key
+  const { results: addresses } = await c.env.DB.prepare(
+    "SELECT id, email FROM email_addresses WHERE user_id = ?1 ORDER BY id"
+  )
+    .bind(id)
+    .all<{ id: number; email: string }>();
+
+  /** 本帳號的信：掛在自己名下（owner_user_id）或收在名下任一地址（address_id） */
+  const MSG_SCOPE = "owner_user_id = ?1 OR address_id IN (SELECT id FROM email_addresses WHERE user_id = ?1)";
+
+  const { results: msgRows } = await c.env.DB.prepare(
+    `SELECT raw_r2_key, html_r2_key FROM messages WHERE ${MSG_SCOPE}`
+  )
+    .bind(id)
+    .all<{ raw_r2_key: string | null; html_r2_key: string | null }>();
+  const { results: attRows } = await c.env.DB.prepare(
+    `SELECT r2_key FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE ${MSG_SCOPE})`
+  )
+    .bind(id)
+    .all<{ r2_key: string | null }>();
+
+  // 3) D1 刪除（單一交易；順序＝FK 由子到父，見上方說明）
+  let counts: number[];
+  try {
+    const results = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE ${MSG_SCOPE})`
+      ).bind(id),
+      c.env.DB.prepare(`DELETE FROM messages WHERE ${MSG_SCOPE}`).bind(id),
+      c.env.DB.prepare(
+        `DELETE FROM email_aliases
+          WHERE target_email_address_id IN (SELECT id FROM email_addresses WHERE user_id = ?1)`
+      ).bind(id),
+      c.env.DB.prepare("DELETE FROM email_addresses WHERE user_id = ?1").bind(id),
+      c.env.DB.prepare("DELETE FROM users WHERE id = ?1").bind(id),
+      // auth_attempts：該地址的 mailbox 計數 key（逐一字串比對，不用 LIKE）
+      ...addresses.map((a) => c.env.DB.prepare("DELETE FROM auth_attempts WHERE key = ?1").bind(`mailbox:${a.email}`)),
+    ]);
+    counts = results.map((r) => Number(r.meta.changes ?? 0));
+  } catch (e) {
+    // batch 為單一交易 → 失敗即全部回滾（不留半刪狀態）；不洩漏 SQL 細節給客戶端
+    console.error("[atwhomail-api] user delete failed (rolled back)", { id, error: String(e) });
+    return err(c, "DELETE_FAILED", "刪除失敗（已回滾，資料未變更）", 500);
+  }
+  const attachments = counts[0] ?? 0;
+  const messages = counts[1] ?? 0;
+  const aliases = counts[2] ?? 0;
+  const addressesDeleted = counts[3] ?? 0;
+
+  // 4) R2 物件（best-effort；D1 列已刪 → 物件不再可達）
+  const r2Keys = [
+    ...msgRows.flatMap((m) => [m.raw_r2_key, m.html_r2_key]),
+    ...attRows.map((a) => a.r2_key),
+  ].filter((k): k is string => typeof k === "string" && k.length > 0);
+  const r2Deleted = await deleteR2Objects(c.env.MAIL, r2Keys);
+
+  // 5) 管理稽核（registration_audit 既有列一律保留，只新增這一筆）
+  const primary = addresses[0] ?? null;
+  auditAsync(c, {
+    event: "user_deleted",
+    userId: id, // 已刪除的目標；registration_audit 的 user_id/address_id 只是整數欄（無 FK）
+    addressId: primary?.id ?? null,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: {
+      by: scope.kind === "owner" ? scope.userId : null,
+      username: user.username,
+      address: primary?.email ?? null,
+      addresses: addressesDeleted,
+      messages,
+      attachments,
+      aliases,
+      r2_objects: r2Deleted,
+    },
+  });
+  return c.json({
+    ok: true,
+    id,
+    username: user.username,
+    deleted: { addresses: addressesDeleted, messages, attachments, aliases },
+  });
+});
+
+/**
  * PATCH /api/email-addresses/:id/status — 停用／啟用**訪客**地址（owner 專用；D5）
  *
  * 為什麼要另開端點：既有的 `PATCH /api/email-addresses/:id` 只認 `user_id = 自己`，

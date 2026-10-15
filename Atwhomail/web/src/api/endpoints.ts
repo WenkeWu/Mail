@@ -154,3 +154,11 @@ export const setVisitorAddressStatus = (id: number, status: "active" | "disabled
     method: "PATCH",
     json: { status },
   });
+
+/**
+ * 永久刪除**訪客**帳號（D9）：一併清除其地址、所有信件與附件、別名與登入計數。
+ * ⚠️ 後端僅允許 `role='visitor'`（對 owner 帳號 → 403 `FORBIDDEN`）；`registration_audit` 保留。
+ * ⚠️ 不可復原（前端必須先二次確認）；只是要暫停請改用 `setUserStatus(id, "suspended")`。
+ */
+export const deleteVisitor = (id: number) =>
+  request<{ ok: boolean; id: number; username: string }>(`/api/users/${id}`, { method: "DELETE" });

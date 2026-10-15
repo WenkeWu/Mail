@@ -1,18 +1,23 @@
 /**
- * D8-2／D8-3 的**前端純函式**測試（docs/16 §3）
+ * D8-2／D8-3／D9 的**前端純函式**測試（docs/16 §3）
  *
- * 涵蓋：停權／停用的按鈕文案與 tooltip 是否明寫「影響範圍」與「收信」後果，
- * 以及停用地址前的二次確認警語是否逐字包含必要的警告（不可逆的收信中斷）。
+ * 涵蓋：停權／停用的按鈕文案與 tooltip 是否明寫「影響範圍」與「收信」後果、
+ * 停用地址前的二次確認警語（不可逆的收信中斷），以及**刪除訪客**（D9）的按鈕文案、
+ * tooltip 與二次確認警語（逐字必須明寫「無法復原」並導向「停權」）。
  *
- * ⚠️ 這裡測的是文案與顯示邏輯；**行為**（立即失效）由後端判定，
- *    對應的 API 測試見 `packages/api/test/admin-status.spec.ts`（T17–T19）。
+ * ⚠️ 這裡測的是文案與顯示邏輯；**行為**（立即失效／完整清除）由後端判定，
+ *    對應的 API 測試見 `packages/api/test/admin-status.spec.ts`（T17–T19）與
+ *    `packages/api/test/admin-delete.spec.ts`（T20–T24）。
  */
 import { describe, expect, it } from "vitest";
 import {
   ADDRESS_DISABLE_WARNING,
+  USER_DELETE_LABEL,
+  USER_DELETE_WARNING,
   USER_SUSPEND_WARNING,
   addressStatusActionLabel,
   addressStatusTooltip,
+  userDeleteTooltip,
   userStatusActionLabel,
   userStatusTooltip,
 } from "../src/lib/statusSemantics";
@@ -59,5 +64,34 @@ describe("D8-3：停用地址前的二次確認", () => {
   it("停權警語與停用警語不同：停權不刪信、來信照收", () => {
     expect(USER_SUSPEND_WARNING).toContain("來信仍會照常收到並保留");
     expect(USER_SUSPEND_WARNING).not.toBe(ADDRESS_DISABLE_WARNING);
+  });
+});
+
+describe("D9：刪除訪客的按鈕與二次確認", () => {
+  it("刪除按鈕文案為「刪除」（danger 樣式由 VisitorManager 套用）", () => {
+    expect(USER_DELETE_LABEL).toBe("刪除");
+  });
+
+  it("二次確認警語逐字包含「將永久刪除…所有信件與附件，且無法復原」與「請改用『停權』」", () => {
+    expect(USER_DELETE_WARNING).toBe(
+      "將永久刪除該訪客的帳號、地址、所有信件與附件，且無法復原；若只是要暫停，請改用『停權』"
+    );
+    // 逐字要求的關鍵片段（拆開斷言 → 訊息被改動時能指出少了哪一段）
+    expect(USER_DELETE_WARNING).toContain("帳號、地址");
+    expect(USER_DELETE_WARNING).toContain("所有信件與附件");
+    expect(USER_DELETE_WARNING).toContain("無法復原");
+    expect(USER_DELETE_WARNING).toContain("停權");
+  });
+
+  it("刪除警語與停權／停用警語互不相同（三者後果不同，不能共用一句）", () => {
+    expect(USER_DELETE_WARNING).not.toBe(USER_SUSPEND_WARNING);
+    expect(USER_DELETE_WARNING).not.toBe(ADDRESS_DISABLE_WARNING);
+  });
+
+  it("tooltip 說明與停權的差別：刪除不可逆、只想暫停請用停權", () => {
+    const tip = userDeleteTooltip();
+    expect(tip).toContain("無法復原");
+    expect(tip).toContain("停權");
+    expect(tip).toContain("信件");
   });
 });
