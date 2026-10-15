@@ -393,3 +393,20 @@
 
 **R2 提醒（給 owner）**：刪除訪客會一併刪除其信件與附件的 **R2 物件**（best-effort；失敗只記 log，
 不影響 D1 已完成的刪除——沒有 DB 列就沒有 key）。若該訪客的信要留檔，請先確認備份已完成（`docs/09`）。
+
+---
+
+## 10. owner 決策紀錄（2026-10-14）
+
+| 項目 | 決定 | 理由／備註 |
+|---|---|---|
+| 階段 ③（Access JWT 閘門）| ✅ 已上線 | 管理登入只認 `mail.atwho.org` ＋ Access；`curl`／`app.` 一律 403 |
+| `mail.` Access session 168h → 24h | ✅ 已套用 | 縮小裝置／cookie 被竊窗口 |
+| D8（停權／停用語意 ＋ 立即生效）| ✅ 已上線 | |
+| D9（刪除訪客按鈕）／D10（查不到列的 session 失效）| ✅ 實作完成，待部署 | |
+| **選項 A**（Access 改用 Google IdP ＋ 只允許 Google）| ❌ **不做** | owner 判斷：現行 Access 已含 **Google 手機確認**，再升級無實質效益 |
+| **選項 B**（開 Google 帳號兩步驟驗證）| ❌ **不做（視為已具備）** | 同上；實際上 owner 的 Google 帳號很可能**已開啟**兩步驟驗證（手機確認）→ 建議日後只做「狀態確認」即可 |
+| **選項 4**（Cloudflare WAF 速率限制）| ❌ **不做** | 需先給 API 自訂網域（`api.atwho.org`）；owner 評估不需要 |
+| **選項 5**（D6：App 內建 TOTP）| ❌ **不做** | 與 Access ＋ Google 認證重疊，且需額外開發與驗證器 App |
+
+**現行有效防護層級（實際生效）**：Access 身分閘門（24h）→ 管理登入需 Access JWT（階段 ③）→ 帳號密碼（argon2id ＋ 5 次失敗鎖 15 分）→ 登入後狀態檢查（D8 立即生效）→ 訪客隔離（mailbox scope ＋ N9）。
