@@ -5,7 +5,10 @@
   "version": "0.1.0",
   "description": "AtWhoMail — 大量虛擬 Email Address + 自有 App 收發信（Cloudflare Email Service + D1 + R2）",
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run && pnpm --filter @atwhomail/web run test",
+    "test:workers": "vitest run",
+    "test:web": "pnpm --filter @atwhomail/web run test",
+    "secret:scan": "node scripts/secret-scan.mjs",
     "lint": "pnpm typecheck",
     "build": "pnpm -r --if-present run build",
     "dev": "node scripts/dev-local.mjs",

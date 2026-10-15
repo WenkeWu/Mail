@@ -41,5 +41,13 @@ export default defineConfig({
      * 這些測試是「真的在算密碼」而不是卡住，放寬逾時才是正確的處置。
      */
     testTimeout: 30_000,
+    /**
+     * 2026-10-15：`hookTimeout` 一併由預設 10s 放寬到 30s。
+     * 原因與 `testTimeout` 完全相同（機器有負載時整批變慢），但**預設值不同** ——
+     * `testTimeout` 放寬後 hook 仍是 10s，於是 `beforeEach`（清 8 張表 ＋ 種 owner）
+     * 在滿載時成為新的瓶頸：實測 `admin-status.spec.ts` 出現 `Hook timed out in 10000ms`
+     * （同一案例單獨跑 100% 通過，屬環境負載而非行為回歸）。
+     */
+    hookTimeout: 30_000,
   },
 });
