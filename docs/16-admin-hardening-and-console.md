@@ -618,3 +618,15 @@
 | 回退 | 改回 `p=none`（30 秒）✅ |
 
 **風險評估**：我方寄出信皆有 DKIM（`cf-bounce`）＋ SPF 對齊 → `quarantine` 風險低 ✅；主要風險為**轉寄信件**可能因 SPF 斷鏈被判 quarantine ⚠️（可接受）。
+
+### 階段 8（D12／D13／D14）— ✅ 完成（2026-10-15）
+
+| 項目 | 結果 |
+|---|---|
+| 實作 | `259bf7e`（feat）、`5e70e33`（docs）、`ae59ad6`（fix 誤報收斂）|
+| canonical 三指令（助手獨立複跑）| ✅ `lint` 0／`build` 0／`test` **21 files / 273 tests**（workerd pool 19/259 ＋ web DOM pool 2/14）|
+| D12 前端測試環境 | ✅ 新增 `web/vitest.config.ts`（**jsdom** ＋ `@testing-library/react`，只收 `test/**/*.dom.spec.tsx`）、`web/test/dom-setup.ts`、`dom-fetch.ts`；根 `pnpm test` 改為依序跑兩組（`vitest run && pnpm --filter @atwhomail/web run test`）；T33 ≥5 個渲染測試 ✅ |
+| D13 錯誤路徑 | ✅ `packages/api/test/admin-delete-failure.spec.ts`（454 行）：**T34** R2 刪除失敗 → 仍 `200` 且 `r2_objects: 0`（誠實回報）＋ `console.error`；**T35** D1 batch 失敗 → `500 DELETE_FAILED` 且**確實回滾**（批次內的 soft 標記亦被回滾，`deleted_at` 仍為 NULL 為證）✅ |
+| D14 機密稽核腳本 | ✅ `scripts/secret-scan.mjs`（516 行、**無新增依賴**）＋ `pnpm secret:scan`；實跑結果：working tree **13 檔／1976 行**、`--tracked` **152 檔／29585 行 → 皆 0 命中** ✅（輸出不含機密值 ✅）|
+| 超出規格的一行（已覆核接受 ✅）| `vitest.config.ts` 增 `hookTimeout: 30_000`：滿載時 `beforeEach` 撞預設 10s 上限（與既有 `testTimeout` 同因，單獨跑必過 → 屬環境負載而非行為回歸 ✅）|
+| 部署需求 | ✅ **無 API／UI 行為變更、無 migration** → 不需部署；拉版後僅需 `pnpm install`（web 新增 devDependency）✅ |
