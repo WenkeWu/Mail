@@ -335,6 +335,8 @@
 | 停權後既有 JWT | ✅ 立即 `403 ACCOUNT_SUSPENDED`（可逆實測，測試資料已完全清除）|
 | 地址停用後登入 | ✅ 正確密碼 → `403 ADDRESS_DISABLED`；錯誤密碼 → 401（不洩漏狀態）|
 
+**Access 設定調整（2026-10-14）**：`mail.atwho.org` Access session 由 **168h 縮短為 24h**（縮小裝置被偷用／session 被竊的窗口；政策仍為 allow `ulhome@gmail.com`，訪客入口 `app.atwho.org` 不受影響）。
+
 **回退方式**：移除／清空 `ACCESS_MAIL_AUD` → 重新部署（程式僅記錄 warning 並放行）。
 
 **已知小缺口（未來加固，非安全問題）**：地址已被刪除時，`loadSessionState` 查不到列 → session 不判失效；
