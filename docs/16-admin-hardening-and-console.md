@@ -593,3 +593,28 @@
 1. 重建「曾被軟刪除」的同名地址：舊版 **500** → 新版 **409 `ADDRESS_EXISTS`**（附提示需 `mode=hard`）✅ **修好既有 Bug**
 2. 對「已軟刪除」的地址執行 `?mode=hard`：由 `404` 改為 **`200` ＋ `previously_deleted:true`**（可清除垃圾桶列與其 R2 物件 ✅）
 3. `soft` 對已軟刪除地址：**維持 `404`**（不重複標記、不改寫 `deleted_at`、不寫稽核 ✅）
+### D15 — 郵件傳輸安全強化（MTA-STS enforce ＋ DMARC 收緊）
+
+**背景（2026-10-15 查證）**
+- `_mta-sts.atwho.org` = CNAME → `_mta-sts.mx.cloudflare.net`（Cloudflare 代管 TXT ✅）
+- MTA-STS 政策由**自家 worker** `atwhomail-mta-sts`（route `mta-sts.atwho.org/*`）服務：代理 Cloudflare 上游政策，並以 `MODE_OVERRIDE` 覆寫 `mode` 行 ✅
+- `_dmarc` = `v=DMARC1; p=none; rua=mailto:…@dmarc-reports.cloudflare.net`（**已啟用 Cloudflare DMARC 管理**，報告可於 Dashboard 檢視 ✅）
+- `_smtp._tls` TLS-RPT 已設定，但 `tlsrpt@` 收件匣目前 **0 筆**（無 TLS 失敗資料 ⚠️）
+
+**已完成 ✅**
+
+| 項目 | 內容 | 驗證 |
+|---|---|---|
+| MTA-STS `testing → enforce` | `packages/mta-sts/wrangler.jsonc` 的 `MODE_OVERRIDE` 改為 `enforce` 並部署（Version `4635530f-a0c2-4ca4-b7d7-0b9ab653bd31`）| ✅ live 政策 `mode: enforce`；**實測寄一封信進來 5 秒送達**（收信不受影響）；commit `6f43719` |
+| 回退方式 | 把 `MODE_OVERRIDE` 改回 `testing` → 重新部署（約 1 分鐘）✅ | — |
+
+**待辦 ⏳（需 owner 於 Dashboard 操作，助手無 `Zone:DNS:Edit`）**
+
+| 步驟 | 內容 |
+|---|---|
+| 1 | 檢視 DMARC 報告：Dashboard → `atwho.org` → Email → DMARC Management → 確認**合法來源全部 pass**（我方寄出＝Cloudflare Email Service，DKIM＋SPF 對齊 ✅）|
+| 2 | DNS → TXT `_dmarc` → 將 **`p=none` 改為 `p=quarantine`**（⚠️ 其餘字元（含 `rua`）**一字不動**）|
+| 3 | 助手驗證：查詢 `_dmarc` 確認生效 ＋ 實測寄信（寄到 Gmail 確認未進垃圾信）|
+| 回退 | 改回 `p=none`（30 秒）✅ |
+
+**風險評估**：我方寄出信皆有 DKIM（`cf-bounce`）＋ SPF 對齊 → `quarantine` 風險低 ✅；主要風險為**轉寄信件**可能因 SPF 斷鏈被判 quarantine ⚠️（可接受）。
