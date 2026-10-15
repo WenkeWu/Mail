@@ -56,6 +56,7 @@
 | **D8** | **停權／停用語意釐清 ＋ 立即生效**（訊息、文案、警告、session 即時失效） | `packages/api/src/index.ts`、`web/src/components/VisitorManager.tsx` | 修改 |
 | **D9** | **訪客管理頁新增「刪除訪客」**（含二次確認、完整清除、保留稽核）| `packages/api/src/index.ts`、`web/src/components/VisitorManager.tsx` | 修改 |
 | **D10** | **已刪除地址／查不到列的 session 直接失效**（小缺口加固）| `packages/api/src/auth.ts` | 修改 |
+| **D11** | **地址刪除語意補平**：寫稽核 ＋ 提供「永久刪除（含信件／附件／釋放名稱）」模式 ＋ UI 語意說明 | `packages/api/src/index.ts`、`web/src/components/AddressManager.tsx`、`VisitorManager.tsx` | 修改 |
 
 ---
 
@@ -206,6 +207,33 @@
 
 ---
 
+### D11 — 地址刪除語意補平（稽核 ＋ 永久刪除 ＋ UI 說明）
+
+**背景（2026-10-14 實測發現）**：`DELETE /api/email-addresses/:id` 只做**軟刪除**
+（`UPDATE email_addresses SET status='deleted', deleted_at=…`），**保留信件與 R2 物件、且不留稽核** ⚠️；
+而「訪客刪除」（D9）是硬刪除 ＋ 清 R2 ＋ 寫稽核 ✅ → 兩者語意不一致，容易誤解。
+
+**設計原則**：地址＝信箱（只列 owner 自己的）；訪客＝別人註冊的帳號。兩頁維持並存，但**刪除語意補平**。
+
+- **D11-1 稽核**：`DELETE /api/email-addresses/:id` 一律寫稽核 `address_deleted`
+  （欄位：操作 owner id、address id／email、`mode`＝soft／hard、被刪信件數、時間；⚠️ 不得記錄信件內容）
+- **D11-2 兩種刪除模式**：`DELETE /api/email-addresses/:id?mode=soft|hard`（**預設 `soft`，維持既有行為相容**）
+  - `soft`（現狀）：標記 `status='deleted'`、`deleted_at`；**保留**信件與 R2 ✅
+  - `hard`：在 soft 之後，接續刪除該地址**所有** `messages`（含所有資料夾／垃圾桶）→ `attachments` → R2 物件
+    （`raw_r2_key`／`html_r2_key`／`attachments.r2_key`，best-effort，失敗僅記錄 log ✅）
+  - ⚠️ **名稱釋放**：請確認新增地址的唯一性檢查是否排除 `deleted` 列；若會阻擋重建同名地址，
+    `hard` 模式需真正移除該列（或調整檢查），並以測試證明「hard 後可重建同名地址」✅；
+    `soft` 模式行為不得改變 ✅
+  - 權限：僅 owner 且**只能操作自己名下**的地址（他人地址 → 404 ✅）；不得刪除訪客地址（那是訪客管理／D9 的職責 ✅）
+- **D11-3 前端（`AddressManager`）**：刪除按鈕 → 二次確認對話框提供兩個明確選項
+  ① **停用並保留信件**（soft，預設 ✅）
+  ② **永久刪除**（hard：連同該地址所有信件與附件、清除 R2、釋放名稱；標明**不可復原** ⚠️）
+  並顯示該地址信件數（例：「此地址有 15 封信，永久刪除將一併刪除」✅）
+- **D11-4 UI 語意說明**：`AddressManager` 與 `VisitorManager` 各加一行說明
+  （地址管理＝**你自己的信箱**；訪客管理＝**別人用邀請碼註冊的帳號**）✅
+
+---
+
 ## 4. 不可做（N 系列）
 
 | # | 禁止 |
@@ -265,6 +293,11 @@
 | T22 | 訪客 JWT 呼叫 `DELETE /api/users/:id` → 403 |
 | T23 | 地址被刪除後，該地址的舊 mailbox JWT → **401 `TOKEN_STALE`**（查不到列即失效，D10）|
 | T24 | D10 不得造成 500：查不到列的 owner session → 401，且 rescue token 仍可通過 |
+| T25 | `mode=soft`（預設）：地址標記 deleted，**信件與 R2 保留**，稽核 `address_deleted(mode=soft)` |
+| T26 | `mode=hard`：該地址所有 messages／attachments 清除、R2 物件刪除，稽核 `address_deleted(mode=hard)` |
+| T27 | `mode=hard` 之後，**同一個 email 可重新建立**（名稱已釋放）|
+| T28 | 不可刪他人地址（他人 address id → 404）；訪客 JWT 呼叫 → 403 |
+| T29 | 稽核事件**不含**任何信件內容（主旨／寄件者／內文）|
 
 ---
 
@@ -280,7 +313,7 @@
 ## 8. Definition of Done
 
 - [ ] D1–D5 與 **D7** 全部交付（D6 為選配）
-- [ ] canonical 三指令全綠；T1–T24 通過
+- [ ] canonical 三指令全綠；T1–T29 通過
 - [ ] `docs/05`（API 規格）與 `docs/11`（上線檢查清單）同步更新
 - [ ] 若新增 migration（`0007`）：只新增檔案，**不套用** ✅
 - [ ] 未部署、未跑遠端 migration、未動 N6–N8 列出的檔案
