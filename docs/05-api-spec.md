@@ -473,6 +473,17 @@ DELETE /api/users/:id                      Authorization: owner（訪客 JWT →
 | `FORBIDDEN` | 403 | `DELETE /api/users/:id` 的目標不是 `role='visitor'`（保護管理帳號）|
 | `TOKEN_STALE` | 401 | 目標列已不存在（D10 新增情境；原本僅密碼變更）|
 
+**失敗路徑已有測試證明（D13，2026-10-15）**
+
+上面兩條「宣稱」原本只有實作、**沒有測試證明**（作者當時的誠實聲明），現由
+`packages/api/test/admin-delete-failure.spec.ts` 以**在 binding 邊界注入失敗**的方式釘住
+（`docs/16` §6 **T34／T35**；手法見 `docs/11` §2 第 14 項，**production 未改一行**）：
+
+| 注入的失敗 | 期望（＝本節的宣稱） |
+|---|---|
+| `env.MAIL.delete()` 丟例外 | 仍回 **`200`**（best-effort）：D1 的 user／address／messages／attachments／aliases／auth_attempts **全部照常刪除**，`deleted.r2_objects` **誠實回 `0`**（不假裝成功），`console.error` 留下 `R2 delete failed` |
+| `env.DB.batch()` 尾端追加必定失敗的語句（前面的語句真的執行過） | 回 **`500 DELETE_FAILED`**「刪除失敗（已回滾，資料未變更）」，且**資料確實未變更**、**不寫 `user_deleted` 稽核**、不動 R2 物件 |
+
 ### 2.13 前端：刪除訪客的按鈕與二次確認（D9）
 
 - `VisitorManager.tsx` 每列新增 **「刪除」**（danger 樣式，`title` tooltip 說明與停權的差別）。
@@ -541,6 +552,17 @@ DELETE /api/email-addresses/:id?mode=soft|hard      Authorization: owner（或 r
 | `INVALID_ID` | 400 | `id` 不是正整數 |
 | `DELETE_FAILED` | 500 | D1 刪除交易失敗（已回滾，資料未變更）|
 | `ADDRESS_EXISTS` | 409 | 名稱已存在（**含曾被 soft 刪除、名稱尚未釋放**；訊息會提示需先 `mode=hard`）|
+
+**失敗路徑已有測試證明（D13，2026-10-15）**
+
+- **R2 best-effort**：`env.MAIL.delete()` 丟例外時，`?mode=hard` 仍回 **`200`**（`deleted.r2_objects=0`）、
+  該列照常移除、**名稱照常釋放**（同名可重建 201）、稽核照寫、log 留下 `R2 delete failed`。
+- **交易回滾**：`env.DB.batch()` 失敗時回 **`500 DELETE_FAILED`**「永久刪除失敗（已回滾，資料未變更）」；
+  由於 hard 的**第一步 soft 更新就在同一個 batch 內**，測試直接斷言失敗後該列仍為
+  `status='active'`、`deleted_at IS NULL` —— 這是「真的回滾」而不是「根本沒執行」的證據。
+
+測試檔：`packages/api/test/admin-delete-failure.spec.ts`（`docs/16` §6 **T34／T35**）；
+**production 行為未因此變更一行**（手法見 `docs/11` §2 第 14 項）。
 
 **前端（§AddressManager）**：`GET /api/email-addresses` 每列新增 `messages`（該地址信件總數，
 含所有資料夾與垃圾桶；與 hard 實際刪除數量一致），供刪除對話框顯示

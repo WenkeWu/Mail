@@ -295,6 +295,65 @@
       - [ ] ⚠️ 行為變更告知：**已軟刪除的地址**送 `mode=hard` 由 `404` 改為 `200`（升級路徑）；
             `mode=soft`（含未帶 mode）對這類列**維持 `404`**（既有行為不變，只是明文確立）
 
+- [ ] **14. 階段 8：前端 jsdom 測試環境（D12）＋ 錯誤路徑測試（D13）＋ 推送前機密稽核（D14）**
+      （2026-10-15 程式完成；**未部署、無 production 行為變更、無 migration**；
+      對應 `docs/16` §6 **T33–T35**）
+      **⚠️ 部署前告知：本階段沒有任何 API／UI 行為變更 → 不必排進部署順序，也沒有回退需求。**
+      它的價值在「往後每一次改動都更難悄悄壞掉」，而不是新功能。
+
+      **D12 —— 前端測試環境（測試環境說明）**
+      - [ ] 新增 `web/vitest.config.ts`：**獨立一份 jsdom 設定**（`@vitejs/plugin-react` ＋
+            `environment: "jsdom"`），只收 `web/test/**/*.dom.spec.tsx`。
+            根目錄 `vitest.config.ts`（`@cloudflare/vitest-plugin` 的 **workerd** pool）**未變動**；
+            既有純函式測試（`statusSemantics.spec.ts`／`hostMode.spec.ts`／`adminConsole.spec.ts`）
+            **留在原 pool、一行未改**（D12 明文要求）。
+            為什麼要分開：workerd pool 沒有 DOM，`.tsx` 元件在裡面無法渲染（這是 D11-3／D11-5
+            當時只測得到「文案純函式」的原因）。
+      - [ ] 測試工具：**`@testing-library/react` 16**（＋ `@testing-library/dom`）＋ **`jsdom` 30**。
+            選它而不選「原生 `react-dom` ＋ `act`」：`findBy*`／`waitFor` 已內建 act 包裝
+            （不必自己處理「更新不在 act 內」的警告），查詢 API 也讓斷言直接寫成使用者看到的文字。
+            新增的 devDependency 只有這三個（＋ `vitest` 宣告在 `web`），全部只在 `web` 套件。
+      - [ ] 執行方式：根目錄 **`pnpm test`** ＝ `pnpm test:workers`（workerd）→ `pnpm test:web`（jsdom）
+            依序執行；也可分開單跑。
+      - [ ] ⚠️ **jsdom 下一律 mock `fetch`**：`web/test/dom-setup.ts` 先鋪一個「一被呼叫就丟例外」的
+            `fetch`，忘記 mock 的測試會**立刻失敗**，不可能真的連外網；各測試再用
+            `web/test/dom-fetch.ts` 的 `installFetch()` 依 URL 回假資料（並記錄呼叫，可斷言送出的請求）。
+      - [ ] 涵蓋（T33，共 14 個渲染案例）：① 已刪除地址區塊（地址／刪除時間／信件數）② 刪除對話框
+            兩選項與「無法復原」③④ 停權／停用的文案與 tooltip ⑤ 刪除訪客二次確認 ⑥ 清單載入失敗
+            → 只壞該區塊、整頁照常（＋重試只重打失敗的端點）
+
+      **D13 —— 錯誤路徑（R2 失敗／D1 回滾）＋注入手法**
+      - [ ] 測試檔 `packages/api/test/admin-delete-failure.spec.ts`（7 案例）。手法是
+            **dependency injection，不改 production 一行**：測試本來就是
+            `app.request(path, init, env, ctx)` 直接餵環境，所以用 `Object.create(env)` 只覆寫
+            單一 binding 就等於換掉被測程式看到的依賴 ——
+            · R2：`Proxy` 包住真 bucket，只讓 `delete()` 丟例外（`get`／`put` 照常 → 可斷言物件還在）
+            · D1：`Proxy` 包住真 `DB`，在 `batch()` **尾端追加一句必定失敗的 SQL**。關鍵是前面的
+              語句**真的執行過**，全靠 D1 交易回滾 → 失敗後斷言 `deleted_at` 仍為 `NULL`，
+              證明的是「真的回滾」而不是「根本沒執行」。
+      - [ ] 驗收：R2 失敗 → 仍 `200`、D1 照常刪、`r2_objects: 0`、log 有 `R2 delete failed`；
+            batch 失敗 → `500 DELETE_FAILED`「已回滾，資料未變更」、六張表原封不動、不寫稽核。
+            （`docs/05` §2.12／§2.14 已同步此說明）
+
+      **D14 —— 推送前機密稽核腳本**
+      - [ ] `Atwhomail/scripts/secret-scan.mjs`（**純 Node、零依賴**）＋ `pnpm secret:scan`。
+            ⚠️ 本次**只新增**這一支腳本，既有 `scripts/*` 一字未動（N8）。
+      - [ ] 建議：**每次 push 前跑一次**（要自動化的話掛個人 pre-push hook，本 repo 不代為設定）。
+            退出碼：`0` 乾淨／`1` 發現／`2` 用法或環境錯誤。
+      - [ ] 掃描範圍：working tree 變更（staged ＋ unstaged，只看**新增的行**）＋ commit 範圍
+            （預設 `origin/main..HEAD`，該 ref 不存在會明講略過）＋ **未追蹤但未被 `.gitignore`
+            排除**的檔案（只差一個 `git add -A` 就會被推上去，漏掉等於只檢查一半）。
+            `--tracked` 可加掃所有已追蹤檔案的內容（完整稽核，較慢）。
+      - [ ] 規則：① `ADMIN_TOKEN=`／`JWT_SECRET=`／`ACCESS_*_SECRET=` 這類賦值（含佔位值過濾，
+            所以測試裡的 `test-jwt-secret` 不會誤報）② Cloudflare API token（40 字元十六進位，
+            前後加邊界 → 64 字元的 `ACCESS_MAIL_AUD` 不會被誤切）③ JWT（`eyJ…` 三段式）
+            ④ `BEGIN … PRIVATE KEY`／`RSA`／`OPENSSH` ⑤ `AKIA`／`AIza`／`sk-` 前綴；
+            外加**追蹤檔名**檢查：`.dev.vars`、`.env`（**排除 `.example`**）、`*.pem`、`*.key`、
+            `credentials*`。允許清單：行內 `secret-scan:ignore` 或 `.secret-scanignore`。
+      - [ ] ⚠️ **只輸出 `檔案:行號:規則名`，絕不輸出機密值**（把值印到終端機／CI log 等於又複製一份）。
+      - [x] 已完成驗證：假樣本 5 類規則全數命中且**輸出不含任何值**；乾淨樣本 → `0`；
+            含假 token → `1`；`.secret-scanignore` 與行內 ignore 皆生效；**本 repo 實跑 → `0`**（乾淨）
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
