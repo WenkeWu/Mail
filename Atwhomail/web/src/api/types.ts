@@ -73,6 +73,11 @@ export interface EmailAddressInfo {
   has_password: boolean;
   created_at: number;
   updated_at: number;
+  /**
+   * 該地址的信件**總數**（含所有資料夾與垃圾桶；D11-3）。
+   * 刪除對話框用它顯示「此地址有 N 封信，永久刪除將一併刪除」——與 `?mode=hard` 的刪除範圍一致。
+   */
+  messages?: number;
 }
 
 /** 登入 session（Model C：owner 或單一信箱） */

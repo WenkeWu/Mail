@@ -66,3 +66,51 @@ export function userDeleteTooltip(): string {
  */
 export const USER_DELETE_WARNING =
   "將永久刪除該訪客的帳號、地址、所有信件與附件，且無法復原；若只是要暫停，請改用『停權』";
+
+// ───────────── D11：地址刪除語意補平（docs/16 §3）─────────────
+
+/**
+ * D11-4：**地址管理**頁的定位說明（單一來源）。
+ *
+ * 為什麼要寫這一句：兩頁（地址管理／訪客管理）都在管理「地址」，但對象完全不同 ——
+ * 地址管理是**你自己的信箱**（`owner_user_id`＝你），刪除語意是自己的資料；
+ * 訪客管理是**別人用邀請碼註冊的帳號**（D9 才是那裡的刪除）。誤解會導致刪錯東西。
+ */
+export const ADDRESS_MANAGER_HINT =
+  "地址管理＝你自己的信箱：這裡只列出你名下的地址，信件與附件都是你的資料。";
+
+/** D11-4：**訪客管理**頁的定位說明（單一來源） */
+export const VISITOR_MANAGER_HINT =
+  "訪客管理＝別人用邀請碼註冊的帳號：不是你自己的信箱，你只看得到數量與時間，讀不到他們的信件內容。";
+
+/** D11-3 ①：停用並保留信件（soft；**預設**選項） */
+export const ADDRESS_DELETE_SOFT_LABEL = "停用並保留信件";
+
+/** ① soft 選項的後果說明 */
+export const ADDRESS_DELETE_SOFT_DESC =
+  "標記為已刪除：此後寄到該地址的信會被丟棄，但現有的信件與附件保留（之後仍可再永久刪除）。";
+
+/** D11-3 ②：永久刪除（hard） */
+export const ADDRESS_DELETE_HARD_LABEL = "永久刪除";
+
+/**
+ * D11-3 ②：hard 選項的後果說明（必須明寫「不可復原」與清除範圍：信件／附件／R2／釋放名稱）。
+ */
+export function addressHardDeleteWarning(): string {
+  return "永久刪除將連同該地址的所有信件與附件、雲端原始檔（R2）一併清除，並釋放名稱供重新建立；無法復原。";
+}
+
+/**
+ * D11-3：刪除對話框顯示的信件數（例：「此地址有 15 封信，永久刪除將一併刪除」）。
+ *
+ * ⚠️ 只顯示**數量**（N9 精神）：owner 管理自己的地址時看得到自己的信，但這裡的口徑與
+ *    訪客管理一致 —— 對話框只講數量，不帶主旨／寄件者。
+ */
+export function addressMessageCountLine(count: number): string {
+  return `此地址有 ${count} 封信，永久刪除將一併刪除`;
+}
+
+/** 刪除成功後的 toast 文案（兩種模式語意不同，不可共用一句） */
+export function addressDeleteToast(email: string, mode: "soft" | "hard"): string {
+  return mode === "hard" ? `${email} 已永久刪除（信件與附件已清除，名稱已釋放）` : `${email} 已停用（soft delete，信件保留）`;
+}

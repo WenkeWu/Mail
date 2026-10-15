@@ -1226,10 +1226,23 @@ app.post("/api/email-addresses", requireOwner, async (c) => {
   }
 
   const email = `${localPart}@${DOMAIN}`;
-  const exists = await c.env.DB.prepare("SELECT id FROM email_addresses WHERE email = ?1 AND deleted_at IS NULL")
+  // ⚠️ D11-2 **名稱釋放**：這裡**刻意不看 `deleted_at`** —— `email` 與 `(local_part, domain)` 都是 UNIQUE
+  //    且不含 `deleted_at`，所以軟刪除的列仍在、名稱**尚未釋放**。舊版只檢查 `deleted_at IS NULL`
+  //    → 軟刪除後重建同名會通過這道檢查、接著在 INSERT 撞 UNIQUE 而回 500；現在一律回 409。
+  //    要真正釋放名稱，請用 `DELETE /api/email-addresses/:id?mode=hard`（會移除該列）。
+  const exists = await c.env.DB.prepare("SELECT id, deleted_at FROM email_addresses WHERE email = ?1")
     .bind(email)
-    .first();
-  if (exists) return err(c, "ADDRESS_EXISTS", "address already exists", 409);
+    .first<{ id: number; deleted_at: number | null }>();
+  if (exists) {
+    return err(
+      c,
+      "ADDRESS_EXISTS",
+      exists.deleted_at === null
+        ? "address already exists"
+        : "此名稱曾被刪除（soft delete），名稱尚未釋放；需先永久刪除（mode=hard）才能重新建立",
+      409
+    );
+  }
 
   const ts = now();
   const res = await c.env.DB.prepare(
@@ -1244,9 +1257,12 @@ app.post("/api/email-addresses", requireOwner, async (c) => {
 app.get("/api/email-addresses", requireOwner, async (c) => {
   const scope = c.get("scope");
   if (scope.kind !== "owner") return err(c, "FORBIDDEN", "owner only", 403);
+  // `messages`（D11-3）：該地址的**信件總數**（含垃圾桶／所有資料夾），供前端在刪除對話框顯示
+  // 「此地址有 N 封信，永久刪除將一併刪除」；與 `?mode=hard` 實際會刪除的範圍一致。
   const { results } = await c.env.DB.prepare(
-    `SELECT id, email, status, (password_hash IS NOT NULL) AS has_password, created_at, updated_at
-     FROM email_addresses WHERE user_id = ? AND deleted_at IS NULL ORDER BY id`
+    `SELECT a.id, a.email, a.status, (a.password_hash IS NOT NULL) AS has_password, a.created_at, a.updated_at,
+            (SELECT COUNT(*) FROM messages m WHERE m.address_id = a.id) AS messages
+     FROM email_addresses a WHERE a.user_id = ? AND a.deleted_at IS NULL ORDER BY a.id`
   )
     .bind(scope.userId)
     .all();
@@ -1293,23 +1309,150 @@ app.patch("/api/email-addresses/:id", requireOwner, async (c) => {
   return err(c, "NO_UPDATE_FIELD", "沒有可更新的欄位（目前支援 status）", 400);
 });
 
+/**
+ * DELETE /api/email-addresses/:id?mode=soft|hard — 刪除地址（D11，docs/16 §3）
+ *
+ * 兩種語意（規格 D11-2）：
+ * - `soft`（**預設**，維持既有行為相容）：只標記 `status='deleted'`／`deleted_at`，
+ *   **保留**信件與 R2 物件；回應維持 `204`（舊版行為，前端既有呼叫不受影響）。
+ * - `hard`：同一交易內先做 soft，接續刪除該地址**所有** `messages`（含所有資料夾與垃圾桶）
+ *   → `attachments` → 指向該地址的 `email_aliases` → **真正移除 `email_addresses` 該列**
+ *   → 該地址的 `auth_attempts` 計數 key；之後 best-effort 刪除 R2 物件。回應 `200` 附數量。
+ *
+ * ⚠️ **名稱釋放（D11-2）**：`email` 與 `(local_part, domain)` 皆為 UNIQUE 且**不含 `deleted_at`**
+ *    → 只做 soft 的列會永遠佔住名稱（重建同名地址會在 INSERT 撞 UNIQUE）；因此 hard **必須**
+ *    真的移除該列。這是 hard 與 soft 在「能否重建同名」上的唯一差別。
+ * ⚠️ **權限**：`requireOwner` ＋ **只能操作自己名下**的地址；他人或訪客的地址一律 `404`
+ *    （不洩漏存在性）。訪客地址的刪除是**訪客管理**（`DELETE /api/users/:id`，D9）的職責，不走這裡。
+ * ⚠️ **交易性**：D1 部分一律以**單一 `batch`**（＝單一交易）執行，任一句失敗即全部回滾
+ *    → `500 DELETE_FAILED`（訊息明講「已回滾，資料未變更」）。
+ * ⚠️ **R2 best-effort**：失敗只記 log，不讓已完成的 D1 刪除回報失敗（沒有 DB 列就沒有 key，
+ *    物件已不可達）；與 D9 同一策略。
+ * ⚠️ **稽核（D11-1）**：兩種模式**一律**寫 `address_deleted`（操作 owner id、address id／email、
+ *    mode、被刪信件數、時間）；**不得**記錄任何信件內容（主旨／寄件者／內文，N9）。
+ */
 app.delete("/api/email-addresses/:id", requireOwner, async (c) => {
   const scope = c.get("scope");
   if (scope.kind !== "owner") return err(c, "FORBIDDEN", "owner only", 403);
   const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
+
+  const rawMode = c.req.query("mode");
+  const mode = rawMode === undefined || rawMode === "" ? "soft" : rawMode;
+  if (mode !== "soft" && mode !== "hard") {
+    return err(c, "INVALID_MODE", 'mode 只能是 "soft" 或 "hard"（未帶＝soft）', 400);
+  }
+
+  // 1) 先 SELECT：只能操作自己名下的地址（他人／訪客的地址 → 404，不洩漏存在性）。
+  //    `u.role = 'owner'` 為縱深防禦（同 D9）：訪客名下的地址走訪客管理，不從這裡刪。
   const row = await c.env.DB.prepare(
-    "SELECT id FROM email_addresses WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL"
+    `SELECT a.id, a.email, a.user_id
+       FROM email_addresses a JOIN users u ON u.id = a.user_id
+      WHERE a.id = ?1 AND a.user_id = ?2 AND u.role = 'owner' AND a.deleted_at IS NULL`
   )
     .bind(id, scope.userId)
-    .first();
+    .first<{ id: number; email: string; user_id: number }>();
   if (!row) return err(c, "NOT_FOUND", "address not found", 404);
+
   const ts = now();
-  await c.env.DB.prepare(
+  /** soft 步驟：hard 也在同一交易內先做這一步（規格 D11-2 明文「在 soft 之後接續」） */
+  const softStep = c.env.DB.prepare(
     "UPDATE email_addresses SET status = 'deleted', deleted_at = ?1, updated_at = ?1 WHERE id = ?2"
+  ).bind(ts, id);
+
+  const auditBase = {
+    event: "address_deleted",
+    userId: row.user_id,
+    addressId: row.id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+  };
+  const by = scope.userId; // 操作者＝目前的 owner session（rescue 亦為 owner id）
+
+  // ── soft：只標記，保留信件與 R2（既有行為不變） ──
+  if (mode === "soft") {
+    const retained = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE address_id = ?1")
+      .bind(id)
+      .first<{ n: number }>();
+    try {
+      await softStep.run();
+    } catch (e) {
+      console.error("[atwhomail-api] address soft delete failed", { id, error: String(e) });
+      return err(c, "DELETE_FAILED", "刪除失敗（已回滾，資料未變更）", 500);
+    }
+    auditAsync(c, {
+      ...auditBase,
+      detail: {
+        by,
+        address: row.email,
+        mode: "soft",
+        messages: 0, // soft 不刪任何信件
+        messages_retained: Number(retained?.n ?? 0), // 仍保留在此地址下的信件數（供日後 hard 評估）
+      },
+    });
+    return new Response(null, { status: 204 });
+  }
+
+  // ── hard：先收集「刪除後就查不到」的 R2 key，再以單一 batch 刪 D1 ──
+  const { results: msgRows } = await c.env.DB.prepare(
+    "SELECT raw_r2_key, html_r2_key FROM messages WHERE address_id = ?1"
   )
-    .bind(ts, id)
-    .run();
-  return new Response(null, { status: 204 });
+    .bind(id)
+    .all<{ raw_r2_key: string | null; html_r2_key: string | null }>();
+  const { results: attRows } = await c.env.DB.prepare(
+    "SELECT r2_key FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE address_id = ?1)"
+  )
+    .bind(id)
+    .all<{ r2_key: string | null }>();
+
+  let counts: number[];
+  try {
+    const results = await c.env.DB.batch([
+      softStep, // 1) 先 soft（與 soft 模式同一語意）
+      c.env.DB.prepare(
+        "DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE address_id = ?1)"
+      ).bind(id), // 2) 附件先於信件（FK）
+      c.env.DB.prepare("DELETE FROM messages WHERE address_id = ?1").bind(id), // 3) 含所有資料夾與垃圾桶
+      c.env.DB.prepare("DELETE FROM email_aliases WHERE target_email_address_id = ?1").bind(id), // 4) 指向此地址的別名
+      c.env.DB.prepare("DELETE FROM email_addresses WHERE id = ?1").bind(id), // 5) 真正移除該列 → 釋放名稱
+      c.env.DB.prepare("DELETE FROM auth_attempts WHERE key = ?1").bind(`mailbox:${row.email}`), // 6) 登入失敗計數
+    ]);
+    counts = results.map((r) => Number(r.meta.changes ?? 0));
+  } catch (e) {
+    console.error("[atwhomail-api] address hard delete failed (rolled back)", { id, error: String(e) });
+    return err(c, "DELETE_FAILED", "永久刪除失敗（已回滾，資料未變更）", 500);
+  }
+  const attachments = counts[1] ?? 0;
+  const messages = counts[2] ?? 0;
+  const aliases = counts[3] ?? 0;
+
+  // R2 物件（best-effort；D1 列已刪 → 沒有 key 就沒有物件可達）
+  const r2Keys = [
+    ...msgRows.flatMap((m) => [m.raw_r2_key, m.html_r2_key]),
+    ...attRows.map((a) => a.r2_key),
+  ].filter((k): k is string => typeof k === "string" && k.length > 0);
+  const r2Deleted = await deleteR2Objects(c.env.MAIL, r2Keys);
+
+  auditAsync(c, {
+    ...auditBase,
+    detail: {
+      by,
+      address: row.email,
+      mode: "hard",
+      messages,
+      attachments,
+      aliases,
+      r2_objects: r2Deleted,
+      messages_retained: 0, // 該地址已不存在（名稱已釋放）
+    },
+  });
+  return c.json({
+    ok: true,
+    id: row.id,
+    email: row.email,
+    mode: "hard",
+    deleted: { messages, attachments, aliases, r2_objects: r2Deleted },
+  });
 });
 
 /** 密碼設定／重設：owner 免舊密碼；mailbox 本人需舊密碼（05 §2.2） */

@@ -1050,6 +1050,25 @@ select {
   margin-top: 4px;
 }
 
+/* D11-3：地址刪除對話框的兩個選項（soft＝預設、信件保留／hard＝永久刪除、不可復原） */
+.delete-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.delete-option.danger {
+  border-color: #f0c8c8;
+  background: #fffafa;
+}
+
+.delete-option p {
+  margin: 0;
+}
+
 /* ───────────── 登入頁 ───────────── */
 .login-page {
   min-height: 100dvh;

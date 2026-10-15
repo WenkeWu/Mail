@@ -14,6 +14,7 @@ import {
   USER_DELETE_LABEL,
   USER_DELETE_WARNING,
   USER_SUSPEND_WARNING,
+  VISITOR_MANAGER_HINT,
   addressStatusActionLabel,
   addressStatusTooltip,
   userDeleteTooltip,
@@ -198,6 +199,9 @@ export function VisitorManager({ onBack, onToast }: Props) {
         只顯示帳號狀態、配額與<strong>數量／時間</strong>（信件數、最近活動）。
         基於權限邊界（N9），管理者看不到訪客信件的主旨、寄件者或內文。
       </p>
+
+      {/* D11-4：一頁一行的定位說明（訪客管理＝別人用邀請碼註冊的帳號） */}
+      <p className="muted small">{VISITOR_MANAGER_HINT}</p>
 
       <div className="address-table-wrap">
         {error ? (

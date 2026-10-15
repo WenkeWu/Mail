@@ -8,6 +8,15 @@ import {
   setAddressStatus,
 } from "../api/endpoints";
 import type { EmailAddressInfo, Session } from "../api/types";
+import {
+  ADDRESS_DELETE_HARD_LABEL,
+  ADDRESS_DELETE_SOFT_DESC,
+  ADDRESS_DELETE_SOFT_LABEL,
+  ADDRESS_MANAGER_HINT,
+  addressDeleteToast,
+  addressHardDeleteWarning,
+  addressMessageCountLine,
+} from "../lib/statusSemantics";
 import { IconBack, IconKey, IconPlus } from "./icons";
 import { Modal } from "./Modal";
 
@@ -105,11 +114,11 @@ export function AddressManager({ session, onBack, onToast }: Props) {
     }
   };
 
-  const submitDelete = async () => {
+  const submitDelete = async (mode: "soft" | "hard") => {
     if (!delTarget) return;
     try {
-      await deleteAddress(delTarget.id);
-      onToast(`${delTarget.email} 已刪除（soft delete）`);
+      await deleteAddress(delTarget.id, mode);
+      onToast(addressDeleteToast(delTarget.email, mode));
       setDelTarget(null);
       await reload();
     } catch (e) {
@@ -145,6 +154,9 @@ export function AddressManager({ session, onBack, onToast }: Props) {
 
       {isOwner ? (
         <>
+          {/* D11-4：一頁一行的定位說明（地址管理＝你自己的信箱） */}
+          <p className="muted small">{ADDRESS_MANAGER_HINT}</p>
+
           <form className="create-address" onSubmit={submitCreate}>
             <h2>
               <IconPlus size={18} /> 建立虛擬地址
@@ -232,7 +244,9 @@ export function AddressManager({ session, onBack, onToast }: Props) {
             )}
           </div>
           <p className="muted small">
-            刪除為 soft delete（保留備份追溯）；停用後該地址收到的信會被直接丟棄。
+            <strong>停用</strong>＝立刻停止收信（停用期間的來信直接丟棄）；<strong>刪除</strong>時可選
+            「{ADDRESS_DELETE_SOFT_LABEL}」（soft：標記刪除、信件保留）或「{ADDRESS_DELETE_HARD_LABEL}」
+            （hard：連同該地址所有信件與附件、R2 原始檔一併清除並釋放名稱，不可復原）。
           </p>
         </>
       ) : (
@@ -285,15 +299,28 @@ export function AddressManager({ session, onBack, onToast }: Props) {
       {delTarget && (
         <Modal title="刪除地址" onClose={() => setDelTarget(null)}>
           <p>
-            確定要刪除 <strong>{delTarget.email}</strong> 嗎？
+            要如何處理 <strong>{delTarget.email}</strong>？
           </p>
-          <p className="muted small">此後寄到該地址的信件會被丟棄（soft delete，資料保留供備份）。</p>
+          {/* D11-3：顯示該地址的信件數，讓 owner 在選「永久刪除」前知道會刪掉多少 */}
+          <p className="muted small">{addressMessageCountLine(delTarget.messages ?? 0)}</p>
+
+          <div className="delete-option">
+            <button type="button" className="btn-primary" onClick={() => void submitDelete("soft")}>
+              {ADDRESS_DELETE_SOFT_LABEL}（預設）
+            </button>
+            <p className="muted small">{ADDRESS_DELETE_SOFT_DESC}</p>
+          </div>
+
+          <div className="delete-option danger">
+            <button type="button" className="btn-danger" onClick={() => void submitDelete("hard")}>
+              {ADDRESS_DELETE_HARD_LABEL}
+            </button>
+            <p className="warn-text">⚠️ {addressHardDeleteWarning()}</p>
+          </div>
+
           <div className="modal-actions">
             <button type="button" className="btn-secondary" onClick={() => setDelTarget(null)}>
               取消
-            </button>
-            <button type="button" className="btn-danger" onClick={submitDelete}>
-              刪除
             </button>
           </div>
         </Modal>

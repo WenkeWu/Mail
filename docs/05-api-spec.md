@@ -102,10 +102,14 @@ PATCH  /api/email-addresses/:id        body: { "status": "disabled" } 等
 PATCH  /api/email-addresses/:id/password
                                        body: { "new_password": "..." }
                                        // Owner 可直接重設；Mailbox 本人需帶 old_password
-DELETE /api/email-addresses/:id        → 204（soft delete，信箱改為 deleted）
+DELETE /api/email-addresses/:id?mode=soft|hard
+                                       → soft（預設）204；hard 200 {...}
+                                       // soft＝標記 deleted（信件與 R2 保留）；hard＝連信件／附件／R2 一併清除
+                                       // 詳見 §2.14（階段 7／D11）
 ```
 
 權限：Owner 只能操作 `user_id = 自己` 的地址；Mailbox 只能操作自己的地址；越權一律 `404`。
+**訪客地址**的刪除不走這裡（owner 對訪客地址一律 `404`）→ 走訪客管理 `DELETE /api/users/:id`（§2.12）。
 
 ### 2.3 寄信
 
@@ -476,6 +480,74 @@ DELETE /api/users/:id                      Authorization: owner（訪客 JWT →
 - 成功後重整清單並顯示 toast；失敗顯示後端訊息（例如對 owner 帳號的 `403 FORBIDDEN`）。
 - ⚠️ 「僅 owner 可見」由兩層保證：UI（`AppShell` 只在 owner session ＋ `mail.`／localhost 顯示管理主控台）
   ＋後端（端點 `requireOwner`，N3）。
+
+### 2.14 階段 7：地址刪除語意補平（D11，2026-10-15）
+
+**背景**：`DELETE /api/email-addresses/:id` 舊版只做**軟刪除**（`status='deleted'`＋`deleted_at`），
+保留信件與 R2、**且不留稽核**；而訪客刪除（D9）是硬刪除＋清 R2＋寫稽核 → 兩者語意不一致。
+
+```http
+DELETE /api/email-addresses/:id?mode=soft|hard      Authorization: owner（或 rescue）
+```
+
+| mode | 行為 | 回應 |
+|---|---|---|
+| `soft`（**預設**；未帶＝soft） | 只標記 `status='deleted'`、`deleted_at`；**保留**信件、附件與 R2 物件 | `204`（無 body，與舊版一致） |
+| `hard` | 單一交易內：先 soft → 刪除該地址**所有** `messages`（含所有資料夾與垃圾桶）→ `attachments` → 指向該地址的 `email_aliases` → **真正移除 `email_addresses` 該列** → 該地址的 `auth_attempts` 計數 key；之後 best-effort 刪除 R2 物件 | `200 { ok, id, email, mode, deleted: { messages, attachments, aliases, r2_objects } }` |
+
+- **R2 清除範圍**：`messages.raw_r2_key`／`messages.html_r2_key`／`attachments.r2_key`（best-effort；
+  失敗只記 log，**不讓已完成的 D1 刪除回報失敗** —— 沒有 DB 列就沒有 key，物件已不可達）。
+- **交易性**：D1 部分一律**單一 `batch`**（＝單一交易），任一句失敗即全部回滾 →
+  `500 DELETE_FAILED`「刪除失敗／永久刪除失敗（已回滾，資料未變更）」。
+- ⚠️ **名稱釋放（soft 與 hard 的關鍵差別）**：`email` 與 `(local_part, domain)` 皆為 UNIQUE
+  且**不含 `deleted_at`** → 只做 soft 的列**永遠佔住名稱**，重建同名地址會在 `INSERT` 撞 UNIQUE。
+  因此 **hard 會真的移除該列**；soft 的行為不變（名稱未釋放）。
+  配合此語意，`POST /api/email-addresses` 的重複檢查**不再只看 `deleted_at IS NULL`**：
+  同名（含曾被 soft 刪除）一律 `409 ADDRESS_EXISTS`（舊版這種情況會通過檢查、接著撞 UNIQUE 回 **500**）。
+- **權限**：`requireOwner`；且**只能操作自己名下**（`user_id = 自己` 且該 user `role='owner'`）的地址，
+  他人或**訪客**地址一律 `404`（不洩漏存在性）—— 訪客地址的刪除是訪客管理的職責（§2.12／D9）。
+- **稽核（D11-1）**：兩種模式**一律**寫 `address_deleted`（**不得**記錄任何信件內容，N9）：
+
+| 欄位 | 內容 |
+|---|---|
+| `user_id` / `address_id` | 該地址的 owner 與地址 id |
+| `detail.by` | 操作者 owner id（rescue 亦為 owner id） |
+| `detail.address` | 被刪地址的 email |
+| `detail.mode` | `"soft"` 或 `"hard"` |
+| `detail.messages` | **實際刪除**的信件數（soft 一律 `0`） |
+| `detail.messages_retained` | 操作後仍留在該地址下的信件數（soft＝N、hard＝`0`） |
+| `detail.attachments` / `aliases` / `r2_objects` | 僅 hard 才有（實際刪除數量） |
+| `created_at` | 時間 |
+
+**新增／調整錯誤碼**
+
+| 碼 | HTTP | 情境 |
+|---|---|---|
+| `INVALID_MODE` | 400 | `mode` 不是 `soft`／`hard`（參數被拒時不動任何資料）|
+| `INVALID_ID` | 400 | `id` 不是正整數 |
+| `DELETE_FAILED` | 500 | D1 刪除交易失敗（已回滾，資料未變更）|
+| `ADDRESS_EXISTS` | 409 | 名稱已存在（**含曾被 soft 刪除、名稱尚未釋放**；訊息會提示需先 `mode=hard`）|
+
+**前端（§AddressManager）**：`GET /api/email-addresses` 每列新增 `messages`（該地址信件總數，
+含所有資料夾與垃圾桶；與 hard 實際刪除數量一致），供刪除對話框顯示
+「此地址有 N 封信，永久刪除將一併刪除」。
+
+### 2.15 前端：地址刪除的兩個選項與頁面定位說明（D11-3／D11-4）
+
+- `AddressManager.tsx` 的「刪除」→ 二次確認對話框提供**兩個明確選項**（文案單一來源：
+  `web/src/lib/statusSemantics.ts`）：
+
+  | 選項 | 文案 | 模式 |
+  |---|---|---|
+  | ① | **「停用並保留信件」（預設）** | `soft` |
+  | ② | **「永久刪除」**（明寫不可復原） | `hard` |
+
+- 對話框同時顯示該地址的信件數：**「此地址有 N 封信，永久刪除將一併刪除」**（`messages`）；
+  hard 選項另附警語：**「永久刪除將連同該地址的所有信件與附件、雲端原始檔（R2）一併清除，
+  並釋放名稱供重新建立；無法復原。」**
+- **D11-4 頁面定位說明**（兩頁各一行，避免「地址管理」與「訪客管理」被誤解為同一件事）：
+  - 地址管理：**「地址管理＝你自己的信箱…」**（`ADDRESS_MANAGER_HINT`）
+  - 訪客管理：**「訪客管理＝別人用邀請碼註冊的帳號…」**（`VISITOR_MANAGER_HINT`）
 
 ## 3. 通用原則
 

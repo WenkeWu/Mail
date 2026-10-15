@@ -251,6 +251,33 @@
       - [ ] ⚠️ 提醒：刪除**不可復原**（含 R2 的信件與附件物件）；只是要暫停 → 用**停權**
             （`PATCH /api/users/:id/status`：可逆、來信照收）
 
+- [ ] **13. 階段 7：地址刪除語意補平（D11）**（2026-10-15 程式完成；**未部署**）
+      - [ ] ⚠️ **部署前告知 owner 一行為變更**：`POST /api/email-addresses` 的重複檢查改為
+            **不看 `deleted_at`** —— 對「曾被 soft 刪除的名稱」重建同名地址，舊版會撞 UNIQUE 回
+            **500**，新版回 **409 `ADDRESS_EXISTS`**（名稱尚未釋放，需先 `?mode=hard` 永久刪除）。
+            語意不變（soft 過的名稱仍不可重建），只是錯誤碼變乾淨。
+      - [ ] 部署後驗收（對應 `docs/16` §6 T25–T29；**請用測試地址**，hard 不可復原）：
+            ① `mode=soft`（預設）：地址標記 deleted、**信件與 R2 保留**、回 `204`、
+               稽核 `address_deleted(mode=soft)` ✅
+            ② `mode=hard`：該地址所有 messages（含垃圾桶）／attachments／R2 物件清除、回 `200`
+               附數量、稽核 `address_deleted(mode=hard)` ✅
+            ③ hard 之後**同名可重建**（201）；soft 之後同名仍不可重建（409）✅
+            ④ 他人地址／訪客地址 → `404`；訪客 JWT → `403`；無 session → `401`；
+               `mode` 非法 → `400 INVALID_MODE` ✅
+            ⑤ 稽核 `address_deleted` 不含任何主旨／寄件者／內文（N9）✅
+      - [ ] 網頁驗收：地址管理的「刪除」跳出兩個選項 ——
+            **「停用並保留信件」（預設）**／**「永久刪除」**（附「無法復原」警語），
+            對話框顯示「此地址有 N 封信，永久刪除將一併刪除」
+      - [ ] 網頁驗收：地址管理與訪客管理各出現一行定位說明
+            （「地址管理＝你自己的信箱」／「訪客管理＝別人用邀請碼註冊的帳號」）
+      - [ ] 稽核：`registration_audit` 出現 `address_deleted`（`detail.mode`＝`soft`／`hard`、
+            `detail.messages`＝實際刪除信件數、`detail.by`＝操作 owner id）
+      - [ ] ⚠️ 已知限制（非缺陷）：**已 soft 刪除的地址無法再由 API 升級為 hard**
+            （端點對 `deleted_at` 非空的列回 `404`，且該列不會出現在地址清單）→
+            若要清除這類殘留列與其 R2 物件，需由助手直接處理（`docs/09` 備份流程）。
+      - [ ] ⚠️ 提醒：hard 刪除**不可復原**（含 R2 上的原始信件／HTML／附件）；
+            只是要停收信 → 用**停用**（可再啟用），只是要停止登入／寄信 → 用**停用地址**或**停權帳號**
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -268,7 +295,8 @@
 | `GET /api/users?role=visitor` | owner 或 rescue | 訪客清單（**只回數量與時間**：信件數／最近活動，N9） |
 | `PATCH /api/users/:id/quota` | owner 或 rescue | 調整每日配額（1–200）＋寄信安全閥（階段 3／D5） |
 | `PATCH /api/users/:id/warmup` | owner 或 rescue | 暖機豁免（需 migration 0007；階段 3／D5） |
-| `/api/email-addresses*`（含密碼） | owner 或 rescue | 地址管理（**自身名下**） |
+| `/api/email-addresses*`（含密碼） | owner 或 rescue | 地址管理（**自身名下**，越權／訪客地址一律 404） |
+| `DELETE /api/email-addresses/:id?mode=soft\|hard` | owner 或 rescue（**自身名下**） | address 刪除（階段 7／D11）：`soft`（預設，信件與 R2 保留）／`hard`（信件／附件／R2 一併清除＋**釋放名稱**）；一律寫稽核 `address_deleted` |
 | `PATCH /api/email-addresses/:id/status` | owner 或 rescue | 停用／啟用**訪客**地址（階段 3／D5；解 404 缺口）；**立即生效**且**連收信都停止**（階段 5／D8-4） |
 | `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9） |
 | `/api/backup/changes`、`/api/backup/r2/*` | owner 或 rescue | 備份拉取（**含 password_hash → 僅維運**） |

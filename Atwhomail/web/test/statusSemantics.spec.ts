@@ -11,10 +11,18 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  ADDRESS_DELETE_HARD_LABEL,
+  ADDRESS_DELETE_SOFT_DESC,
+  ADDRESS_DELETE_SOFT_LABEL,
   ADDRESS_DISABLE_WARNING,
+  ADDRESS_MANAGER_HINT,
   USER_DELETE_LABEL,
   USER_DELETE_WARNING,
   USER_SUSPEND_WARNING,
+  VISITOR_MANAGER_HINT,
+  addressDeleteToast,
+  addressHardDeleteWarning,
+  addressMessageCountLine,
   addressStatusActionLabel,
   addressStatusTooltip,
   userDeleteTooltip,
@@ -93,5 +101,67 @@ describe("D9：刪除訪客的按鈕與二次確認", () => {
     expect(tip).toContain("無法復原");
     expect(tip).toContain("停權");
     expect(tip).toContain("信件");
+  });
+});
+
+// ───────────── D11：地址刪除語意補平（docs/16 §3）─────────────
+
+describe("D11-3：地址刪除對話框的兩個選項與信件數", () => {
+  it("兩個選項文案分別是「停用並保留信件」（soft）與「永久刪除」（hard）", () => {
+    expect(ADDRESS_DELETE_SOFT_LABEL).toBe("停用並保留信件");
+    expect(ADDRESS_DELETE_HARD_LABEL).toBe("永久刪除");
+  });
+
+  it("soft 選項說明明寫「信件與附件保留」（與 hard 的差別）", () => {
+    expect(ADDRESS_DELETE_SOFT_DESC).toContain("信件與附件保留");
+    expect(ADDRESS_DELETE_SOFT_DESC).not.toContain("無法復原");
+  });
+
+  it("hard 警語逐字點出後果：所有信件與附件、清除 R2、釋放名稱、無法復原", () => {
+    const warn = addressHardDeleteWarning();
+    expect(warn).toContain("所有信件與附件");
+    expect(warn).toContain("R2");
+    expect(warn).toContain("釋放名稱");
+    expect(warn).toContain("無法復原");
+  });
+
+  it("兩個選項的文案互不相同（後果不同，不可共用一句）", () => {
+    expect(ADDRESS_DELETE_SOFT_LABEL).not.toBe(ADDRESS_DELETE_HARD_LABEL);
+    expect(addressHardDeleteWarning()).not.toBe(ADDRESS_DELETE_SOFT_DESC);
+    expect(addressHardDeleteWarning()).not.toBe(USER_DELETE_WARNING);
+  });
+
+  it("對話框顯示信件數：「此地址有 N 封信，永久刪除將一併刪除」（含 0 封）", () => {
+    expect(addressMessageCountLine(15)).toBe("此地址有 15 封信，永久刪除將一併刪除");
+    expect(addressMessageCountLine(0)).toBe("此地址有 0 封信，永久刪除將一併刪除");
+  });
+
+  it("只講數量、不帶主旨／寄件者（N9 精神）", () => {
+    const line = addressMessageCountLine(3);
+    expect(line).not.toContain("主旨");
+    expect(line).not.toContain("寄件者");
+  });
+
+  it("刪除成功的 toast 依模式區分（soft 說保留、hard 說已清除）", () => {
+    expect(addressDeleteToast("sales01@atwho.org", "soft")).toContain("信件保留");
+    expect(addressDeleteToast("sales01@atwho.org", "hard")).toContain("已永久刪除");
+    expect(addressDeleteToast("sales01@atwho.org", "soft")).not.toBe(
+      addressDeleteToast("sales01@atwho.org", "hard")
+    );
+  });
+});
+
+describe("D11-4：地址管理／訪客管理的定位說明", () => {
+  it("地址管理＝你自己的信箱", () => {
+    expect(ADDRESS_MANAGER_HINT).toContain("地址管理＝你自己的信箱");
+  });
+
+  it("訪客管理＝別人用邀請碼註冊的帳號", () => {
+    expect(VISITOR_MANAGER_HINT).toContain("訪客管理＝別人用邀請碼註冊的帳號");
+  });
+
+  it("兩句說明互不相同，且各自點出對象（避免兩頁被誤解為同一件事）", () => {
+    expect(ADDRESS_MANAGER_HINT).not.toBe(VISITOR_MANAGER_HINT);
+    expect(VISITOR_MANAGER_HINT).toContain("不是你自己的信箱");
   });
 });

@@ -108,7 +108,27 @@ export const setAddressPassword = (id: number, newPassword: string, oldPassword?
     json: oldPassword ? { new_password: newPassword, old_password: oldPassword } : { new_password: newPassword },
   });
 
-export const deleteAddress = (id: number) => request<void>(`/api/email-addresses/${id}`, { method: "DELETE" });
+/**
+ * 刪除地址（D11，docs/16 §3）—— 兩種模式語意不同：
+ * - `soft`（**預設**）：只標記 `status='deleted'`，**保留**信件與 R2；後端回 `204`（無 body）。
+ * - `hard`：連同該地址所有信件與附件、R2 物件一併清除，並**移除該列以釋放名稱**；
+ *   後端回 `200` 附刪除數量。⚠️ **不可復原**（前端必須二次確認，見 `AddressManager`）。
+ *
+ * ⚠️ 只有 owner 名下自己的地址能刪（他人／訪客地址 → 404）；訪客地址請走 `deleteVisitor`。
+ */
+export const deleteAddress = (id: number, mode: "soft" | "hard" = "soft") =>
+  request<AddressDeleteResult | undefined>(`/api/email-addresses/${id}${mode === "hard" ? "?mode=hard" : ""}`, {
+    method: "DELETE",
+  });
+
+/** `DELETE /api/email-addresses/:id?mode=hard` 的回應（soft 為 204，故為 undefined） */
+export interface AddressDeleteResult {
+  ok?: boolean;
+  id?: number;
+  email?: string;
+  mode?: "soft" | "hard";
+  deleted?: { messages: number; attachments: number; aliases: number; r2_objects: number };
+}
 
 // ── 管理主控台（owner；僅 mail. 與 localhost 顯示的頁面，docs/16 D4／D5）──
 
