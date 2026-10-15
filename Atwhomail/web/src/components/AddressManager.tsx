@@ -4,18 +4,23 @@ import {
   createAddress,
   deleteAddress,
   listAddresses,
+  listDeletedAddresses,
   setAddressPassword,
   setAddressStatus,
 } from "../api/endpoints";
-import type { EmailAddressInfo, Session } from "../api/types";
+import type { DeletedAddressInfo, EmailAddressInfo, Session } from "../api/types";
 import {
   ADDRESS_DELETE_HARD_LABEL,
   ADDRESS_DELETE_SOFT_DESC,
   ADDRESS_DELETE_SOFT_LABEL,
   ADDRESS_MANAGER_HINT,
+  DELETED_ADDRESS_SECTION_HINT,
+  DELETED_ADDRESS_SECTION_TITLE,
   addressDeleteToast,
   addressHardDeleteWarning,
   addressMessageCountLine,
+  deletedAddressCountLabel,
+  deletedAddressPurgeWarning,
 } from "../lib/statusSemantics";
 import { IconBack, IconKey, IconPlus } from "./icons";
 import { Modal } from "./Modal";
@@ -43,10 +48,14 @@ export function AddressManager({ session, onBack, onToast }: Props) {
   const [delTarget, setDelTarget] = useState<EmailAddressInfo | null>(null);
   const [myOldPw, setMyOldPw] = useState("");
   const [myNewPw, setMyNewPw] = useState("");
+  // D11-5：「已刪除的地址」（垃圾桶）區塊 —— 自己的 state 與自己的 error（見 reloadDeleted）
+  const [deleted, setDeleted] = useState<DeletedAddressInfo[] | null>(null);
+  const [deletedError, setDeletedError] = useState<string | null>(null);
+  const [purgeTarget, setPurgeTarget] = useState<DeletedAddressInfo | null>(null);
 
   const isOwner = session.kind === "owner";
 
-  const reload = useCallback(async () => {
+  const reloadLive = useCallback(async () => {
     try {
       const res = await listAddresses();
       setAddresses(res.addresses);
@@ -55,6 +64,27 @@ export function AddressManager({ session, onBack, onToast }: Props) {
       setError(e instanceof ApiError ? e.message : "載入地址失敗");
     }
   }, []);
+
+  /**
+   * 載入「已刪除的地址」（D11-5）。
+   *
+   * ⚠️ 失敗**只影響這一個區塊**（錯誤放在自己的 state 並提供「重試」）：地址清單、建立地址、
+   *    密碼等既有功能照常運作 —— 垃圾桶清單載不到不得讓整頁壞掉。
+   */
+  const reloadDeleted = useCallback(async () => {
+    try {
+      const res = await listDeletedAddresses();
+      setDeleted(res.addresses);
+      setDeletedError(null);
+    } catch (e) {
+      setDeletedError(e instanceof ApiError ? e.message : "載入已刪除的地址失敗");
+    }
+  }, []);
+
+  /** 兩份清單一起重載：soft／hard 刪除都會同時改變「現存」與「垃圾桶」兩個區塊 */
+  const reload = useCallback(async () => {
+    await Promise.all([reloadLive(), reloadDeleted()]);
+  }, [reloadLive, reloadDeleted]);
 
   useEffect(() => {
     if (isOwner) void reload();
@@ -123,6 +153,19 @@ export function AddressManager({ session, onBack, onToast }: Props) {
       await reload();
     } catch (e) {
       onToast(e instanceof ApiError ? e.message : "刪除失敗", "error");
+    }
+  };
+
+  /** D11-5：把「垃圾桶狀態」的地址升級為永久刪除（hard；不可復原，已先二次確認） */
+  const submitPurge = async () => {
+    if (!purgeTarget) return;
+    try {
+      await deleteAddress(purgeTarget.id, "hard");
+      onToast(addressDeleteToast(purgeTarget.email, "hard"));
+      setPurgeTarget(null);
+      await reload();
+    } catch (e) {
+      onToast(e instanceof ApiError ? e.message : "永久刪除失敗", "error");
     }
   };
 
@@ -248,6 +291,62 @@ export function AddressManager({ session, onBack, onToast }: Props) {
             「{ADDRESS_DELETE_SOFT_LABEL}」（soft：標記刪除、信件保留）或「{ADDRESS_DELETE_HARD_LABEL}」
             （hard：連同該地址所有信件與附件、R2 原始檔一併清除並釋放名稱，不可復原）。
           </p>
+
+          {/*
+            D11-5：「已刪除的地址」（垃圾桶）。soft 刪除過的地址不在上面的清單裡，但它的名稱、
+            信件與 R2 物件都還在 —— 這裡是唯一能把這類殘留列永久清除的入口。
+          */}
+          <details className="deleted-addresses">
+            <summary>
+              {DELETED_ADDRESS_SECTION_TITLE}
+              {/* 尚未載入完（含載入失敗）時不謊報「沒有已刪除的地址」 */}
+              <span className="muted small">
+                （{deleted === null ? "讀取中…" : deletedAddressCountLabel(deleted.length)}）
+              </span>
+            </summary>
+            <p className="muted small">{DELETED_ADDRESS_SECTION_HINT}</p>
+
+            {deletedError !== null ? (
+              // 只有這一行會壞：其餘頁面功能（清單／建立／密碼）不受影響
+              <p className="error-text">
+                {deletedError}{" "}
+                <button type="button" className="btn-secondary" onClick={() => void reloadDeleted()}>
+                  重試
+                </button>
+              </p>
+            ) : deleted === null ? (
+              <div className="list-state">
+                <div className="spinner" />
+              </div>
+            ) : deleted.length === 0 ? (
+              <p className="muted small">目前沒有已刪除的地址。</p>
+            ) : (
+              <table className="address-table">
+                <thead>
+                  <tr>
+                    <th>地址</th>
+                    <th>刪除時間</th>
+                    <th>信件數</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {deleted.map((row) => (
+                    <tr key={row.id} className="row-dim">
+                      <td className="mono">{row.email}</td>
+                      <td>{new Date(row.deleted_at).toLocaleDateString("zh-TW")}</td>
+                      <td>{row.messages} 封</td>
+                      <td className="row-actions">
+                        <button type="button" className="danger" onClick={() => setPurgeTarget(row)}>
+                          {ADDRESS_DELETE_HARD_LABEL}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </details>
         </>
       ) : (
         <form className="create-address narrow" onSubmit={submitMyPassword}>
@@ -321,6 +420,27 @@ export function AddressManager({ session, onBack, onToast }: Props) {
           <div className="modal-actions">
             <button type="button" className="btn-secondary" onClick={() => setDelTarget(null)}>
               取消
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* D11-5：已刪除地址的永久清除 —— 二次確認必須明寫清除範圍與「不可復原」 */}
+      {purgeTarget && (
+        <Modal title="永久刪除已刪除的地址" onClose={() => setPurgeTarget(null)}>
+          <p>
+            <strong>{purgeTarget.email}</strong> 目前是垃圾桶狀態（
+            {new Date(purgeTarget.deleted_at).toLocaleDateString("zh-TW")} 刪除）。
+          </p>
+          <p className="muted small">{addressMessageCountLine(purgeTarget.messages)}</p>
+          <p className="warn-text">⚠️ {deletedAddressPurgeWarning(purgeTarget.email)}</p>
+
+          <div className="modal-actions">
+            <button type="button" className="btn-secondary" onClick={() => setPurgeTarget(null)}>
+              取消
+            </button>
+            <button type="button" className="btn-danger" onClick={() => void submitPurge()}>
+              {ADDRESS_DELETE_HARD_LABEL}
             </button>
           </div>
         </Modal>

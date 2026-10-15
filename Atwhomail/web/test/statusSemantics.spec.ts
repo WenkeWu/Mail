@@ -1,13 +1,15 @@
 /**
- * D8-2／D8-3／D9 的**前端純函式**測試（docs/16 §3）
+ * D8-2／D8-3／D9／D11 的**前端純函式**測試（docs/16 §3）
  *
  * 涵蓋：停權／停用的按鈕文案與 tooltip 是否明寫「影響範圍」與「收信」後果、
- * 停用地址前的二次確認警語（不可逆的收信中斷），以及**刪除訪客**（D9）的按鈕文案、
- * tooltip 與二次確認警語（逐字必須明寫「無法復原」並導向「停權」）。
+ * 停用地址前的二次確認警語（不可逆的收信中斷），**刪除訪客**（D9）的按鈕文案、
+ * tooltip 與二次確認警語（逐字必須明寫「無法復原」並導向「停權」），以及 D11 的
+ * 地址刪除兩選項（D11-3）、頁面定位說明（D11-4）與「已刪除的地址」區塊（D11-5）。
  *
  * ⚠️ 這裡測的是文案與顯示邏輯；**行為**（立即失效／完整清除）由後端判定，
- *    對應的 API 測試見 `packages/api/test/admin-status.spec.ts`（T17–T19）與
- *    `packages/api/test/admin-delete.spec.ts`（T20–T24）。
+ *    對應的 API 測試見 `packages/api/test/admin-status.spec.ts`（T17–T19）、
+ *    `packages/api/test/admin-delete.spec.ts`（T20–T24）與
+ *    `packages/api/test/admin-address-delete.spec.ts`／`admin-address-purge.spec.ts`（T25–T32）。
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -16,6 +18,8 @@ import {
   ADDRESS_DELETE_SOFT_LABEL,
   ADDRESS_DISABLE_WARNING,
   ADDRESS_MANAGER_HINT,
+  DELETED_ADDRESS_SECTION_HINT,
+  DELETED_ADDRESS_SECTION_TITLE,
   USER_DELETE_LABEL,
   USER_DELETE_WARNING,
   USER_SUSPEND_WARNING,
@@ -25,6 +29,8 @@ import {
   addressMessageCountLine,
   addressStatusActionLabel,
   addressStatusTooltip,
+  deletedAddressCountLabel,
+  deletedAddressPurgeWarning,
   userDeleteTooltip,
   userStatusActionLabel,
   userStatusTooltip,
@@ -148,6 +154,44 @@ describe("D11-3：地址刪除對話框的兩個選項與信件數", () => {
     expect(addressDeleteToast("sales01@atwho.org", "soft")).not.toBe(
       addressDeleteToast("sales01@atwho.org", "hard")
     );
+  });
+});
+
+describe("D11-5：「已刪除的地址」區塊與永久清除的確認文案", () => {
+  it("區塊標題是「已刪除的地址」", () => {
+    expect(DELETED_ADDRESS_SECTION_TITLE).toBe("已刪除的地址");
+  });
+
+  it("區塊說明點出「來信會被丟棄、但信件與附件仍在、名稱未釋放」與唯一出路（永久刪除）", () => {
+    expect(DELETED_ADDRESS_SECTION_HINT).toContain("信件");
+    expect(DELETED_ADDRESS_SECTION_HINT).toContain("名稱");
+    expect(DELETED_ADDRESS_SECTION_HINT).toContain(ADDRESS_DELETE_HARD_LABEL);
+  });
+
+  it("數量文案含 0 的情況（清單為空也要明講，不讓人以為壞掉）", () => {
+    expect(deletedAddressCountLabel(0)).toBe("沒有已刪除的地址");
+    expect(deletedAddressCountLabel(1)).toContain("1");
+    expect(deletedAddressCountLabel(7)).toContain("7");
+    expect(deletedAddressCountLabel(7)).not.toBe(deletedAddressCountLabel(0));
+  });
+
+  it("二次確認逐字明寫：所有信件與附件（含垃圾桶）、釋放名稱、不可復原", () => {
+    const warn = deletedAddressPurgeWarning("sales01@atwho.org");
+    expect(warn).toContain("所有信件與附件（含垃圾桶）");
+    expect(warn).toContain("不可復原");
+    expect(warn).toContain("sales01@atwho.org"); // 講清楚是哪一個地址
+    expect(warn).toContain("名稱");
+  });
+
+  it("比 D11-3 的 hard 警語更強調「垃圾桶」：兩句不可互換（對象狀態不同）", () => {
+    expect(deletedAddressPurgeWarning("a@atwho.org")).not.toBe(addressHardDeleteWarning());
+    expect(deletedAddressPurgeWarning("a@atwho.org")).toContain("（含垃圾桶）");
+  });
+
+  it("確認文案不洩漏信件內容（只講範圍與後果，N9 精神）", () => {
+    const warn = deletedAddressPurgeWarning("a@atwho.org");
+    expect(warn).not.toContain("主旨");
+    expect(warn).not.toContain("寄件者");
   });
 });
 

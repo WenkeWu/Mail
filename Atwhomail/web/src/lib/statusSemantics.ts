@@ -114,3 +114,33 @@ export function addressMessageCountLine(count: number): string {
 export function addressDeleteToast(email: string, mode: "soft" | "hard"): string {
   return mode === "hard" ? `${email} 已永久刪除（信件與附件已清除，名稱已釋放）` : `${email} 已停用（soft delete，信件保留）`;
 }
+
+// ───────────── D11-5：已刪除的地址（垃圾桶）與永久清除（docs/16 §3）─────────────
+
+/**
+ * 「已刪除的地址」收合區塊的標題（`AddressManager` 專用，僅 owner 可見）。
+ *
+ * 為什麼需要這一區：soft 刪除過的地址**不會**出現在地址清單（`deleted_at IS NULL` 的條件），
+ * 若沒有這個入口，那些仍佔著名稱、信件與 R2 物件也還在的列就永遠清不掉（D11 的已知限制）。
+ */
+export const DELETED_ADDRESS_SECTION_TITLE = "已刪除的地址";
+
+/** 區塊內的一行說明：這批地址現在是什麼狀態、以及唯一可行的下一步 */
+export const DELETED_ADDRESS_SECTION_HINT =
+  "這些地址已停用（寄來的信會被丟棄），但信件、附件與雲端原始檔仍在、名稱也還沒釋放；要清乾淨只能「永久刪除」。";
+
+/** 區塊標題旁的數量（清單為空時也要明講，避免使用者以為壞掉） */
+export function deletedAddressCountLabel(count: number): string {
+  return count === 0 ? "沒有已刪除的地址" : `共 ${count} 個已刪除的地址`;
+}
+
+/**
+ * D11-5：對**已刪除的地址**按「永久刪除」的二次確認內容。
+ *
+ * ⚠️ 必須逐字講清楚清除範圍與不可復原（規格明文）：**所有信件與附件（含垃圾桶）**、**不可復原**。
+ *    比 D11-3 的 `addressHardDeleteWarning()` 更強調「垃圾桶裡的也會清掉」—— 因為這批地址
+ *    已經在垃圾桶狀態，使用者容易誤以為「已經刪過了，不會再刪掉什麼」。
+ */
+export function deletedAddressPurgeWarning(email: string): string {
+  return `將清除 ${email} 的所有信件與附件（含垃圾桶）與雲端原始檔（R2），並釋放地址名稱；不可復原。`;
+}

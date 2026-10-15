@@ -2,6 +2,7 @@
 import { request, requestBlob, requestText } from "./client";
 import type {
   CountsResponse,
+  DeletedAddressInfo,
   EmailAddressInfo,
   Invite,
   MailDetail,
@@ -93,6 +94,16 @@ export const downloadAttachment = (id: number) => requestBlob(`/api/attachments/
 // ── 地址管理（owner；mailbox 會拿 403）──
 export const listAddresses = () => request<{ addresses: EmailAddressInfo[] }>("/api/email-addresses");
 
+/**
+ * **已軟刪除**（垃圾桶狀態）的地址清單（D11-5；僅 owner 名下）。
+ *
+ * 這些地址做過 soft delete（`deleted_at` 非空）→ 不出現在 `listAddresses()`，信件與 R2 物件
+ * 仍保留、名稱也尚未釋放。地址管理頁的「已刪除的地址」區塊用它列出（地址／刪除時間／信件數）
+ * 並提供「永久刪除」。
+ */
+export const listDeletedAddresses = () =>
+  request<{ addresses: DeletedAddressInfo[] }>("/api/email-addresses?deleted=1");
+
 export const createAddress = (localPart: string, password?: string) =>
   request<{ id: number; email: string; status: string }>("/api/email-addresses", {
     method: "POST",
@@ -114,6 +125,9 @@ export const setAddressPassword = (id: number, newPassword: string, oldPassword?
  * - `hard`：連同該地址所有信件與附件、R2 物件一併清除，並**移除該列以釋放名稱**；
  *   後端回 `200` 附刪除數量。⚠️ **不可復原**（前端必須二次確認，見 `AddressManager`）。
  *
+ * D11-5：`hard` 也可用在**已軟刪除**（垃圾桶狀態）的地址上 —— 這是唯一能清掉這類殘留列與其
+ * R2 物件、並釋放名稱的路徑（`soft` 對已軟刪除的地址仍回 `404`，見 `listDeletedAddresses`）。
+ *
  * ⚠️ 只有 owner 名下自己的地址能刪（他人／訪客地址 → 404）；訪客地址請走 `deleteVisitor`。
  */
 export const deleteAddress = (id: number, mode: "soft" | "hard" = "soft") =>
@@ -127,6 +141,8 @@ export interface AddressDeleteResult {
   id?: number;
   email?: string;
   mode?: "soft" | "hard";
+  /** D11-5：`true` ＝ 這次是「從垃圾桶升級為永久刪除」（該列先前已 soft 刪除） */
+  previously_deleted?: boolean;
   deleted?: { messages: number; attachments: number; aliases: number; r2_objects: number };
 }
 

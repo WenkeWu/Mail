@@ -1325,6 +1325,34 @@ select {
   opacity: 0.55;
 }
 
+/* D11-5：「已刪除的地址」（垃圾桶）收合區塊 —— 僅 owner 的地址管理頁；預設收合，
+   載入失敗時只有區塊內顯示錯誤與「重試」，整頁其他功能不受影響 */
+.deleted-addresses {
+  margin-top: 18px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 14px 14px;
+}
+
+.deleted-addresses > summary {
+  cursor: pointer;
+  padding: 12px 0;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.deleted-addresses .address-table {
+  min-width: 480px;
+  margin-top: 8px;
+}
+
+.deleted-addresses .error-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .status-pill {
   border-radius: 999px;
   padding: 2px 10px;

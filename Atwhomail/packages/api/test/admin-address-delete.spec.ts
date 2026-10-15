@@ -531,9 +531,15 @@ describe("T28：不可刪他人地址（404）／訪客地址（404）／訪客 
     expect((await req("/api/email-addresses/999999", { method: "DELETE" }, token)).status).toBe(404);
     expect((await req("/api/email-addresses/999999?mode=hard", { method: "DELETE" }, token)).status).toBe(404);
 
-    // 重複刪除（已 soft 刪除的列）→ 404：不從這裡再升級為 hard
+    // 對「已 soft 刪除的列」再 soft → 404（不重複標記，也不得 500；D11-5／T32 有完整案例）
     expect((await req(`/api/email-addresses/${addr}`, { method: "DELETE" }, token)).status).toBe(204);
-    expect((await req(`/api/email-addresses/${addr}?mode=hard`, { method: "DELETE" }, token)).status).toBe(404);
+    expect((await req(`/api/email-addresses/${addr}?mode=soft`, { method: "DELETE" }, token)).status).toBe(404);
+
+    // ⚠️ D11-5 行為變更：已 soft 刪除的列現在可以**升級**為永久刪除（先前一律 404 → 殘留清不掉）
+    const upgraded = await req(`/api/email-addresses/${addr}?mode=hard`, { method: "DELETE" }, token);
+    expect(upgraded.status).toBe(200);
+    expect((await json<{ previously_deleted: boolean }>(upgraded)).previously_deleted).toBe(true);
+    expect(await count("SELECT COUNT(*) AS n FROM email_addresses WHERE id = ?1", addr)).toBe(0);
   });
 
   it("N5：rescue（x-admin-token）等同 owner，可刪除 owner 名下地址", async () => {

@@ -1257,6 +1257,22 @@ app.post("/api/email-addresses", requireOwner, async (c) => {
 app.get("/api/email-addresses", requireOwner, async (c) => {
   const scope = c.get("scope");
   if (scope.kind !== "owner") return err(c, "FORBIDDEN", "owner only", 403);
+
+  // `?deleted=1`（D11-5）：改列**已軟刪除**（垃圾桶狀態）的地址 —— 供地址管理的「已刪除的地址」
+  // 區塊顯示（地址／刪除時間／信件數）並提供「永久刪除」升級路徑。未帶參數＝既有行為，
+  // SQL 與回應欄位完全未變（軟刪除的列仍不出現在預設清單，T25 的既有斷言不變）。
+  if (c.req.query("deleted") === "1") {
+    const { results } = await c.env.DB.prepare(
+      `SELECT a.id, a.email, a.status, (a.password_hash IS NOT NULL) AS has_password,
+              a.created_at, a.updated_at, a.deleted_at,
+              (SELECT COUNT(*) FROM messages m WHERE m.address_id = a.id) AS messages
+       FROM email_addresses a WHERE a.user_id = ? AND a.deleted_at IS NOT NULL ORDER BY a.id`
+    )
+      .bind(scope.userId)
+      .all();
+    return c.json({ addresses: results });
+  }
+
   // `messages`（D11-3）：該地址的**信件總數**（含垃圾桶／所有資料夾），供前端在刪除對話框顯示
   // 「此地址有 N 封信，永久刪除將一併刪除」；與 `?mode=hard` 實際會刪除的範圍一致。
   const { results } = await c.env.DB.prepare(
@@ -1330,6 +1346,13 @@ app.patch("/api/email-addresses/:id", requireOwner, async (c) => {
  *    物件已不可達）；與 D9 同一策略。
  * ⚠️ **稽核（D11-1）**：兩種模式**一律**寫 `address_deleted`（操作 owner id、address id／email、
  *    mode、被刪信件數、時間）；**不得**記錄任何信件內容（主旨／寄件者／內文，N9）。
+ *
+ * ── D11-5：對「已軟刪除」的地址執行永久清除 ──
+ * 查詢條件**涵蓋 `deleted_at` 非空的列**（但仍嚴格限制 `user_id = 自己` 且 `role='owner'`：
+ * 他人／訪客地址一律 `404`），因此剛才被 soft 掉的地址可以再升級為 hard：
+ * - `soft` ＋ 已軟刪除 → **維持既有 `404`**（不重複標記、不改寫原 `deleted_at`，也**不得** 500）。
+ * - `hard` ＋ 已軟刪除 → 與「對未刪除地址 hard」走同一段清除路徑（該列本來就即將被移除，
+ *   故跳過多餘的 soft 更新步驟）；回應另帶 `previously_deleted: true` 供 caller 分辨。
  */
 app.delete("/api/email-addresses/:id", requireOwner, async (c) => {
   const scope = c.get("scope");
@@ -1345,17 +1368,26 @@ app.delete("/api/email-addresses/:id", requireOwner, async (c) => {
 
   // 1) 先 SELECT：只能操作自己名下的地址（他人／訪客的地址 → 404，不洩漏存在性）。
   //    `u.role = 'owner'` 為縱深防禦（同 D9）：訪客名下的地址走訪客管理，不從這裡刪。
+  //    ⚠️ D11-5：**刻意不篩 `deleted_at`** —— 已軟刪除（垃圾桶）的列也要找得到，否則 soft 過的
+  //    地址永遠無法升級為 hard，其信件與 R2 物件會一直殘留（D11 完成後的已知限制）。
+  //    「未刪除」的篩選改由下方的 mode 判斷負責：soft 對已刪除的列維持既有 404，只有 hard 放行。
   const row = await c.env.DB.prepare(
-    `SELECT a.id, a.email, a.user_id
+    `SELECT a.id, a.email, a.user_id, a.deleted_at
        FROM email_addresses a JOIN users u ON u.id = a.user_id
-      WHERE a.id = ?1 AND a.user_id = ?2 AND u.role = 'owner' AND a.deleted_at IS NULL`
+      WHERE a.id = ?1 AND a.user_id = ?2 AND u.role = 'owner'`
   )
     .bind(id, scope.userId)
-    .first<{ id: number; email: string; user_id: number }>();
+    .first<{ id: number; email: string; user_id: number; deleted_at: number | null }>();
   if (!row) return err(c, "NOT_FOUND", "address not found", 404);
 
+  // D11-5：對已軟刪除的列做 soft → **明確且與既有相容的 404**（不重複標記、不改寫原 `deleted_at`，
+  // 也絕不 500）；要清掉這類殘留列與其 R2 物件，唯一的升級路徑是下面的 `mode=hard`。
+  const alreadyDeleted = row.deleted_at !== null;
+  if (alreadyDeleted && mode === "soft") return err(c, "NOT_FOUND", "address not found", 404);
+
   const ts = now();
-  /** soft 步驟：hard 也在同一交易內先做這一步（規格 D11-2 明文「在 soft 之後接續」） */
+  /** soft 步驟：hard 也在同一交易內先做這一步（規格 D11-2 明文「在 soft 之後接續」；
+   *  但對**已軟刪除**的列會跳過 —— 那個 UPDATE 只會改寫原本的 `deleted_at`，見 D11-5） */
   const softStep = c.env.DB.prepare(
     "UPDATE email_addresses SET status = 'deleted', deleted_at = ?1, updated_at = ?1 WHERE id = ?2"
   ).bind(ts, id);
@@ -1405,26 +1437,30 @@ app.delete("/api/email-addresses/:id", requireOwner, async (c) => {
     .bind(id)
     .all<{ r2_key: string | null }>();
 
-  let counts: number[];
+  // 步驟以**名稱**索引（而非固定位置）：已軟刪除的列會少一個 soft 步驟（D11-5），
+  // 用位置取值會在兩種路徑間錯位。
+  const steps: Record<string, D1PreparedStatement> = {};
+  if (!alreadyDeleted) steps.soft = softStep; // 1) 先 soft（與 soft 模式同一語意；已刪除的列跳過）
+  steps.attachments = c.env.DB.prepare(
+    "DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE address_id = ?1)"
+  ).bind(id); // 2) 附件先於信件（FK）
+  steps.messages = c.env.DB.prepare("DELETE FROM messages WHERE address_id = ?1").bind(id); // 3) 含所有資料夾與垃圾桶
+  steps.aliases = c.env.DB.prepare("DELETE FROM email_aliases WHERE target_email_address_id = ?1").bind(id); // 4) 指向此地址的別名
+  steps.address = c.env.DB.prepare("DELETE FROM email_addresses WHERE id = ?1").bind(id); // 5) 真正移除該列 → 釋放名稱
+  steps.attempts = c.env.DB.prepare("DELETE FROM auth_attempts WHERE key = ?1").bind(`mailbox:${row.email}`); // 6) 登入失敗計數
+
+  const stepNames = Object.keys(steps);
+  let counts: Record<string, number>;
   try {
-    const results = await c.env.DB.batch([
-      softStep, // 1) 先 soft（與 soft 模式同一語意）
-      c.env.DB.prepare(
-        "DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE address_id = ?1)"
-      ).bind(id), // 2) 附件先於信件（FK）
-      c.env.DB.prepare("DELETE FROM messages WHERE address_id = ?1").bind(id), // 3) 含所有資料夾與垃圾桶
-      c.env.DB.prepare("DELETE FROM email_aliases WHERE target_email_address_id = ?1").bind(id), // 4) 指向此地址的別名
-      c.env.DB.prepare("DELETE FROM email_addresses WHERE id = ?1").bind(id), // 5) 真正移除該列 → 釋放名稱
-      c.env.DB.prepare("DELETE FROM auth_attempts WHERE key = ?1").bind(`mailbox:${row.email}`), // 6) 登入失敗計數
-    ]);
-    counts = results.map((r) => Number(r.meta.changes ?? 0));
+    const results = await c.env.DB.batch(stepNames.map((name) => steps[name]!));
+    counts = Object.fromEntries(stepNames.map((name, i) => [name, Number(results[i]!.meta.changes ?? 0)]));
   } catch (e) {
     console.error("[atwhomail-api] address hard delete failed (rolled back)", { id, error: String(e) });
     return err(c, "DELETE_FAILED", "永久刪除失敗（已回滾，資料未變更）", 500);
   }
-  const attachments = counts[1] ?? 0;
-  const messages = counts[2] ?? 0;
-  const aliases = counts[3] ?? 0;
+  const attachments = counts.attachments ?? 0;
+  const messages = counts.messages ?? 0;
+  const aliases = counts.aliases ?? 0;
 
   // R2 物件（best-effort；D1 列已刪 → 沒有 key 就沒有物件可達）
   const r2Keys = [
@@ -1451,6 +1487,9 @@ app.delete("/api/email-addresses/:id", requireOwner, async (c) => {
     id: row.id,
     email: row.email,
     mode: "hard",
+    // D11-5：true ＝ 這是一次「從垃圾桶升級為永久刪除」（soft 過的列）；false ＝ 直接永久刪除。
+    // 僅為新增欄位，既有呼叫端（D11-2）不受影響。
+    previously_deleted: alreadyDeleted,
     deleted: { messages, attachments, aliases, r2_objects: r2Deleted },
   });
 });

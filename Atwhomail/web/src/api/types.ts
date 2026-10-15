@@ -80,6 +80,26 @@ export interface EmailAddressInfo {
   messages?: number;
 }
 
+/**
+ * **已軟刪除**（垃圾桶狀態）的地址（`GET /api/email-addresses?deleted=1`，D11-5）。
+ *
+ * ⚠️ 這些列仍佔住名稱（同名不可重建），信件與 R2 物件也都還在；唯一能清乾淨的路徑是
+ * `deleteAddress(id, "hard")`。與 `EmailAddressInfo` 的差別：一定有 `deleted_at`、且只出現在
+ * 「已刪除的地址」清單（預設的地址清單仍只列未刪除的地址）。
+ */
+export interface DeletedAddressInfo {
+  id: number;
+  email: string;
+  status: "deleted";
+  has_password: boolean;
+  created_at: number;
+  updated_at: number;
+  /** 軟刪除時間（epoch ms） */
+  deleted_at: number;
+  /** 仍留在該地址下的信件數（含所有資料夾與垃圾桶；與 hard 實際清除的數量一致） */
+  messages: number;
+}
+
 /** 登入 session（Model C：owner 或單一信箱） */
 export type Session =
   | { kind: "owner"; token: string; userId: number; username: string }
