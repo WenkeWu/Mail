@@ -205,7 +205,7 @@
             ② owner 以訪客地址 id 呼叫 `/api/mail/*` → **403／404**（N9：不得讀取訪客信件內容）✅
             ③ `PATCH /api/users/:id/quota`：值域 1–200（超出 422）、成功寫稽核 `quota_changed` ✅
             ④ `PATCH /api/email-addresses/:id/status`：owner 可停用訪客地址（**不再 404**）；
-               停用後該訪客無法登入（401）、無法寄信（403 FROM_NOT_ALLOWED）✅
+               停用後該訪客無法登入、無法寄信（皆 403 `ADDRESS_DISABLED`，D8-1／D8-4）✅
             ⑤ `GET /api/invites?reveal=1`（owner）回全碼並寫稽核 `invite_revealed`；未帶 reveal 仍只回遮罩碼 ✅
       - [ ] 網頁驗收：`mail.atwho.org` 側欄出現「邀請碼管理」「訪客管理」（`app.atwho.org` **不**出現）；
             邀請碼可建立／複製／撤銷（撤銷需二次確認）；訪客可停權／復權、地址停用／啟用、調整配額；
@@ -213,23 +213,42 @@
       - [ ] 暖機豁免（可選）：勾選後該帳號不受註冊後 24 小時 5 封限制，**仍受每日配額**；
             ⚠️ 新網域聲譽期不建議大量開啟
 
+- [ ] **11. 階段 5：停權／停用的語意釐清與立即生效（D8）**（2026-10-15 程式完成；**未部署**）
+      - [ ] ⚠️ **部署前告知 owner 一行為變更**：停權／停用現在會**立即**踢掉該使用者已登入的 session
+            （先前要等 JWT 24 小時過期）。訪客若反映「突然被登出」，先確認是否為停權／停用造成。
+      - [ ] 部署後驗收（對應 `docs/16` §6 T17–T19）：
+            ① **停權立即生效**：訪客已登入 → owner 停權 → **同一個** token 下一個請求即
+               `403 ACCOUNT_SUSPENDED`（`/api/me`、`/api/mail/inbox` 皆同）✅
+            ② **停用立即生效**：停用地址 → 既有 token 立即 `403 ADDRESS_DISABLED` ✅
+            ③ `mailbox-login` 錯誤碼矩陣：密碼錯 → 401 `INVALID_CREDENTIALS`；密碼正確但地址停用 →
+               403 `ADDRESS_DISABLED`（**舊版誤回 401**）；帳號停權 → 403 `ACCOUNT_SUSPENDED` ✅
+            ④ 復權／重新啟用後，**同一個未過期的 token** 立即恢復可用（狀態為即時判定）✅
+            ⑤ 迴歸：`can_send=0` 仍是 `403 SEND_NOT_ALLOWED`；owner 仍讀不到訪客信件（N9）；
+               rescue（`x-admin-token`）與 `/api/backup/*` 行為不變（N5）✅
+      - [ ] 網頁文案驗收：訪客管理的按鈕為「停權帳號（所有地址；仍可收信）」／「停用地址（連收信都停止）」，
+            兩者 hover 有差異說明；**停用地址前**的二次確認明寫「此地址將立即停止收信，停用期間的來信不會保留」
+      - [ ] 稽核：`registration_audit` 的 `login_failed` 應出現 `reason` = `ADDRESS_DISABLED`／`ACCOUNT_SUSPENDED`
+            （只有帳密不符累計 `auth_attempts`，狀態拒絕不計）
+      - [ ] ⚠️ 提醒（語意，非程式問題）：**停用地址會丟棄停用期間的來信且不可逆**；
+            只想擋登入與寄信、但要保留來信 → 用**停權帳號**（`PATCH /api/users/:id/status`）
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
 |---|---|---|
 | `GET /api/health`、`GET /` | 公開 | 健康檢查 |
 | `POST /api/auth/login` | 公開 **＋需 Cloudflare Access JWT**（`ACCESS_MAIL_AUD` 設定後生效；5 次失敗鎖 15 分） | 管理員 session（階段 2／D2） |
-| `POST /api/auth/mailbox-login` | 公開（5 次失敗鎖 15 分） | 信箱 session（**不受 Access 影響**） |
+| `POST /api/auth/mailbox-login` | 公開（5 次失敗鎖 15 分） | 信箱 session（**不受 Access 影響**）；錯誤碼：401 `INVALID_CREDENTIALS`／403 `ADDRESS_DISABLED`／403 `ACCOUNT_SUSPENDED`（**先驗密碼再判狀態**，階段 5／D8） |
 | `PATCH /api/auth/owner-password/self` | owner session ＋ 舊密碼 | owner 自助改密碼（階段 2／D7） |
 | `POST /api/auth/register` | **公開（需邀請碼）** | 訪客註冊（Phase 1）→ mailbox session |
 | `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（**預設只回遮罩碼**；`?reveal=1` 額外回全碼並寫稽核）／撤銷 |
 | `GET /api/me` | owner 或 mailbox | 身分與寄信配額（供前端顯示） |
-| `PATCH /api/users/:id/status` | owner 或 rescue | 停權／復權（立即生效） |
+| `PATCH /api/users/:id/status` | owner 或 rescue | 停權／復權（立即生效：**含既有 session 立即 403**，階段 5／D8-4；來信仍照收） |
 | `GET /api/users?role=visitor` | owner 或 rescue | 訪客清單（**只回數量與時間**：信件數／最近活動，N9） |
 | `PATCH /api/users/:id/quota` | owner 或 rescue | 調整每日配額（1–200）＋寄信安全閥（階段 3／D5） |
 | `PATCH /api/users/:id/warmup` | owner 或 rescue | 暖機豁免（需 migration 0007；階段 3／D5） |
 | `/api/email-addresses*`（含密碼） | owner 或 rescue | 地址管理（**自身名下**） |
-| `PATCH /api/email-addresses/:id/status` | owner 或 rescue | 停用／啟用**訪客**地址（階段 3／D5；解 404 缺口） |
+| `PATCH /api/email-addresses/:id/status` | owner 或 rescue | 停用／啟用**訪客**地址（階段 3／D5；解 404 缺口）；**立即生效**且**連收信都停止**（階段 5／D8-4） |
 | `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9） |
 | `/api/backup/changes`、`/api/backup/r2/*` | owner 或 rescue | 備份拉取（**含 password_hash → 僅維運**） |
 | restore | **僅本機腳本 + CF token** | 手動還原（production 無寫入端點） |

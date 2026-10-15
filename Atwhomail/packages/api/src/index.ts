@@ -351,13 +351,31 @@ app.post("/api/auth/mailbox-login", async (c) => {
       user_status: string;
     }>();
 
-  const okPw =
-    addr && addr.status === "active" && addr.password_hash
-      ? await verifyPassword(body.password, addr.password_hash)
-      : false;
+  // ⚠️ **先驗密碼，再判狀態**（D8-1，docs/16 §3）。
+  // 舊寫法把 `status === "active"` 綁進密碼驗證條件 → 被停用的地址一律回 401 INVALID_CREDENTIALS，
+  // 使用者（與管理者）無從得知真正原因。改為密碼正確才揭露狀態，帳號狀態仍不外洩給未持密碼者。
+  const okPw = addr && addr.password_hash ? await verifyPassword(body.password, addr.password_hash) : false;
   if (!addr || !okPw) {
     await recordFailure(c.env.DB, key);
+    auditAsync(c, {
+      event: "login_failed",
+      addressId: addr?.id ?? null,
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+      detail: { reason: "INVALID_CREDENTIALS" },
+    });
     return err(c, "INVALID_CREDENTIALS", "地址或密碼錯誤", 401);
+  }
+  // 地址停用（D8-4 語意：僅此一個地址，且連收信都停止）
+  if (addr.status !== "active") {
+    auditAsync(c, {
+      event: "login_failed",
+      addressId: addr.id,
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+      detail: { reason: "ADDRESS_DISABLED" },
+    });
+    return err(c, "ADDRESS_DISABLED", "此地址已停用，請聯絡管理者", 403);
   }
   // 帳號停權（C7）：密碼驗證通過後才判——避免對未持密碼者洩漏帳號狀態
   if (addr.user_status !== "active") {
@@ -1012,7 +1030,9 @@ app.patch("/api/users/:id/warmup", requireOwner, async (c) => {
  * 本端點不做 `user_id` 限制（端點本身已 `requireOwner`），但仍排除軟刪除的地址
  * （停用 ≠ 刪除；刪除請用 `DELETE /api/email-addresses/:id`）。
  *
- * 立即生效：地址 `status='disabled'` → 該地址無法用 `mailbox-login` 登入、也不在寄信允許範圍。
+ * 立即生效：地址 `status='disabled'` → 該地址無法用 `mailbox-login` 登入（403 `ADDRESS_DISABLED`，D8-1）、
+ * 既有的 mailbox session 下一次請求即被 `requireSession` 擋下（403 `ADDRESS_DISABLED`，D8-4）、
+ * 也不在寄信允許範圍。⚠️ 被停用地址的**來信會被丟棄**（不可逆），與停權帳號（來信照收）不同。
  */
 app.patch("/api/email-addresses/:id/status", requireOwner, async (c) => {
   const scope = c.get("scope");

@@ -2,11 +2,22 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import { listVisitors, setUserQuota, setUserStatus, setUserWarmup, setVisitorAddressStatus } from "../api/endpoints";
 import type { VisitorUser } from "../api/types";
+import {
+  ADDRESS_DISABLE_WARNING,
+  USER_SUSPEND_WARNING,
+  addressStatusActionLabel,
+  addressStatusTooltip,
+  userStatusActionLabel,
+  userStatusTooltip,
+} from "../lib/statusSemantics";
 import { IconBack, IconRefresh } from "./icons";
 import { Modal } from "./Modal";
 
 /**
  * 訪客管理（D5，docs/16 §3）—— 清單／停權／地址停用／配額／暖機豁免。
+ *
+ * D8（docs/16 §3）：**停權（帳號層）與停用（地址層）後果不同**，按鈕文案／tooltip／二次確認
+ * 一律取自 `lib/statusSemantics.ts`（停權＝全部地址、**來信照收**；停用＝僅此地址且**連收信都停**）。
  *
  * ⚠️ **僅在 `mail.atwho.org` 與 localhost（`all` 模式）顯示**；`app.atwho.org` 不顯示（UI 收斂）。
  *    權限一律由後端判定：`GET /api/users?role=visitor` 與所有 PATCH 端點皆 `requireOwner`（N3）。
@@ -205,18 +216,20 @@ export function VisitorManager({ onBack, onToast }: Props) {
                         type="button"
                         className={suspended ? "" : "danger"}
                         disabled={busyId === u.id}
+                        title={userStatusTooltip(suspended)}
                         onClick={() => setConfirm({ user: u, action: "suspend" })}
                       >
-                        {suspended ? "復權" : "停權"}
+                        {userStatusActionLabel(suspended)}
                       </button>
                       {a && (
                         <button
                           type="button"
                           className={addressOff ? "" : "danger"}
                           disabled={busyId === u.id}
+                          title={addressStatusTooltip(addressOff)}
                           onClick={() => setConfirm({ user: u, action: "address-off" })}
                         >
-                          {addressOff ? "啟用地址" : "停用地址"}
+                          {addressStatusActionLabel(addressOff)}
                         </button>
                       )}
                       <button type="button" disabled={!a || busyId === u.id} onClick={() => openEdit(u)}>
@@ -231,8 +244,9 @@ export function VisitorManager({ onBack, onToast }: Props) {
         )}
       </div>
       <p className="muted small">
-        停權＝帳號層（立即無法登入與寄信）；地址停用＝該地址層（無法登入、不在寄件允許範圍）。
-        兩者都不會刪除任何信件。
+        <strong>停權帳號</strong>＝凍結該訪客<strong>全部地址</strong>：立即無法登入與寄信，但
+        <strong>來信仍會照收並保留</strong>。<strong>停用地址</strong>＝僅該一個地址，且
+        <strong>連收信都停止</strong>——停用期間的來信會被直接丟棄，不會保留。
       </p>
 
       {confirm && (
@@ -246,9 +260,11 @@ export function VisitorManager({ onBack, onToast }: Props) {
                 確定要{confirm.user.status === "active" ? "停權" : "復權"}{" "}
                 <strong>{confirm.user.username}</strong> 嗎？
               </p>
-              <p className="muted small">
-                停權立即生效：該帳號無法登入、也無法寄信（既有信件保留，不受影響）。
-              </p>
+              {confirm.user.status === "active" ? (
+                <p className="warn-text">⚠️ {USER_SUSPEND_WARNING}</p>
+              ) : (
+                <p className="muted small">復權後，此人名下所有地址恢復可登入與寄信（收信狀態不變）。</p>
+              )}
               <div className="modal-actions">
                 <button type="button" className="btn-secondary" onClick={() => setConfirm(null)}>
                   取消
@@ -268,9 +284,14 @@ export function VisitorManager({ onBack, onToast }: Props) {
                 確定要{confirm.user.address?.status === "active" ? "停用" : "啟用"}{" "}
                 <strong>{confirm.user.address?.email}</strong> 嗎？
               </p>
-              <p className="muted small">
-                停用後該地址無法登入，也不再是寄信的允許來源；重新啟用即可恢復。
-              </p>
+              {confirm.user.address?.status === "active" ? (
+                // D8-3：地址停用是**不可逆的收信中斷**（信在 SMTP 階段即被丟棄），必須明寫後果
+                <p className="warn-text">⚠️ {ADDRESS_DISABLE_WARNING}</p>
+              ) : (
+                <p className="muted small">
+                  啟用後該地址恢復收信與登入；停用期間已被丟棄的來信無法找回。
+                </p>
+              )}
               <div className="modal-actions">
                 <button type="button" className="btn-secondary" onClick={() => setConfirm(null)}>
                   取消

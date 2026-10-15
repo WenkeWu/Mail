@@ -139,14 +139,40 @@ async function parseBearer(env: Env, token: string): Promise<SessionInfo | null>
   }
 }
 
+/**
+ * session 目標的現況：token 版本（`pca`）＋ 帳號／地址狀態（D8-4）。
+ *
+ * 為什麼合成**一次**查詢：`requireSession` 同時需要「token 是否新鮮」與「帳號／地址是否仍為
+ * active」。分成兩次查詢＝每個請求多打一次 D1（且是熱路徑上的每一個請求）。合併後仍是
+ * **單一主鍵查詢**（`users.id` / `email_addresses.id`），符合 docs/16 §3 D8-4 的限制。
+ *
+ * 查無資料列 → `null`（目標已不存在）；呼叫端維持既有語意（`pca` 視為 0、不做狀態判定）。
+ */
+type SessionState = { pca: number; userStatus: string | null; addressStatus: string | null };
+
+async function loadSessionState(env: Env, scope: Scope): Promise<SessionState | null> {
+  if (scope.kind === "owner") {
+    const row = await env.DB.prepare("SELECT password_changed_at AS pca, status AS user_status FROM users WHERE id = ?1")
+      .bind(scope.userId)
+      .first<{ pca: number | null; user_status: string | null }>();
+    return row ? { pca: Number(row.pca ?? 0), userStatus: row.user_status, addressStatus: null } : null;
+  }
+  // mailbox：一次 JOIN 同時取得地址狀態與**所屬使用者**狀態（停權是帳號層、停用是地址層）
+  const row = await env.DB.prepare(
+    `SELECT a.password_changed_at AS pca, a.status AS address_status, u.status AS user_status
+     FROM email_addresses a JOIN users u ON u.id = a.user_id
+     WHERE a.id = ?1`
+  )
+    .bind(scope.addressId)
+    .first<{ pca: number | null; address_status: string | null; user_status: string | null }>();
+  return row ? { pca: Number(row.pca ?? 0), userStatus: row.user_status, addressStatus: row.address_status } : null;
+}
+
 /** 密碼重設後舊 token 失效（08 #44）：token 的 pca 必須 >= DB 現值 */
 async function isFresh(env: Env, s: SessionInfo): Promise<boolean> {
   if (s.scope.kind === "owner" && s.scope.via === "rescue") return true;
-  const current =
-    s.scope.kind === "owner"
-      ? (await env.DB.prepare("SELECT password_changed_at AS pca FROM users WHERE id = ?1").bind(s.scope.userId).first<{ pca: number }>())?.pca
-      : (await env.DB.prepare("SELECT password_changed_at AS pca FROM email_addresses WHERE id = ?1").bind(s.scope.addressId).first<{ pca: number }>())?.pca;
-  return s.pca >= Number(current ?? 0);
+  const state = await loadSessionState(env, s.scope);
+  return s.pca >= Number(state?.pca ?? 0);
 }
 
 // ───────────────────────── Cloudflare Access JWT（D2，docs/16 §3）─────────────────────────
@@ -388,12 +414,35 @@ export const requireOwner: MiddlewareHandler<AuthEnv> = async (c, next) => {
   await next();
 };
 
-/** 需登入（owner 或 mailbox）─ 信件類端點用，於 handler 內依 scope 過濾 */
+/**
+ * 需登入（owner 或 mailbox）─ 信件類端點用，於 handler 內依 scope 過濾。
+ *
+ * **D8-4（docs/16 §3）：停權／停用必須立即生效。** 原本停權後既有 JWT 仍能讀信直到 24h
+ * 過期；這裡在驗 session 後補上狀態檢查（**與 TOKEN_STALE 共用同一次索引查詢**）：
+ *   - 使用者（`users.status`）必須為 `active` → 否則 `403 ACCOUNT_SUSPENDED`
+ *   - mailbox session 的地址（`email_addresses.status`）亦必須為 `active` → 否則 `403 ADDRESS_DISABLED`
+ * 只讀狀態、**不寫入任何資料**，也不觸碰 `can_send` 語意（寄信權限仍由 `send` handler 判定）。
+ *
+ * ⚠️ rescue（`x-admin-token`）不受影響（N5）：救援通道語意不變。
+ */
 export const requireSession: MiddlewareHandler<AuthEnv> = async (c, next) => {
   const s = await resolveSession(c);
   if (!s) return c.json({ error: { code: "UNAUTHORIZED", message: "needs session" } }, 401);
-  if (!(await isFresh(c.env, s))) {
+  if (s.scope.kind === "owner" && s.scope.via === "rescue") {
+    c.set("scope", s.scope);
+    await next();
+    return;
+  }
+  const state = await loadSessionState(c.env, s.scope);
+  if (s.pca < Number(state?.pca ?? 0)) {
     return c.json({ error: { code: "TOKEN_STALE", message: "session 已失效（密碼已變更），請重新登入" } }, 401);
+  }
+  if (state && state.userStatus !== "active") {
+    return c.json({ error: { code: "ACCOUNT_SUSPENDED", message: "此帳號已停權，請聯絡管理者" } }, 403);
+  }
+  // 地址狀態只對 mailbox session 有意義（owner session 沒有 addressId）
+  if (s.scope.kind === "mailbox" && state && state.addressStatus !== "active") {
+    return c.json({ error: { code: "ADDRESS_DISABLED", message: "此地址已停用，請聯絡管理者" } }, 403);
   }
   c.set("scope", s.scope);
   await next();

@@ -559,15 +559,20 @@ describe("D5：PATCH /api/email-addresses/:id/status（owner 專用）", () => {
     expect(await auditCount("address_status_changed")).toBe(1);
 
     // 停用立即生效：登入被拒、既有 session 的寄信被拒
+    // ⚠️ D8（docs/16 §3）改變了這裡的**錯誤碼**（行為更精確，非放寬）：
+    //    登入由 401 INVALID_CREDENTIALS → 403 ADDRESS_DISABLED（D8-1）
+    //    既有 session 由 FROM_NOT_ALLOWED → 403 ADDRESS_DISABLED（D8-4：requireSession 就擋）
+    //    `can_send` 語意本身未變（地址 active＋can_send=0 → SEND_NOT_ALLOWED，見 registration.spec.ts）
     const relogin = await req("/api/auth/mailbox-login", { method: "POST", body: JSON.stringify({ email: "v8@atwho.org", password: VISITOR_PW }) });
-    expect(relogin.status).toBe(401);
+    expect(relogin.status).toBe(403);
+    expect((await json<{ error: { code: string } }>(relogin)).error.code).toBe("ADDRESS_DISABLED");
     const send = await req(
       "/api/mail/send",
       { method: "POST", body: JSON.stringify({ from: "v8@atwho.org", to: ["x@example.com"], subject: "s", text: "t" }) },
       visitor
     );
     expect(send.status).toBe(403);
-    expect((await json<{ error: { code: string } }>(send)).error.code).toBe("FROM_NOT_ALLOWED");
+    expect((await json<{ error: { code: string } }>(send)).error.code).toBe("ADDRESS_DISABLED");
 
     // 復權 → 可再次登入
     expect(

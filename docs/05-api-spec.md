@@ -351,8 +351,10 @@ PATCH /api/email-addresses/:id/status     Authorization: owner（mailbox → 403
 { "status": "disabled" | "active" }       → 200 { "ok": true, "id": 12, "email": "friend01@atwho.org", "status": "disabled" }
   // **新增端點**：既有的 PATCH /api/email-addresses/:id 只認「自己名下」地址 → 對訪客地址一律 404
   //   （docs/14 附錄 B.5 待辦 1 的缺口）。本端點不受 user_id 限制（端點本身 requireOwner）
-  // 立即生效：disabled → 該地址無法 mailbox-login、也不在寄信允許範圍（403 FROM_NOT_ALLOWED）
+  // 立即生效：disabled → 該地址無法 mailbox-login（403 ADDRESS_DISABLED，§2.10）、
+  //   既有 mailbox session 下一次請求即被擋（403 ADDRESS_DISABLED，§2.10 D8-4）
   // 停用 ≠ 刪除（刪除走 DELETE /api/email-addresses/:id）；稽核：address_status_changed
+  // ⚠️ 被停用地址的**來信會被丟棄**（不可逆）；帳號停權則來信照收（見 §2.10 對照表）
 ```
 
 **N9 權限邊界（同步收緊）**：`GET /api/mail/inbox?address_id=<id>` 現在會檢查該地址屬於 owner 本人
@@ -373,6 +375,53 @@ PATCH /api/email-addresses/:id/status     Authorization: owner（mailbox → 403
 
 **前端文案修正**：側欄「全部信箱」語意為「**你名下**全部地址」（`owner_user_id`），已改為「我的全部信箱」
 （docs/16 §3 D5）。
+
+### 2.10 階段 5：停權／停用的語意釐清與立即生效（D8，2026-10-15）
+
+**兩層狀態的語意（實作證據；登入與寄信皆擋，差別在「收信」）**
+
+| | 停權帳號（`users.status != 'active'`） | 停用地址（`email_addresses.status != 'active'`） |
+|---|---|---|
+| 影響範圍 | 該使用者**全部地址** | **僅該一個地址** |
+| 登入 | `403 ACCOUNT_SUSPENDED` | `403 ADDRESS_DISABLED` |
+| 寄信 | `403 ACCOUNT_SUSPENDED` | `403 ADDRESS_DISABLED` |
+| **收信** | ✅ **照收**（email-handler 只看地址狀態） | ❌ **靜默丟棄該信**（不可逆） |
+| 既有 session | 下一個請求即 `403 ACCOUNT_SUSPENDED` | 下一個請求即 `403 ADDRESS_DISABLED` |
+
+```http
+POST /api/auth/mailbox-login            // D8-1：**先驗密碼，再判狀態**（順序即判定順序）
+{ "email": "friend01@atwho.org", "password": "…" }
+→ 401 INVALID_CREDENTIALS  // ① 地址不存在或密碼不符（訊息仍為「地址或密碼錯誤」，不洩漏狀態）
+→ 403 ADDRESS_DISABLED     // ② 密碼正確但地址 status='disabled'（「此地址已停用，請聯絡管理者」）
+→ 403 ACCOUNT_SUSPENDED    // ③ 密碼正確、地址 active 但使用者 status!='active'（「此帳號已停權，請聯絡管理者」）
+→ 200 { "token": "<JWT scope=mailbox>", "session": "mailbox", "address": { … } }
+  // ⚠️ 狀態只在**密碼正確**後才揭露 → 未持密碼者無法探測帳號是否存在／被停權
+  // ⚠️ 舊版把 status 綁進密碼驗證條件 → 被停用的地址一律誤回 401 INVALID_CREDENTIALS（已修正）
+  // 稽核：三種失敗皆寫 `login_failed`，detail.reason 分別為 INVALID_CREDENTIALS／ADDRESS_DISABLED／
+  //       ACCOUNT_SUSPENDED；只有**帳密不符**累計 `auth_attempts`（狀態拒絕不計，避免誤鎖合法使用者）
+```
+
+**`requireSession` 新增狀態檢查（D8-4）**：驗 session 後，`users.status` 必須為 `active`（否則
+`403 ACCOUNT_SUSPENDED`）；mailbox session 另需其地址 `status='active'`（否則 `403 ADDRESS_DISABLED`）。
+→ 停權／停用**立刻**踢掉既有 JWT，不必等 24 小時過期。
+
+- 實作：與 `TOKEN_STALE` 的密碼版本檢查**共用同一次索引查詢**（`users.id`／`email_addresses.id` 主鍵；
+  mailbox 以一次 JOIN 同時取地址與所屬使用者狀態）→ 每個請求最多一次 SELECT。
+- 優先序：`401 TOKEN_STALE`（密碼已變更）先於狀態判定，既有行為不變。
+- **不受影響**：`can_send` 語意（寄信權限仍由 `POST /api/mail/send` 判定）、`/api/mail/*` 授權（N9）、
+  rescue（`x-admin-token`）通道（N5，不因 owner 停權而失效）。
+
+**新增錯誤碼**
+
+| 碼 | HTTP | 情境 |
+|---|---|---|
+| `ADDRESS_DISABLED` | 403 | 地址被停用：mailbox-login 密碼正確時，或既有 session 的下一請求 |
+
+### 2.11 前端：停權／停用的文案與二次確認（D8-2／D8-3）
+
+- 按鈕文案（`web/src/lib/statusSemantics.ts` 為單一來源）：
+  **「停權帳號（所有地址；仍可收信）」**／**「停用地址（連收信都停止）」**，兩者皆有 `title` tooltip 說明差異。
+- 停用地址前顯示二次確認，明寫：「**此地址將立即停止收信，停用期間的來信不會保留**」。
 
 ## 3. 通用原則
 
