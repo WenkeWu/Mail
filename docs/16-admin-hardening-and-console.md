@@ -410,3 +410,26 @@
 | **選項 5**（D6：App 內建 TOTP）| ❌ **不做** | 與 Access ＋ Google 認證重疊，且需額外開發與驗證器 App |
 
 **現行有效防護層級（實際生效）**：Access 身分閘門（24h）→ 管理登入需 Access JWT（階段 ③）→ 帳號密碼（argon2id ＋ 5 次失敗鎖 15 分）→ 登入後狀態檢查（D8 立即生效）→ 訪客隔離（mailbox scope ＋ N9）。
+
+### 階段 6（D9／D10）— ✅ 完成並上線（2026-10-14）
+
+| 項目 | 結果 |
+|---|---|
+| 實作 | commit `0c645ec`（`auth.ts`、`index.ts`、`VisitorManager.tsx`、`endpoints.ts`、新測試 `admin-delete.spec.ts` 471 行）；文件 `6103ded` |
+| canonical 三指令（助手獨立複跑）| ✅ `lint` 0／`build` 0／`test` **16 files / 208 tests**（T20–T24 全數涵蓋）|
+| 超出規格但合理的實作（已覆核 ✅）| ① 刪除訪客時**一併刪除 R2 物件**（raw／html／附件，best-effort）② `attachments` 先於 `messages` 刪除且整批為**單一交易**（失敗回滾並回 `500 DELETE_FAILED`）③ 額外以防誤設的 owner 帳號守門 |
+| API 部署 | ✅ Version `bbff0f9d-d321-4b97-b83c-c52e253911b6`（無新 migration；Access 變數保留）|
+| 前端部署 | ✅ Pages（新版 `index-CKI_M_QZ.js`，含「刪除訪客」按鈕與「無法復原」警告）|
+
+**線上驗收（實測，未刪任何真實訪客）**
+
+| 檢查 | 結果 |
+|---|---|
+| `DELETE /api/users/2`（owner）| ✅ **403 FORBIDDEN**「只能刪除訪客帳號（owner 帳號受保護）」|
+| `DELETE /api/users/999999`（不存在）| ✅ 404（非 500）|
+| `GET /api/users?role=visitor` | ✅ 200，清單正常 |
+| 救援通道（D10／N5）| ✅ `GET /api/backup/changes` 帶 `x-admin-token` → 200（查不到列不影響 rescue）|
+| 階段 ③ 閘門 | ✅ 管理登入 curl → 仍 `403 ADMIN_LOGIN_REQUIRES_ACCESS` |
+
+**⚠️ 行為變更（部署後生效）**：帳號或地址被刪除後，其**舊 JWT 立即失效**（401 `TOKEN_STALE`，訊息區分「查不到列」與「密碼已變更」）；先前為放行。
+**⚠️ 刪除是破壞性的**：會連同 R2 上的原始信件／HTML／附件一併刪除，**不可復原**；若只是要暫停，請用「停權」。
