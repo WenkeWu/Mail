@@ -57,6 +57,7 @@
 | **D9** | **訪客管理頁新增「刪除訪客」**（含二次確認、完整清除、保留稽核）| `packages/api/src/index.ts`、`web/src/components/VisitorManager.tsx` | 修改 |
 | **D10** | **已刪除地址／查不到列的 session 直接失效**（小缺口加固）| `packages/api/src/auth.ts` | 修改 |
 | **D11** | **地址刪除語意補平**：寫稽核 ＋ 提供「永久刪除（含信件／附件／釋放名稱）」模式 ＋ UI 語意說明 | `packages/api/src/index.ts`、`web/src/components/AddressManager.tsx`、`VisitorManager.tsx` | 修改 |
+| **D11-5** | **允許對「已軟刪除」的地址執行永久清除** ＋ 地址管理頁新增「已刪除的地址」區塊 | `packages/api/src/index.ts`、`web/src/components/AddressManager.tsx` | 修改 |
 
 ---
 
@@ -234,6 +235,34 @@
 
 ---
 
+### D11-5 — 允許對「已軟刪除」的地址執行永久清除
+
+**背景**（D11 完成後的已知限制 ✅）：`DELETE /api/email-addresses/:id` 對 `deleted_at` 非空的列回 **404**，
+且該列不出現在清單 → 已軟刪除的地址**無法再從 UI／API 升級為永久刪除** ⚠️（其信件與 R2 物件會殘留）。
+
+- 後端：`DELETE /api/email-addresses/:id?mode=hard`
+  - 查詢條件需**涵蓋已軟刪除的列**（`deleted_at` 不為 NULL 亦可），但**仍嚴格限制 owner 自己名下**（他人地址 → 404）
+  - 行為：清除該地址所有 `messages`（含所有資料夾／垃圾桶）→ `attachments` → `email_aliases` → `auth_attempts`（`mailbox:<email>`）
+    → R2 物件（best-effort，失敗只記 log）→ 釋放名稱（讓同名可重建）
+  - 稽核：`address_deleted`（`mode='hard'`、address id／email、被刪信件數、操作 owner id、時間；不得含信件內容）
+  - `soft` 模式對已軟刪除地址的行為必須明確且可測（維持不變或回明確錯誤碼，**不得 500**）
+- 前端（`AddressManager`）：新增「**已刪除的地址**」收合區塊
+  - 列出 `status='deleted'` 的地址（地址、刪除時間、信件數）
+  - 每列「**永久刪除**」按鈕 → 二次確認明寫：將清除該地址所有信件與附件（含垃圾桶），**不可復原** ⚠️
+  - 僅 owner 可見；清單載入失敗不得讓整頁壞掉
+- 測試：**T30**（對已軟刪除地址執行 hard → 信件／附件／R2 清除、名稱可重用、稽核正確）；
+  **T31**（非 owner／他人地址 → 404 或 403）；**T32**（soft 對已軟刪除地址的行為明確且無 500）
+
+**D11 主體已完成的行為變更（部署時需知）**
+
+| 項目 | 說明 |
+|---|---|
+| `POST /api/email-addresses` 重複檢查 | ⚠️ 修正既有 Bug：舊版對「曾被 soft 刪除的名稱」放行檢查 → `INSERT` 撞 UNIQUE → **HTTP 500**；新版回 **409 `ADDRESS_EXISTS`**（語意不變：soft 過的名稱仍不可重建，需先 `mode=hard`）✅ |
+| 回應碼 | `soft` 維持 **204**（相容既有契約）；`hard` 回 **200** ＋ 刪除數量 ✅ |
+| hard 附帶清除 | 另清 `email_aliases`（指向該地址者）與 `auth_attempts`（`mailbox:<email>`）——避免 FK 失敗與殘留鎖定 ✅ |
+
+---
+
 ## 4. 不可做（N 系列）
 
 | # | 禁止 |
@@ -298,6 +327,9 @@
 | T27 | `mode=hard` 之後，**同一個 email 可重新建立**（名稱已釋放）|
 | T28 | 不可刪他人地址（他人 address id → 404）；訪客 JWT 呼叫 → 403 |
 | T29 | 稽核事件**不含**任何信件內容（主旨／寄件者／內文）|
+| T30 | 對**已軟刪除**的地址執行 `mode=hard` → 信件／附件／R2 清除、名稱可重用、稽核 `address_deleted(mode=hard)` |
+| T31 | 對已軟刪除的地址，非 owner 或他人地址 → 404／403（不得誤刪）|
+| T32 | 對已軟刪除的地址執行 `mode=soft` → 行為明確且無 500 |
 
 ---
 
@@ -313,7 +345,7 @@
 ## 8. Definition of Done
 
 - [ ] D1–D5 與 **D7** 全部交付（D6 為選配）
-- [ ] canonical 三指令全綠；T1–T29 通過
+- [ ] canonical 三指令全綠；T1–T32 通過
 - [ ] `docs/05`（API 規格）與 `docs/11`（上線檢查清單）同步更新
 - [ ] 若新增 migration（`0007`）：只新增檔案，**不套用** ✅
 - [ ] 未部署、未跑遠端 migration、未動 N6–N8 列出的檔案
