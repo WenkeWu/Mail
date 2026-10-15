@@ -58,6 +58,9 @@
 | **D10** | **已刪除地址／查不到列的 session 直接失效**（小缺口加固）| `packages/api/src/auth.ts` | 修改 |
 | **D11** | **地址刪除語意補平**：寫稽核 ＋ 提供「永久刪除（含信件／附件／釋放名稱）」模式 ＋ UI 語意說明 | `packages/api/src/index.ts`、`web/src/components/AddressManager.tsx`、`VisitorManager.tsx` | 修改 |
 | **D11-5** | **允許對「已軟刪除」的地址執行永久清除** ＋ 地址管理頁新增「已刪除的地址」區塊 | `packages/api/src/index.ts`、`web/src/components/AddressManager.tsx` | 修改 |
+| **D12** | **前端測試環境（Vitest ＋ jsdom）**：讓 `.tsx` 元件可被渲染測試，遷移 5 個高價值元件測試 | `web/vitest.config.ts`、`web/test/*` | 新增 |
+| **D13** | **補強未測錯誤路徑**：R2 刪除失敗（best-effort）與 D1 batch 失敗（500 回滾） | `packages/api/test/*` | 修改 |
+| **D14** | **推送前機密稽核腳本** `scripts/secret-scan.mjs`（純 Node、無新依賴、不印出機密值）| `Atwhomail/scripts/secret-scan.mjs`、`Atwhomail/package.json` | 新增 |
 
 ---
 
@@ -279,6 +282,52 @@
 
 ---
 
+### D12 — 前端測試環境（Vitest ＋ jsdom）
+
+**現況**：`web/vitest.config.ts` 明載無 DOM runner → `.tsx` 元件**無法**被自動化測試 ⚠️
+（D11-3／D11-5 的對話框僅測「文案純函式」✅）
+
+- 為 `web` 加入 **jsdom** 測試環境（可為 per-file 環境註解或獨立 project 設定 ✅），使 `.tsx` 可渲染
+- 測試工具：`@testing-library/react` **或** 原生 `react-dom` ＋ `act`（由實作者擇一並於 `docs/11` 記錄 ✅）
+- 至少遷移 5 個高價值渲染測試：
+  1. `AddressManager`：「已刪除的地址」區塊可渲染（含信件數與刪除時間 ✅）
+  2. `AddressManager`：刪除對話框兩選項（soft／hard）與「不可復原」警語存在 ✅
+  3. `VisitorManager`：停權（所有地址；仍可收信）／停用（連收信停止）文案與 tooltip ✅
+  4. `VisitorManager`：刪除訪客的二次確認警語 ✅
+  5. 清單載入失敗 → 該區塊顯示錯誤且**不影響整頁** ✅
+- ⚠️ jsdom 下必須 mock `fetch`（**不得真的打網路** ✅）
+- ⚠️ 不得改動既有純函式測試（`statusSemantics.spec.ts` 需維持通過 ✅）
+
+### D13 — 補強未測錯誤路徑（R2 失敗／500 回滾）
+
+**現況**（實作者的誠實聲明 ✅）：D9／D11 的 `try/catch` 語意有實作，但**未被測試證明** ⚠️
+
+- **T34**：R2 刪除失敗（`bucket.delete` 丟例外）→ 仍回 **200**（best-effort ✅）＋ 記錄 log；D1 資料照常刪除 ✅
+- **T35**：D1 `batch` 失敗 → 回 **500 `DELETE_FAILED`**（訊息明講「已回滾，資料未變更」✅），且**資料確實未變** ✅
+- 作法：以 miniflare／mock 注入失敗；若環境不可行，改以**抽換 helper**（dependency injection ✅）達成，並在 `docs/11` 說明手法 ✅
+- ⚠️ 不得為了可測性改動 production 行為語意 ✅
+
+### D14 — 推送前機密稽核腳本（`scripts/secret-scan.mjs`）
+
+**動機**：至今每次 push 前的機密稽核都是**手動**掃描 ⚠️（2026-10-14 多次人工 grep）
+
+- 新增 `Atwhomail/scripts/secret-scan.mjs`（純 Node、**不得新增依賴** ✅）
+  - 掃描範圍：`git diff`（staged ＋ unstaged）與指定 commit 範圍（可用 CLI 參數，預設 `origin/main..HEAD` 若存在 ✅）
+  - 規則（發現即列**檔案：行號：規則名**，⚠️ **不得印出機密值本身**）：
+    1. `ADMIN_TOKEN=`／`JWT_SECRET=`／`ACCESS_*_SECRET=` 之類的賦值 ✅
+    2. Cloudflare API token（40 字元十六進位 ✅）
+    3. JWT（`eyJ…` 三段式 ✅）
+    4. `BEGIN ... PRIVATE KEY`／`BEGIN RSA`／`BEGIN OPENSSH` ✅
+    5. AWS／Google／OpenAI 風格金鑰前綴（`AKIA`／`AIza`／`sk-` ✅）
+  - 追蹤檔名檢查：`.dev.vars`、`.env`（**排除 `.example`** ✅）、`*.pem`、`*.key`、`credentials*`
+  - Allowlist 機制：支援忽略註解（行內 `secret-scan:ignore` ✅）與選用 `.secret-scanignore` ✅
+  - 退出碼：乾淨 `0`；發現 `1` ✅
+- `Atwhomail/package.json` 新增 `"secret:scan": "node scripts/secret-scan.mjs"` ✅
+- ⚠️ 本次**允許新增** `scripts/secret-scan.mjs`，但**不得修改**既有 `scripts/*` 檔 ✅
+- 驗證：以假樣本檔測試（乾淨 → 0 ✅；含假 token → 1 且不印值 ✅），並對本 repo 實跑一次（應為 0 ✅）
+
+---
+
 ## 4. 不可做（N 系列）
 
 | # | 禁止 |
@@ -346,6 +395,9 @@
 | T30 | 對**已軟刪除**的地址執行 `mode=hard` → 信件／附件／R2 清除、名稱可重用、稽核 `address_deleted(mode=hard)` |
 | T31 | 對已軟刪除的地址，非 owner 或他人地址 → 404／403（不得誤刪）|
 | T32 | 對已軟刪除的地址執行 `mode=soft` → 行為明確且無 500 |
+| T33 | D12：≥5 個 `.tsx` 渲染測試（已刪除區塊／兩選項對話框／停權停用文案／刪除確認／載入失敗不壞頁）|
+| T34 | D13：R2 刪除失敗 → 仍 200（best-effort），D1 資料照常刪除 |
+| T35 | D13：D1 batch 失敗 → 500 `DELETE_FAILED` 且資料未變更 |
 
 ---
 
@@ -361,7 +413,7 @@
 ## 8. Definition of Done
 
 - [ ] D1–D5 與 **D7** 全部交付（D6 為選配）
-- [ ] canonical 三指令全綠；T1–T32 通過
+- [ ] canonical 三指令全綠；T1–T35 通過
 - [ ] `docs/05`（API 規格）與 `docs/11`（上線檢查清單）同步更新
 - [ ] 若新增 migration（`0007`）：只新增檔案，**不套用** ✅
 - [ ] 未部署、未跑遠端 migration、未動 N6–N8 列出的檔案
