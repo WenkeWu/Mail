@@ -13,7 +13,7 @@
     }
   ],
   "vars": {
-    "MODE_OVERRIDE": "testing"
+    "MODE_OVERRIDE": "enforce"
   }
   // 觀察數週無異常後，將 MODE_OVERRIDE 改為 "enforce" 再部署
   // Route 需要 mta-sts.atwho.org 有 proxied DNS 紀錄（DNS → CNAME mta-sts → atwhomail-mta-sts.ulhome.workers.dev, Proxy ON）
