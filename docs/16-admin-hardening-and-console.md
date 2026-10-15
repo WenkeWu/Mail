@@ -313,3 +313,29 @@
 | `ACCESS_MAIL_AUD` | `48c19f72b4892912c5176b3f88ce1fdae27ff6461eb85ef52b928e688567d077` | 驗證 JWT 的 `aud` 必須等於 `mail.atwho.org` 應用 |
 
 > 這兩個值建議設為 Worker 環境變數（`vars`；非機密 ✅），**不要硬編碼在程式內**。
+
+### 階段 3–5（Access 閘門啟用、D8）— ✅ 完成並上線（2026-10-14）
+
+| 項目 | 結果 |
+|---|---|
+| D8 實作 | commit `588f9db`（`auth.ts` 狀態檢查 ＋ `index.ts` 登入訊息順序 ＋ `VisitorManager` 文案／確認 ＋ 新測試 `admin-status.spec.ts` 393 行）；文件 `b81aa5e` |
+| canonical 三指令 | ✅ `lint` 0／`build` 0／`test` **15 files / 191 tests** 全綠 |
+| D8-4 設計 | 狀態檢查與 `TOKEN_STALE` **共用同一次查詢**（`loadSessionState`），不增加每請求查詢數；**rescue token 仍可繞過**以保留緊急救援 ✅ |
+| migration 0007 | ✅ 已套用 production（純新增欄位）|
+| API 部署 | ✅ Version `b1d82f32-b475-48b6-856f-1716c7680a5b`（含 `ACCESS_TEAM_DOMAIN`／`ACCESS_MAIL_AUD`）|
+| 前端部署 | ✅ Pages（含 D8 文案）；commit `6be0839`（wrangler vars）已 push |
+
+**階段 ③ 驗收（實測）**
+
+| 檢查 | 結果 |
+|---|---|
+| `curl` 直打 `POST /api/auth/login`（正確帳密）| ✅ **403 `ADMIN_LOGIN_REQUIRES_ACCESS`** |
+| 訪客 `POST /api/auth/mailbox-login` | ✅ 仍公開（錯密碼 401）|
+| `mail.atwho.org`（經 Access ＋ Pages 代理）| ✅ **owner 實測登入成功**（Access JWT 轉發鏈路成立）|
+| 停權後既有 JWT | ✅ 立即 `403 ACCOUNT_SUSPENDED`（可逆實測，測試資料已完全清除）|
+| 地址停用後登入 | ✅ 正確密碼 → `403 ADDRESS_DISABLED`；錯誤密碼 → 401（不洩漏狀態）|
+
+**回退方式**：移除／清空 `ACCESS_MAIL_AUD` → 重新部署（程式僅記錄 warning 並放行）。
+
+**已知小缺口（未來加固，非安全問題）**：地址已被刪除時，`loadSessionState` 查不到列 → session 不判失效；
+該地址已無資料且無法寄信，故無實質影響；可改為「查不到列即視為失效」。
