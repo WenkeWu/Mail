@@ -136,7 +136,7 @@
       **驗收指令**（`PSQL` 指 `C:\Program Files\PostgreSQL\17\bin\psql.exe`）：
       ```powershell
       # 舊預設密碼必須失敗
-      $env:PGPASSWORD='postgres'; & $PSQL -h localhost -U postgres -d atwhomail_backup -c "select 1"
+      $env:PGPASSWORD='postgres'; & $PSQL -h localhost -U postgres -d atwhomail_backup -c "select 1"  # secret-scan:ignore（已輪替的 PostgreSQL 預設密碼；此行是「舊密碼必須失敗」的驗證指令）
       # 新 agent 角色可讀寫（.env 內為 43 字元密碼）
       & $PSQL -h localhost -U atwhomail_backup -d atwhomail_backup -c "select current_user, count(*) from messages"
       ```

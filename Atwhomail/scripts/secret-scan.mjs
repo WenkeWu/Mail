@@ -174,12 +174,22 @@ const PLACEHOLDER_VALUES = new Set([
   "undefined", "true", "false", "test", "testing", "dev", "development", "local", "localhost",
   "password", "passwd", "secret", "token", "apikey", "api_key", "your-secret", "your-token",
 ]);
-const PLACEHOLDER_PREFIX = /^(?:test|dummy|fake|sample|example|your|my|placeholder|changeme|redacted|xxx+)[-_.]/i;
+const PLACEHOLDER_PREFIX =
+  /^(?:test|dummy|fake|sample|example|your|my|placeholder|changeme|redacted|replace|xxx+)[-_.]/i;
 
 /** 值是「指向別處」而不是字面值（環境變數／程式碼取值）→ 不是機密 */
 const INDIRECT_VALUE = /^(?:\.\.\.|\$\{|\$[A-Za-z_]|process\.env|import\.meta\.env|c\.env|env\.|Deno\.env|os\.environ|<.*>|%[A-Za-z_]+%)/;
 
-/** 值是否「像一個真的機密」：引號內 ≥8 字元，或未加引號的 ≥16 字元 token */
+/**
+ * 值是否「像一個真的機密」：引號內 ≥8 字元，或未加引號的 ≥16 字元 token。
+ *
+ * ⚠️ 引號值額外要求「**全是可列印 ASCII**」：機密不會是中文，但**錯誤訊息對照表**會 ——
+ *    例如 `WEAK_PASSWORD: "密碼至少 10 個字元…"`（前端錯誤碼 → 文案）識別名剛好以 PASSWORD
+ *    結尾、值又夠長，不擋掉的話整個 `--tracked` 完整稽核會被這類誤報灌滿，
+ *    而「誤報太多」正是這支腳本要解決的「人工掃描疲勞」的成因。
+ *    註：**刻意不跳過整行註解** —— 被註解掉的真機密一樣會進版控、一樣外流，必須照抓；
+ *    佔位值（`replace-with-…`）改由下方的 placeholder 規則處理。
+ */
 function looksLikeLiteralSecret(value, quoted) {
   const inner = value.trim();
   if (!inner) return false;
@@ -187,7 +197,8 @@ function looksLikeLiteralSecret(value, quoted) {
   if (PLACEHOLDER_VALUES.has(inner.toLowerCase())) return false;
   if (PLACEHOLDER_PREFIX.test(inner)) return false;
   if (/^(?:x{3,}|\*{3,}|-{3,}|\.{3,}|_{3,})$/i.test(inner)) return false;
-  return quoted ? inner.length >= 8 : /^[A-Za-z0-9+/=_.:@-]{16,}$/.test(inner);
+  if (quoted) return inner.length >= 8 && /^[\x20-\x7e]+$/.test(inner);
+  return /^[A-Za-z0-9+/=_.:@-]{16,}$/.test(inner);
 }
 
 const isConfigFile = (file) =>
