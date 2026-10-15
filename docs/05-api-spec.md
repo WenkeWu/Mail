@@ -24,6 +24,7 @@
 | 使用者 | PATCH | `/api/users/:id/status` | 停權／復權（owner；C7 立即生效） |
 | 使用者 | PATCH | `/api/users/:id/quota` | **調整每日配額（1–200）＋寄信安全閥**（docs/16 D5） |
 | 使用者 | PATCH | `/api/users/:id/warmup` | **暖機豁免**（需 migration 0007；docs/16 D5） |
+| 使用者 | DELETE | `/api/users/:id` | **永久刪除訪客**（owner；僅 `role='visitor'`，不可復原、稽核保留，docs/16 D9） |
 | 地址 | PATCH | `/api/email-addresses/:id/status` | **停用／啟用訪客地址**（owner 專用；解 404 缺口，docs/16 D5） |
 | 地址 | POST | `/api/email-addresses` | 建立虛擬地址 |
 | 地址 | GET | `/api/email-addresses` | 列出我的地址（含 disabled） |
@@ -422,6 +423,59 @@ POST /api/auth/mailbox-login            // D8-1：**先驗密碼，再判狀態*
 - 按鈕文案（`web/src/lib/statusSemantics.ts` 為單一來源）：
   **「停權帳號（所有地址；仍可收信）」**／**「停用地址（連收信都停止）」**，兩者皆有 `title` tooltip 說明差異。
 - 停用地址前顯示二次確認，明寫：「**此地址將立即停止收信，停用期間的來信不會保留**」。
+
+### 2.12 階段 6：刪除訪客（D9）與查不到列的 session 失效（D10，2026-10-15）
+
+```http
+DELETE /api/users/:id                      Authorization: owner（訪客 JWT → 403；無 session → 401）
+→ 200 { "ok": true, "id": 7, "username": "friend01",
+        "deleted": { "addresses": 1, "messages": 17, "attachments": 3, "aliases": 1 } }
+  // ⚠️ **僅允許 role='visitor'**：對 owner 帳號（或任何非 visitor 角色）→ 403 FORBIDDEN
+  //    另以 findOwnerId 做縱深防禦（即使 role 欄位被誤設，也刪不到管理帳號）
+  // 一律以**精準 id** 操作（`= ?` 與「取 id 的子查詢」）；**禁止** LIKE 模糊比對
+  // 先 SELECT 確認存在且 role 正確才刪；id 非正整數 → 400 INVALID_ID；不存在 → 404
+  // 刪除順序（依 FK，由子到父；單一 `batch` ＝ 單一交易，任一句失敗即全部回滾 → 500 DELETE_FAILED）
+  //   attachments（透過 messages）→ messages（該地址與該 owner_user_id 的）
+  //   → email_aliases（指向該地址）→ email_addresses（該 user 名下，含已軟刪除者）
+  //   → users → auth_attempts（該地址的 mailbox 計數 key，逐一字串精準比對）
+  // R2：上述信件與附件的物件（raw_r2_key／html_r2_key／attachments.r2_key）一併刪除（best-effort；
+  //     R2 失敗只記 log，不影響 D1 已完成的刪除——沒有 DB 列就沒有 key，物件已不可達）
+  // ⚠️ **不可復原**；只是要暫停請改用 PATCH /api/users/:id/status（停權：可逆、來信照收）
+  // ⚠️ **不刪稽核**（不可竄改原則）：registration_audit 既有列一字不動，另寫入 user_deleted
+  // 稽核：user_deleted（detail：by＝操作 owner id、username、address、addresses／messages／
+  //       attachments／aliases／r2_objects 數量；時間為 created_at；不含任何信件內容，N9）
+  // 前端：VisitorManager 每列的「刪除」按鈕（danger 樣式；僅 owner 的管理頁可見）＋二次確認（§2.13）
+```
+
+**D10 —— 查不到列的 session 一律失效（`auth.ts`）**
+
+`requireSession`／`requireOwner` 載入 session 目標現況（`loadSessionState`；單一主鍵查詢）後：
+
+| 情況 | 舊行為 | 現行為 |
+|---|---|---|
+| 查不到列（帳號／地址已被刪除） | `state && …` 短路 → **放行**（`/api/me` 等回 404／空清單）⚠️ | `401 TOKEN_STALE`「session 已失效，請重新登入」✅ |
+| `pca` 落後（密碼已變更） | `401 TOKEN_STALE`（訊息含「密碼已變更」） | 不變（**訊息可分辨**兩種原因） |
+| rescue（`x-admin-token`） | 豁免 | **不變**（N5；緊急救援不受影響） |
+
+→ 刪除訪客（D9）後，該地址的既有 JWT **下一個請求即失效**；查不到列**不得**變成 500。
+
+**新增錯誤碼**
+
+| 碼 | HTTP | 情境 |
+|---|---|---|
+| `DELETE_FAILED` | 500 | 刪除交易失敗（已回滾，資料未變更；例如非預期的 FK 參照如 `invites.created_by`）|
+| `FORBIDDEN` | 403 | `DELETE /api/users/:id` 的目標不是 `role='visitor'`（保護管理帳號）|
+| `TOKEN_STALE` | 401 | 目標列已不存在（D10 新增情境；原本僅密碼變更）|
+
+### 2.13 前端：刪除訪客的按鈕與二次確認（D9）
+
+- `VisitorManager.tsx` 每列新增 **「刪除」**（danger 樣式，`title` tooltip 說明與停權的差別）。
+- 二次確認（`Modal`）**逐字**明寫：
+  **「將永久刪除該訪客的帳號、地址、所有信件與附件，且無法復原；若只是要暫停，請改用『停權』」**
+  （文案單一來源：`web/src/lib/statusSemantics.ts` 的 `USER_DELETE_WARNING`）。
+- 成功後重整清單並顯示 toast；失敗顯示後端訊息（例如對 owner 帳號的 `403 FORBIDDEN`）。
+- ⚠️ 「僅 owner 可見」由兩層保證：UI（`AppShell` 只在 owner session ＋ `mail.`／localhost 顯示管理主控台）
+  ＋後端（端點 `requireOwner`，N3）。
 
 ## 3. 通用原則
 

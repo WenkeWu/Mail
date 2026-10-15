@@ -232,6 +232,25 @@
       - [ ] ⚠️ 提醒（語意，非程式問題）：**停用地址會丟棄停用期間的來信且不可逆**；
             只想擋登入與寄信、但要保留來信 → 用**停權帳號**（`PATCH /api/users/:id/status`）
 
+- [ ] **12. 階段 6：刪除訪客（D9）＋查不到列的 session 失效（D10）**（2026-10-15 程式完成；**未部署**）
+      - [ ] ⚠️ **部署前告知 owner 一行為變更**：帳號／地址被刪除後，其**舊 JWT 立即失效** →
+            `401 TOKEN_STALE`「session 已失效，請重新登入」（先前是放行，會回 404／空清單）。
+            訪客若反映「突然被登出」，先確認帳號是否已被刪除。
+      - [ ] 部署後驗收（對應 `docs/16` §6 T20–T24；**請用測試訪客帳號**，刪除不可復原）：
+            ① `DELETE /api/users/:id`（owner）對訪客 → 200，且 user／address／messages／attachments／
+               aliases／auth_attempts 皆清除；`registration_audit` 保留並新增 `user_deleted` ✅
+            ② 對 **owner** 帳號 → 403 `FORBIDDEN`（管理帳號受保護）✅
+            ③ 訪客 JWT 呼叫 → 403；無 session → 401 ✅
+            ④ 刪除後，該地址的舊 mailbox JWT → 401 `TOKEN_STALE`（D10）✅
+            ⑤ D10 不得造成 500：查不到列的 owner session → 401，且 rescue（`x-admin-token`）仍可通過（N5）✅
+      - [ ] 網頁驗收：訪客管理每列出現 **danger 樣式「刪除」** 按鈕；二次確認明寫
+            「將永久刪除該訪客的帳號、地址、所有信件與附件，且無法復原；若只是要暫停，請改用『停權』」；
+            成功後清單重整並顯示 toast
+      - [ ] 稽核：`registration_audit` 出現 `user_deleted`（`detail.by`＝操作 owner id、被刪 username／
+            address／信件數／附件數，時間為 `created_at`），且該帳號原有的註冊／登入稽核列**仍在**
+      - [ ] ⚠️ 提醒：刪除**不可復原**（含 R2 的信件與附件物件）；只是要暫停 → 用**停權**
+            （`PATCH /api/users/:id/status`：可逆、來信照收）
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -243,6 +262,8 @@
 | `POST /api/auth/register` | **公開（需邀請碼）** | 訪客註冊（Phase 1）→ mailbox session |
 | `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（**預設只回遮罩碼**；`?reveal=1` 額外回全碼並寫稽核）／撤銷 |
 | `GET /api/me` | owner 或 mailbox | 身分與寄信配額（供前端顯示） |
+| **（session 檢查）** | owner 或 mailbox | `401 TOKEN_STALE`：**查不到列**（帳號／地址已被刪除，階段 6／D10）或密碼已變更；rescue 不受影響（N5） |
+| `DELETE /api/users/:id` | owner 或 rescue（**僅 `role='visitor'`**） | **永久刪除訪客**（帳號／地址／所有信件與附件／別名／登入計數；稽核保留，階段 6／D9）；對 owner → 403 `FORBIDDEN` |
 | `PATCH /api/users/:id/status` | owner 或 rescue | 停權／復權（立即生效：**含既有 session 立即 403**，階段 5／D8-4；來信仍照收） |
 | `GET /api/users?role=visitor` | owner 或 rescue | 訪客清單（**只回數量與時間**：信件數／最近活動，N9） |
 | `PATCH /api/users/:id/quota` | owner 或 rescue | 調整每日配額（1–200）＋寄信安全閥（階段 3／D5） |

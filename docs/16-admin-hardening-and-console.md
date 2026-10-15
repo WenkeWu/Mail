@@ -373,3 +373,23 @@
 
 **已知小缺口（未來加固，非安全問題）**：地址已被刪除時，`loadSessionState` 查不到列 → session 不判失效；
 該地址已無資料且無法寄信，故無實質影響；可改為「查不到列即視為失效」。
+→ **2026-10-15 已由 D10 修補**（查不到列 → `401 TOKEN_STALE`；見下方階段 6 ✅）。
+
+### 階段 6（D9 刪除訪客 ＋ D10 查不到列的 session 失效）— ✅ 程式完成（2026-10-15；**未部署**）
+
+| 項目 | 結果 |
+|---|---|
+| 實作 | commit `0c645ec`（D9：`DELETE /api/users/:id` ＋ `web/src/components/VisitorManager.tsx` 刪除按鈕／二次確認 ＋ `web/src/api/endpoints.ts`、`web/src/lib/statusSemantics.ts`；D10：`auth.ts` 新增 `loadLiveState`）|
+| canonical 三指令 | ✅ `lint` 0／`build` 0／`test` **16 files / 208 tests** 全綠（原 15 files / 191 tests）|
+| 測試（T20–T24） | ✅ `packages/api/test/admin-delete.spec.ts`（**13 案例**：T20–T24 ＋精準刪除不誤傷他人、owner 保護（含 role 被誤設的縱深防禦）、rescue（N5）、軟刪除地址一併清除、無地址訪客、R2 物件清除、錯誤碼邊界）、`web/test/statusSemantics.spec.ts`（＋4 案例：D9 文案逐字）|
+| D9 設計 | 僅 `role='visitor'`（對 owner → `403 FORBIDDEN`）；精準 id、**無 LIKE**；單一 `batch` 交易依 FK 由子到父刪除（失敗即回滾 → `500 DELETE_FAILED`）；R2 物件 best-effort 清除；`registration_audit` 一字不動 ＋ 新稽核 `user_deleted` |
+| D10 設計 | `loadSessionState` 查不到列 → **一律失效**：`401 TOKEN_STALE`「session 已失效，請重新登入」（不再因 `state && …` 短路而放行，也**不得**回 500）；與「密碼已變更」的訊息可分辨；**rescue 仍豁免**（N5）|
+| 既有測試 | ✅ T1–T19 **無回歸**（不需調整任何既有案例）|
+| N 系列合規 | ✅ 訪客公開路徑未變（N2）、未以 hostname 判定權限（N3）、`ALLOWED_ORIGINS` 未變（N4）、rescue 與 `/api/backup/*` 未變（N5）、未部署亦未跑遠端 migration（N6／N10）、未寫入 secret（N7）、`docs/13`–`15` 與 `scripts/` 未動（N8）、owner 仍讀不到訪客信件（N9）|
+| 行為變更告知 | ⚠️ 帳號／地址被刪除後，其**舊 JWT 立即失效**（先前為放行，會回 404／空清單）→ 已列入 `docs/11` §2-12 部署前告知 |
+| migration | ⬜ 本次**無新增** migration（0007 為階段 3 既有檔案）|
+| 部署 | ⬜ 未部署（前端需在 `web/` 目錄 build 後 deploy，指令見階段 1）|
+| 文件 | ✅ `docs/05` §2.12（端點／錯誤碼／稽核／D10 對照表）與 §2.13（前端二次確認）、`docs/11` §2-12（上線驗收）與 §3 端點矩陣 |
+
+**R2 提醒（給 owner）**：刪除訪客會一併刪除其信件與附件的 **R2 物件**（best-effort；失敗只記 log，
+不影響 D1 已完成的刪除——沒有 DB 列就沒有 key）。若該訪客的信要留檔，請先確認備份已完成（`docs/09`）。
