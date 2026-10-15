@@ -32,7 +32,16 @@
     //   http://localhost:5173      不經 tunnel、直接開本機 Vite 時
     //   http://127.0.0.1:5173      同上（以 127.0.0.1 開啟時）
     // ⚠️ 未列出的來源一律拒絕：不回 Access-Control-Allow-Origin，且 Cross-Origin-Resource-Policy 退回 same-origin。
-    "ALLOWED_ORIGINS": "https://mail.atwho.org,https://app.atwho.org,http://localhost:5173,http://127.0.0.1:5173"
+    "ALLOWED_ORIGINS": "https://mail.atwho.org,https://app.atwho.org,http://localhost:5173,http://127.0.0.1:5173",
+
+    // 階段 3（D2）：管理登入（POST /api/auth/login）必須帶有效的 Cloudflare Access JWT，
+    // 且其 aud 必須等於 mail.atwho.org 這個 Access 應用的 Audience（見 docs/16 §9）。
+    //   ACCESS_TEAM_DOMAIN  用於取得 Access 公鑰（驗 RS256 簽章）
+    //   ACCESS_MAIL_AUD     允許的 Audience
+    // ⚠️ 回退方式：把 ACCESS_MAIL_AUD 移除或設為空字串 → 程式僅記錄 warning 並放行（過渡模式）。
+    // ⚠️ 這兩者非機密（AUD 非密鑰），可放在 vars；不得把任何 secret 寫進本檔。
+    "ACCESS_TEAM_DOMAIN": "steep-queen-06be.cloudflareaccess.com",
+    "ACCESS_MAIL_AUD": "48c19f72b4892912c5176b3f88ce1fdae27ff6461eb85ef52b928e688567d077"
   }
   // Phase 11 加入：vars / secrets（JWT_SECRET 等，用 .dev.vars 與 wrangler secret put）
 }
