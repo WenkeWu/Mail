@@ -54,6 +54,8 @@
 | **D6**（選配，建議） | owner 登入 TOTP 第二因素 | `packages/api/src/totp.ts`（新增）＋相關 | 新檔 |
 | **D7** | **owner 於網頁自行變更自己的密碼**（帳號設定頁；僅 `mail.` 顯示） | `packages/api/src/index.ts`、`web/src/components/AccountSettings.tsx` | 修改／新檔 |
 | **D8** | **停權／停用語意釐清 ＋ 立即生效**（訊息、文案、警告、session 即時失效） | `packages/api/src/index.ts`、`web/src/components/VisitorManager.tsx` | 修改 |
+| **D9** | **訪客管理頁新增「刪除訪客」**（含二次確認、完整清除、保留稽核）| `packages/api/src/index.ts`、`web/src/components/VisitorManager.tsx` | 修改 |
+| **D10** | **已刪除地址／查不到列的 session 直接失效**（小缺口加固）| `packages/api/src/auth.ts` | 修改 |
 
 ---
 
@@ -179,6 +181,31 @@
 
 ---
 
+### D9 — 訪客管理頁新增「刪除訪客」
+
+**動機**：目前刪除帳號只能由助手對 D1 手動執行（`docs/16` D5 未含刪除）⚠️
+
+- 新增端點：`DELETE /api/users/:id`（`requireOwner`）
+  - ⚠️ **僅允許 `role='visitor'`**；對 owner 呼叫 → `403 FORBIDDEN`（保護管理帳號 ✅）
+  - 刪除範圍（依 FK 順序）：`messages`（該地址與該 owner_user_id 的）→ `attachments`（透過 messages）→ `email_aliases`（指向該地址）→ `email_addresses`（該 user 名下）→ `users` → `auth_attempts`（該地址的 mailbox 計數 key）
+  - ⚠️ **不刪稽核**：`registration_audit` 保留（不可竄改原則），並新增管理稽核事件 `user_deleted`（記錄操作 owner id、被刪 username／address／信件數、時間）
+  - 安全性：以**精準 id** 操作（禁止 LIKE 模糊比對）；`SELECT` 確認存在且 role 正確才刪
+- 前端（`VisitorManager`）：
+  - 每列新增「**刪除**」按鈕（danger 樣式），僅 owner 可見
+  - **二次確認對話框**必須明寫：「將永久刪除該訪客的帳號、地址、**所有信件與附件**，且**無法復原**；若只是要暫停，請改用『停權』」
+  - 成功後重整清單並顯示 toast
+
+### D10 — 已刪除地址／查不到列的 session 直接失效（小缺口加固）
+
+**現況**（2026-10-14 實測發現）：`loadSessionState` 查不到列（例如地址已被刪除）時 `state` 為 `null`，
+`requireSession` 因 `state && …` 的短路判斷而**放行** ⚠️
+
+- 修正：`loadSessionState` 回 `null` → **視為 session 失效** → `401 TOKEN_STALE`「session 已失效，請重新登入」
+- ⚠️ 例外：**rescue（`x-admin-token`）不受影響**（既有豁免，N5）
+- ⚠️ 不得因此讓 owner 查不到自己時回 500（需明確 401）
+
+---
+
 ## 4. 不可做（N 系列）
 
 | # | 禁止 |
@@ -233,6 +260,11 @@
 | T17 | 使用者被停權後，**既有** mailbox JWT 立即失效 → 403 `ACCOUNT_SUSPENDED`（不必等 token 過期）|
 | T18 | 地址被停用後，**既有** mailbox JWT 立即失效 → 403 `ADDRESS_DISABLED` |
 | T19 | `mailbox-login`：密碼錯誤 → 401 `INVALID_CREDENTIALS`；密碼正確但地址停用 → 403 `ADDRESS_DISABLED`；帳號停權 → 403 `ACCOUNT_SUSPENDED` |
+| T20 | `DELETE /api/users/:id` 對訪客 → 200，且 user／address／messages／attachments／aliases／auth_attempts 皆清除，`registration_audit` 保留並新增 `user_deleted` 稽核 |
+| T21 | `DELETE /api/users/:id` 對 **owner** → 403 `FORBIDDEN`（不得刪除管理帳號）|
+| T22 | 訪客 JWT 呼叫 `DELETE /api/users/:id` → 403 |
+| T23 | 地址被刪除後，該地址的舊 mailbox JWT → **401 `TOKEN_STALE`**（查不到列即失效，D10）|
+| T24 | D10 不得造成 500：查不到列的 owner session → 401，且 rescue token 仍可通過 |
 
 ---
 
@@ -248,7 +280,7 @@
 ## 8. Definition of Done
 
 - [ ] D1–D5 與 **D7** 全部交付（D6 為選配）
-- [ ] canonical 三指令全綠；T1–T19 通過
+- [ ] canonical 三指令全綠；T1–T24 通過
 - [ ] `docs/05`（API 規格）與 `docs/11`（上線檢查清單）同步更新
 - [ ] 若新增 migration（`0007`）：只新增檔案，**不套用** ✅
 - [ ] 未部署、未跑遠端 migration、未動 N6–N8 列出的檔案
