@@ -253,6 +253,22 @@
 - 測試：**T30**（對已軟刪除地址執行 hard → 信件／附件／R2 清除、名稱可重用、稽核正確）；
   **T31**（非 owner／他人地址 → 404 或 403）；**T32**（soft 對已軟刪除地址的行為明確且無 500）
 
+**D11-5 已完成（2026-10-15；未部署）**
+
+| 項目 | 結果 |
+|---|---|
+| 實作 | commit `153b42a`（後端 `packages/api/src/index.ts`：查詢條件涵蓋已軟刪除的列 ＋ `GET /api/email-addresses?deleted=1`；前端 `AddressManager.tsx`／`endpoints.ts`／`types.ts`／`statusSemantics.ts`／`styles.css`）|
+| canonical 三指令 | ✅ `lint` 0／`build` 0／`test` **18 files / 252 tests** 全綠（原 17 files / 233 tests）|
+| 測試（T30–T32） | ✅ `packages/api/test/admin-address-purge.spec.ts`（**13 案例**：T30–T32 ＋ 清單內容與權限、精準清除不誤傷、重複 hard、參數邊界、rescue（N5））、`web/test/statusSemantics.spec.ts`（＋6 案例：D11-5 文案）|
+| 既有測試調整 | ⚠️ **1 處**（`admin-address-delete.spec.ts` T28）：對已軟刪除的列 `?mode=hard` 由 `404` 改為 `200` —— 這正是 D11-5 要求的行為變更；`soft`（含未帶 mode）對該類列仍為 `404` |
+| soft 對已軟刪除列的行為（規格要求「明確且可測」） | ✅ 採「**維持不變**」：`404 NOT_FOUND` —— 不重複標記、**不改寫原 `deleted_at`**、不寫稽核、**不得 500**（T32 逐項驗證）|
+| 名稱釋放 | ✅ 升級 hard 後同名可重建（201）；解掉「soft 過的名稱永遠卡住」的殘留 |
+| 前端 | ✅ 「已刪除的地址」收合區塊（僅 owner；地址／刪除時間／信件數）；每列「永久刪除」→ 二次確認逐字明寫「所有信件與附件（**含垃圾桶**）…**不可復原**」；清單載入失敗只影響該區塊（區塊內錯誤＋重試）|
+| N 系列合規 | ✅ 訪客公開路徑未變（N2）、未以 hostname 判定權限（N3）、`ALLOWED_ORIGINS` 未變（N4）、rescue 與 `/api/backup/*` 未變（N5，且 rescue 同樣可升級清除）、未部署亦未跑遠端 migration（N6／N10）、未寫入 secret（N7）、`docs/13`–`15` 與 `scripts/` 未動（N8）、稽核與清單皆只有數量／時間不含信件內容（N9）|
+| migration | ⬜ 本次**無新增** migration |
+| 部署 | ⬜ 未部署（前端需在 `web/` 目錄 build 後 deploy，指令見階段 1）|
+| 文件 | ✅ `docs/05` §2.2／§2.14（mode × 列狀態對照表）／§2.16（新章）、`docs/11` §2-13b 與 §3 端點矩陣 |
+
 **D11 主體已完成的行為變更（部署時需知）**
 
 | 項目 | 說明 |

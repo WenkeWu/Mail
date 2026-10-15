@@ -272,11 +272,28 @@
             （「地址管理＝你自己的信箱」／「訪客管理＝別人用邀請碼註冊的帳號」）
       - [ ] 稽核：`registration_audit` 出現 `address_deleted`（`detail.mode`＝`soft`／`hard`、
             `detail.messages`＝實際刪除信件數、`detail.by`＝操作 owner id）
-      - [ ] ⚠️ 已知限制（非缺陷）：**已 soft 刪除的地址無法再由 API 升級為 hard**
-            （端點對 `deleted_at` 非空的列回 `404`，且該列不會出現在地址清單）→
-            若要清除這類殘留列與其 R2 物件，需由助手直接處理（`docs/09` 備份流程）。
       - [ ] ⚠️ 提醒：hard 刪除**不可復原**（含 R2 上的原始信件／HTML／附件）；
             只是要停收信 → 用**停用**（可再啟用），只是要停止登入／寄信 → 用**停用地址**或**停權帳號**
+
+- [ ] **13b. 階段 7 補完：清除「已軟刪除」的地址（D11-5）**（2026-10-15 程式完成；**未部署**；
+      對應 `docs/16` §6 **T30–T32**、`docs/05` §2.16）
+      - [ ] 部署後驗收（**請用測試地址**，hard 不可復原）：
+            ① soft 刪除一個地址 → 它**不出現**在地址清單，但 `GET /api/email-addresses?deleted=1`
+               找得到（含 `deleted_at` 與 `messages`）✅
+            ② 對該地址 `DELETE /api/email-addresses/:id?mode=hard` → `200` 且
+               `previously_deleted: true`；messages／attachments／R2 物件清除、**同名可重建**（201）✅
+            ③ 對已軟刪除的地址再送 `mode=soft`（或未帶 mode）→ **`404 NOT_FOUND`**（明確、**非 500**），
+               且 `deleted_at` 未被改寫、信件與 R2 全數保留 ✅
+            ④ 他人地址／訪客地址（含已軟刪除的）→ `404`；訪客 JWT → `403`；無 session → `401` ✅
+            ⑤ `GET /api/email-addresses?deleted=1` 僅 owner 可用；只回**自己名下**的已刪除地址 ✅
+      - [ ] 網頁驗收：地址管理頁下方出現**「已刪除的地址」收合區塊**，列出 地址／刪除時間／信件數；
+            每列「永久刪除」→ 二次確認明寫「將清除 … 的所有信件與附件（含垃圾桶）…；不可復原」✅
+      - [ ] 網頁驗收：把該區塊的請求弄失敗（例如暫時斷網／改錯 API base）→ **只有區塊內顯示錯誤與
+            「重試」**，地址清單、建立地址、密碼等功能照常（**整頁不得壞掉**）✅
+      - [x] ~~已知限制：已 soft 刪除的地址無法再由 API 升級為 hard~~ → **已於 D11-5 解除**：
+            該類列現在可由 `?mode=hard` 永久清除（連同其 R2 物件與佔用的名稱）
+      - [ ] ⚠️ 行為變更告知：**已軟刪除的地址**送 `mode=hard` 由 `404` 改為 `200`（升級路徑）；
+            `mode=soft`（含未帶 mode）對這類列**維持 `404`**（既有行為不變，只是明文確立）
 
 ## 3. 認證與端點矩陣
 
@@ -296,7 +313,8 @@
 | `PATCH /api/users/:id/quota` | owner 或 rescue | 調整每日配額（1–200）＋寄信安全閥（階段 3／D5） |
 | `PATCH /api/users/:id/warmup` | owner 或 rescue | 暖機豁免（需 migration 0007；階段 3／D5） |
 | `/api/email-addresses*`（含密碼） | owner 或 rescue | 地址管理（**自身名下**，越權／訪客地址一律 404） |
-| `DELETE /api/email-addresses/:id?mode=soft\|hard` | owner 或 rescue（**自身名下**） | address 刪除（階段 7／D11）：`soft`（預設，信件與 R2 保留）／`hard`（信件／附件／R2 一併清除＋**釋放名稱**）；一律寫稽核 `address_deleted` |
+| `GET /api/email-addresses?deleted=1` | owner 或 rescue | **已軟刪除**（垃圾桶）的地址清單（階段 7／D11-5）：`deleted_at`／`messages`，供網頁「已刪除的地址」區塊；未帶參數＝既有清單（僅未刪除的列） |
+| `DELETE /api/email-addresses/:id?mode=soft\|hard` | owner 或 rescue（**自身名下**） | address 刪除（階段 7／D11）：`soft`（預設，信件與 R2 保留）／`hard`（信件／附件／R2 一併清除＋**釋放名稱**）；一律寫稽核 `address_deleted`。**D11-5**：對**已軟刪除**的列 `hard` → `200`（`previously_deleted: true`）、`soft` → `404`（不重複標記、非 500） |
 | `PATCH /api/email-addresses/:id/status` | owner 或 rescue | 停用／啟用**訪客**地址（階段 3／D5；解 404 缺口）；**立即生效**且**連收信都停止**（階段 5／D8-4） |
 | `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9） |
 | `/api/backup/changes`、`/api/backup/r2/*` | owner 或 rescue | 備份拉取（**含 password_hash → 僅維運**） |

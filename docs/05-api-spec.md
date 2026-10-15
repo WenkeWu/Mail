@@ -96,7 +96,8 @@ Authorization: Bearer <JWT>            // Owner session
 ### 2.2 地址 CRUD 其餘
 
 ```http
-GET    /api/email-addresses            → 200 [{...}]      // Owner：名下全部；Mailbox：只有自己
+GET    /api/email-addresses            → 200 [{...}]      // Owner 名下（僅未刪除的列）；含 messages 計數
+GET    /api/email-addresses?deleted=1   → 200 [{...}]      // 僅**已軟刪除**的列（垃圾桶；D11-5，§2.16）
 GET    /api/email-addresses/:id        → 200 {...} | 404
 PATCH  /api/email-addresses/:id        body: { "status": "disabled" } 等
 PATCH  /api/email-addresses/:id/password
@@ -105,7 +106,8 @@ PATCH  /api/email-addresses/:id/password
 DELETE /api/email-addresses/:id?mode=soft|hard
                                        → soft（預設）204；hard 200 {...}
                                        // soft＝標記 deleted（信件與 R2 保留）；hard＝連信件／附件／R2 一併清除
-                                       // 詳見 §2.14（階段 7／D11）
+                                       // ⚠️ hard 也可用在**已軟刪除**的地址（唯一能清掉殘留的路徑，D11-5）
+                                       // 詳見 §2.14（階段 7／D11）與 §2.16（D11-5）
 ```
 
 權限：Owner 只能操作 `user_id = 自己` 的地址；Mailbox 只能操作自己的地址；越權一律 `404`。
@@ -493,7 +495,19 @@ DELETE /api/email-addresses/:id?mode=soft|hard      Authorization: owner（或 r
 | mode | 行為 | 回應 |
 |---|---|---|
 | `soft`（**預設**；未帶＝soft） | 只標記 `status='deleted'`、`deleted_at`；**保留**信件、附件與 R2 物件 | `204`（無 body，與舊版一致） |
-| `hard` | 單一交易內：先 soft → 刪除該地址**所有** `messages`（含所有資料夾與垃圾桶）→ `attachments` → 指向該地址的 `email_aliases` → **真正移除 `email_addresses` 該列** → 該地址的 `auth_attempts` 計數 key；之後 best-effort 刪除 R2 物件 | `200 { ok, id, email, mode, deleted: { messages, attachments, aliases, r2_objects } }` |
+| `hard` | 單一交易內：先 soft → 刪除該地址**所有** `messages`（含所有資料夾與垃圾桶）→ `attachments` → 指向該地址的 `email_aliases` → **真正移除 `email_addresses` 該列** → 該地址的 `auth_attempts` 計數 key；之後 best-effort 刪除 R2 物件 | `200 { ok, id, email, mode, previously_deleted, deleted: { messages, attachments, aliases, r2_objects } }` |
+
+**`mode` × 列的狀態（D11-5，2026-10-15）**
+
+| 列的狀態 | `soft`（預設） | `hard` |
+|---|---|---|
+| 未刪除（`deleted_at IS NULL`） | `204`（標記刪除，信件保留） | `200`（完整清除） |
+| **已軟刪除**（垃圾桶，`deleted_at` 非空） | **`404 NOT_FOUND`**（不重複標記、**不改寫原 `deleted_at`**、不寫稽核；絕不 `500`） | **`200`**（升級為永久清除；`previously_deleted: true`） |
+
+- 查詢條件涵蓋 `deleted_at` 非空的列，但**仍嚴格限制 `user_id = 自己` 且該 user `role='owner'`**
+  → 他人／訪客的地址（含已軟刪除的）一律 `404`，不因 D11-5 而放寬。
+- `hard` 對已軟刪除的列**跳過 soft 更新步驟**（該列本來就會被移除；免得改寫原本的刪除時間）。
+- `previously_deleted`：`true` ＝ 這是「從垃圾桶升級」的清除；`false` ＝ 直接永久刪除（新增欄位，既有呼叫端不受影響）。
 
 - **R2 清除範圍**：`messages.raw_r2_key`／`messages.html_r2_key`／`attachments.r2_key`（best-effort；
   失敗只記 log，**不讓已完成的 D1 刪除回報失敗** —— 沒有 DB 列就沒有 key，物件已不可達）。
@@ -548,6 +562,37 @@ DELETE /api/email-addresses/:id?mode=soft|hard      Authorization: owner（或 r
 - **D11-4 頁面定位說明**（兩頁各一行，避免「地址管理」與「訪客管理」被誤解為同一件事）：
   - 地址管理：**「地址管理＝你自己的信箱…」**（`ADDRESS_MANAGER_HINT`）
   - 訪客管理：**「訪客管理＝別人用邀請碼註冊的帳號…」**（`VISITOR_MANAGER_HINT`）
+
+### 2.16 階段 7 補完：清除「已軟刪除」的地址（D11-5，2026-10-15）
+
+**背景（D11 完成後的已知限制）**：`DELETE /api/email-addresses/:id` 的查詢條件是 `deleted_at IS NULL`，
+所以做過 soft delete 的地址**再也無法**升級為 hard（一律 404、也不在 `GET /api/email-addresses` 清單）
+→ 它的信件、附件與 R2 物件，以及被它佔住的**名稱**（同名不可重建）會永遠殘留。
+
+```http
+GET    /api/email-addresses?deleted=1         Authorization: owner（或 rescue）
+DELETE /api/email-addresses/:id?mode=hard     Authorization: owner（或 rescue；僅自身名下）
+```
+
+- **`?deleted=1`**（**新增查詢參數**；未帶參數＝既有行為完全不變、SQL 與回應欄位皆未動）：
+  只回**已軟刪除**（`deleted_at` 非空）的列，欄位為
+  `id`／`email`／`status`／`has_password`／`created_at`／`updated_at`／**`deleted_at`**／**`messages`**
+  （`messages` ＝ 該地址仍保留的信件數，含所有資料夾與垃圾桶，與 `hard` 實際清除數量一致）。
+- **`mode=hard` 用在已軟刪除的列**：清除範圍與稽核欄位與「對未刪除的列 hard」**完全相同**，
+  且會**移除該列以釋放名稱** → 同名可重建（201）。`mode` × 列狀態的完整對照表見 §2.14。
+  回應另帶 `previously_deleted: true`（新增欄位，既有呼叫端不受影響）。
+- **權限不因 D11-5 放寬**：仍為 `requireOwner` ＋ `user_id = 自己` 且 `role='owner'`
+  → 他人／訪客的地址（含已軟刪除的）一律 `404`；訪客 JWT → `403`；無 session → `401`；
+  訪客用自己的 JWT 呼叫 → `403`（訪客地址的刪除是 `DELETE /api/users/:id` 的職責，§2.12）。
+- **前端（`AddressManager`，僅 owner 可見）**：地址清單下方新增**「已刪除的地址」收合區塊**（預設收合），
+  列出 地址／刪除時間／信件數（同一份文案單一來源：`web/src/lib/statusSemantics.ts`）：
+  - 區塊說明：`DELETED_ADDRESS_SECTION_HINT`（已停用、來信丟棄、信件與名稱仍在、只能「永久刪除」）
+  - 每列「**永久刪除**」→ 二次確認逐字明寫清除範圍與不可復原（`deletedAddressPurgeWarning()`）：
+    **「將清除 … 的所有信件與附件（含垃圾桶）與雲端原始檔（R2），並釋放地址名稱；不可復原。」**
+    （比 D11-3 的 `addressHardDeleteWarning()` 多強調「**含垃圾桶**」—— 這批地址已經在垃圾桶狀態，
+    使用者容易誤以為「已經刪過，不會再刪掉什麼」）
+  - ⚠️ 清單載入失敗**只影響這一個區塊**：錯誤顯示在區塊內並提供「重試」，地址清單／建立／密碼
+    等既有功能照常運作（**不得讓整頁壞掉**）。
 
 ## 3. 通用原則
 
