@@ -291,6 +291,20 @@
 | 部署 | ⬜ 未部署（前端新版需在 `web/` 目錄 build 後 deploy，指令見上方階段 1；後端部署前**先套用 migration 0007**）|
 | 文件 | ✅ `docs/05` §2.9（端點／錯誤碼／稽核事件／N9 收緊）、`docs/11` §2-10（上線檢查）與 §3 端點矩陣 |
 
+### 階段 5（D8）— ✅ 程式完成（2026-10-15；**未部署**）
+
+| 項目 | 結果 |
+|---|---|
+| 實作 | commit `588f9db`（D8-1：`mailbox-login` 先驗密碼再判狀態；D8-4：`requireSession` 狀態檢查，與 `TOKEN_STALE` 共用同一次索引查詢；D8-2／D8-3：`web/src/lib/statusSemantics.ts` ＋ `VisitorManager.tsx` 文案與二次確認）|
+| canonical 三指令 | ✅ `lint` 0／`build` 0／`test` **15 files / 191 tests** 全綠（原 171）|
+| 測試（T17–T19） | ✅ `packages/api/test/admin-status.spec.ts`（14 案例：T17／T18／T19 ＋ TOKEN_STALE 保留、rescue 不受影響（N5）、`can_send` 不變、N9 不放寬、兩層判定順序）、`web/test/statusSemantics.spec.ts`（6 案例：按鈕文案／tooltip／二次確認警語）|
+| 既有測試調整 | ⚠️ **2 處**（`admin-console.spec.ts` 的 D5 案例）：錯誤碼由 D8 取代 —— 停用地址登入 `401 INVALID_CREDENTIALS` → `403 ADDRESS_DISABLED`、既有 session 寄信 `FROM_NOT_ALLOWED` → `ADDRESS_DISABLED`。`can_send` 語意的 `SEND_NOT_ALLOWED` 覆蓋未變（`registration.spec.ts`、`admin-console.spec.ts` T14）|
+| N 系列合規 | ✅ 訪客公開路徑認證要求未變（N2，僅錯誤碼更精確）、未以 hostname 判定權限（N3）、`ALLOWED_ORIGINS` 未變（N4）、rescue 與 `/api/backup/*` 未變（N5）、未部署亦未跑遠端 migration（N6／N10）、未寫入 secret（N7）、`docs/13`–`15` 與 `scripts/` 未動（N8）、owner 仍不得讀取訪客信件（N9）|
+| 行為變更告知 | ⚠️ 停權／停用現在**立即**踢掉既有 session（先前需等 JWT 24h 過期）→ 已列入 `docs/11` §2-11 上線驗收 |
+| migration | ⬜ 本次**無新增** migration |
+| 部署 | ⬜ 未部署（前端需在 `web/` 目錄 build 後 deploy，指令見階段 1）|
+| 文件 | ✅ `docs/05` §2.10（語意對照表／登入錯誤碼矩陣／`requireSession` 狀態檢查／新增 `ADDRESS_DISABLED`）、§2.11（前端文案）、`docs/11` §2-11 與 §3 端點矩陣 |
+
 ### 階段 2 需要的值（已查得）
 
 | 名稱 | 值 | 用途 |
