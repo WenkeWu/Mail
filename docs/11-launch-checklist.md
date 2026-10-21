@@ -354,6 +354,27 @@
       - [x] 已完成驗證：假樣本 5 類規則全數命中且**輸出不含任何值**；乾淨樣本 → `0`；
             含假 token → `1`；`.secret-scanignore` 與行內 ignore 皆生效；**本 repo 實跑 → `0`**（乾淨）
 
+- [ ] **15. 互動式表單與內部直送（docs/18 P1／P2；2026-10-21 程式完成，未部署）**
+      - [ ] **先套用 migration `0008_form_mail.sql`**（只新增欄位／表，既有列安全預設
+            `origin='external'`／`kind='normal'`／`delivery_scope='external'`）：
+            ```powershell
+            cd D:\Mail\Atwhomail
+            pnpm --filter @atwhomail/api exec wrangler d1 migrations apply mail-d1 --remote
+            ```
+            ⚠️ 部署順序：**migration 先於 API**（`/api/forms/*` 需要新表；`/api/mail/send` 會寫新欄位）。
+      - [ ] 部署 API 與前端（前端需在 `web/` 目錄 build；RJSF 會讓 bundle 增至約 682 kB／gzip 216 kB）。
+      - [ ] **本地直送驗收**：以內部地址互寄 → 收件人 `origin=internal`、`kind=normal`、
+            `delivery_scope=internal`，且 **Workers Email Sending 用量不增加**（未繞 SMTP）。
+      - [ ] **外部信仍走 EMAIL.send**：寄到外部地址 → `delivery_scope=external`，用量正常增加。
+      - [ ] **互動式表單驗收**：`/api/forms/send` 寄給內部地址 → 收件人可渲染並送出；
+            `GET /api/forms/:id` 對非收件人／已撤回／逾期一律 404；寄件人可查看回覆與撤回。
+            ⚠️ 互動式表單路徑**不得**出現 EMAIL Sending 用量（設計上物理不可能）。
+      - [ ] **寄件者驗證顯示**：外部信詳情應顯示 SPF／DKIM／DMARC（pass／fail／none／unknown）；
+            fail 僅顯示警告，**不得**影響閱讀或授權。
+      - [ ] **回退**：前端重新部署上一版即可讓表單自動降為靜態（後端端點保留、不再被呼叫）；
+            migration 0008 為純新增，可保留不用。⚠️ 本版**未實作** docs/18 §10 的 feature flag（見 §5-15）。
+      - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -375,7 +396,12 @@
 | `GET /api/email-addresses?deleted=1` | owner 或 rescue | **已軟刪除**（垃圾桶）的地址清單（階段 7／D11-5）：`deleted_at`／`messages`，供網頁「已刪除的地址」區塊；未帶參數＝既有清單（僅未刪除的列） |
 | `DELETE /api/email-addresses/:id?mode=soft\|hard` | owner 或 rescue（**自身名下**） | address 刪除（階段 7／D11）：`soft`（預設，信件與 R2 保留）／`hard`（信件／附件／R2 一併清除＋**釋放名稱**）；一律寫稽核 `address_deleted`。**D11-5**：對**已軟刪除**的列 `hard` → `200`（`previously_deleted: true`）、`soft` → `404`（不重複標記、非 500） |
 | `PATCH /api/email-addresses/:id/status` | owner 或 rescue | 停用／啟用**訪客**地址（階段 3／D5；解 404 缺口）；**立即生效**且**連收信都停止**（階段 5／D8-4） |
-| `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9） |
+| `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9）。`/api/mail/send`：全內部 active 收件人→**本地直送**（不呼叫 EMAIL.send） |
+| `POST /api/forms/send` | owner 或 mailbox（from 需在 scope 內） | **互動式表單**：收件人全內部 active（否則 422 `FORM_RECIPIENT_NOT_INTERNAL`）、schema 白名單、每人一筆實例、**絕不呼叫 EMAIL.send** |
+| `GET /api/forms/:id` | 收件人本人（mailbox） | 表單 schema；四道鎖任一失敗→**404**（不洩漏存在性） |
+| `POST /api/forms/:id/responses` | 收件人本人 | 送出回覆（payload 依 schema 驗證；重複→409 `FORM_ALREADY_SUBMITTED`） |
+| `GET /api/forms/:id/responses` | **僅寄件人** | 查看同批所有實例與回覆；他人→403 |
+| `POST /api/forms/:id/revoke` | **僅寄件人** | 撤回整批；撤回後收件人 GET 立即 404（前端降靜態） |
 | `/api/backup/changes`、`/api/backup/r2/*` | owner 或 rescue | 備份拉取（**含 password_hash → 僅維運**） |
 | restore | **僅本機腳本 + CF token** | 手動還原（production 無寫入端點） |
 
@@ -407,6 +433,7 @@
 | 13 | ~~整台機器關機時不會有任何告警~~ → **✅ 2026-10-06 已實作**：新增 `atwhomail-heartbeat` Worker（D1 `system_heartbeat`；Cron 每 15 分鐘）。本機 watchdog 每次執行即 POST 心跳；**超過 45 分鐘未回報 → 由雲端寄告警信**（12 小時去重）。已驗證：cron 執行痕跡 `last_cron_at`（實測 16:00:19）、本機回報、無／錯 token 401、103 測試通過 | — | 端到端「停擺→收到信」建議用**關機驗收**：關機 >45 分鐘應收到主旨「本機停擺（心跳停止）」 |
 
 | 14 | ~~DKIM 失效沒有任何自動監控~~ → **✅ 2026-10-07 已解決**：watchdog 新增第 8 項檢查（每輪以 DoH 驗證 `cf-bounce`／`cf2024-1` 公鑰：存在／合法 base64／≥2048-bit／**指紋未變**）＋端到端腳本 `scripts/dkim_verify.py`（**實測通過**：`d=atwho.org; s=cf-bounce` 與 `d=cloudflare-smtp.org; s=cf2024-1` 兩個簽章的 body hash 與 RSA 簽章全部驗證通過） | — | 端到端會真的寄一封信（收件者須為自家 active 信箱）；建議每月或改動寄信／DNS 設定後跑一次（`python scripts/dkim_verify.py`） |
+| 15 | **docs/18 P2 未實作 feature flag**（§10 的回退設計）；回退目前依賴「重新部署上一版前端」。另 P2 未做：表單回覆附件、期限 UI、已讀狀態、統計／稽核頁（P3 範圍） | 若要「不動前端就關閉表單渲染」，目前只能靠後端端點回 404（例如暫時移除路由） | P3 再補 `FORMS_ENABLED` 開關（後端回 404 或前端不請求），並把撤回／期限／統計納入治理頁 |
 
 ## 6. 相關文件
 

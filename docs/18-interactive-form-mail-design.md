@@ -1,6 +1,7 @@
 # 18 — 郵件種類與互動式表單運作模式（設計文件 v0.1）
 
-> 狀態：**待 owner 審閱**（尚未實作）
+> 狀態：**P1／P2 已實作（2026-10-21；未部署、migration 0008 未套用）**；P3 尚未實作。
+> 實作狀態、測試與已知限制見 §14。
 > 建立於 2026-10-15｜前置：`docs/16`（管理強化 D1–D15）、`docs/17`（備份還原）
 > 本文件只定義「要什麼、怎麼判定、怎麼防」；**不含實作**。
 
@@ -312,3 +313,41 @@ CREATE TABLE form_responses (
 
 **驗收門檻**：canonical 三指令全綠（含 web DOM suite）；**T36–T55** 全過；**T1–T35 零回歸**。
 **安全門檻**：互動式郵件路徑**不得呼叫 `EMAIL.send()`**；表單授權只查 DB；稽核不含信件內容（N9）。
+
+---
+
+## 14. 實作狀態（2026-10-21）
+
+> 本次只做 **P1／P2**，未做 P3；**未部署、未跑遠端 migration、未對 production D1／R2 寫入**。
+
+### 14.1 P1（已實作，commit `0b54e41`）
+
+| 項目 | 結果 |
+|---|---|
+| migration | `Atwhomail/migrations/0008_form_mail.sql`：messages 新增 `origin`／`kind`／`delivery_scope`／`form_instance_id`／`suspicious_form_claim`／`sender_spf`／`sender_dkim`／`sender_dmarc`；新增 `form_templates`／`form_instances`／`form_responses`（含索引與 FK）。既有列安全預設（`external`／`normal`／`external`），不會變成互動式表單 |
+| email-handler | MX 進信一律 `external`／`normal`／`external`；解析 `Authentication-Results`（優先）與 `Received-SPF`（SPF 備援）；`X-AtWho-Form*` 標頭／`.atwhoform` 附件 → 丟棄標記、`suspicious_form_claim=1`、稽核 `claim_blocked`（不含信件內容） |
+| `/api/mail/send` | to+cc+bcc 全部本網域＋存在＋active → **本地直送**（不呼叫 `EMAIL.send()`），每位收件人獨立 messages／R2，保留寄件備份；含任一個外部收件人 → 維持既有 `EMAIL.send()`。配額／can_send／暖機／每小時限流／稽核不變 |
+| 前端 | 列表與讀信顯示三類徽章（外部／內部／互動式）；外部信顯示 SPF／DKIM／DMARC（pass／fail／none／unknown，**僅顯示**；fail 顯示警告但仍可閱讀） |
+| 測試 | T36／T37／T38／T49／T53／T54／T55 全過；既有 T1–T35 零回歸 |
+
+### 14.2 P2（已實作，commit `0f357d3`）
+
+| 項目 | 結果 |
+|---|---|
+| 依賴 | `@rjsf/core`／`@rjsf/validator-ajv8`／`@rjsf/utils`（僅 `web`；無 UI 框架） |
+| 後端 | `packages/api/src/forms.ts`：schema 白名單＋payload 驗證＋靜態文字版。`POST /api/forms/send`（fail closed、每人一實例、本地直送、**絕不呼叫 EMAIL.send**、稽核 `form_sent`）；`GET /api/forms/:id`（四道鎖，任一失敗一律 404，稽核 `form_viewed`）；`POST /api/forms/:id/responses`（重複／撤回／逾期錯誤碼，稽核 `form_submitted`）；`GET /api/forms/:id/responses`（僅寄件人）；`POST /api/forms/:id/revoke`（撤回整批，稽核 `form_revoked`） |
+| 前端 | `FormRenderer`（RJSF＋自訂 Text／Date／Select／Checkbox／Textarea widgets）；`ReadingPane` 成功渲染、任何失敗降靜態；`FormManagePanel`（寄件人查看回覆／撤回）；`ComposeWindow` 互動式表單模式（僅內部地址、schema JSON 編輯） |
+| 轉寄降級 | Forward 仍走既有 `DraftMode="forward"`，只帶 `GET /api/mail/:id/text` 的靜態文字；不複製 `form_instance_id`、不建立新實例（T48） |
+| 測試 | T39–T51（含 T48 轉寄降級、T51 稽核不含內容）全過；canonical 三指令全綠（workerd 22 files／283 tests＋web DOM 5 files／28 tests） |
+
+### 14.3 已知限制／未完成（P3 或後續）
+
+| # | 項目 | 說明 |
+|---|---|---|
+| 1 | **未做 feature flag** | §10 的回退設計尚未實作；目前回退＝重新部署上一版前端（後端端點保留）。建議 P3 加 `FORMS_ENABLED` |
+| 2 | 表單回覆附件 | 依 §12 決策 P1／P2 不做（P3 再評估） |
+| 3 | 期限 UI／已讀狀態／統計／稽核頁 | P3 範圍 |
+| 4 | 寄件備份的「代表實例」 | `messages.form_instance_id` 指向該批第一筆實例，僅供寄件人管理 UI 找到同批 template；收件人四道鎖仍以 `form_instances` 為準 |
+| 5 | owner session 不能填表單 | 四道鎖③要求「登入者 address_id == recipient_address_id」；owner session 沒有單一 address_id → 一律 404（fail closed）。owner 需以該地址的 mailbox session 登入填寫 |
+| 6 | 前端 bundle 變大 | RJSF 讓 web bundle 約 682 kB（gzip 216 kB），Vite 有 chunk size 警告；不影響功能 |
+| 7 | 表單寄送非全批次交易 | 若在建立多個實例的中途發生 D1 錯誤，已建立的實例會保留（安全：無 instance 的 message 只會降為靜態）；寄件備份失敗不影響已投遞的收件人 |

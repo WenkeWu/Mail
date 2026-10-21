@@ -42,7 +42,12 @@
 | Mail | PATCH | `/api/mail/:id/archive` | 封存 |
 | Mail | PATCH | `/api/mail/:id/folder` | 移動 folder（trash/spam…） |
 | Mail | DELETE | `/api/mail/:id` | Soft delete → trash |
-| Mail | POST | `/api/mail/send` | 寄信 |
+| Mail | POST | `/api/mail/send` | 寄信（全內部收件人→本地直送，docs/18 P1） |
+| Form | POST | `/api/forms/send` | **建立並本地投遞互動式表單**（docs/18 P2；絕不呼叫 EMAIL.send） |
+| Form | GET | `/api/forms/:id` | **收件人取表單 schema**（四道鎖；失敗一律 404） |
+| Form | POST | `/api/forms/:id/responses` | **送出表單回覆**（依 schema 驗證） |
+| Form | GET | `/api/forms/:id/responses` | **寄件人查看回覆**（僅寄件人） |
+| Form | POST | `/api/forms/:id/revoke` | **寄件人撤回整批表單** |
 | Attachment | GET | `/api/mail/:messageId/attachments` | 附件清單 |
 | Attachment | GET | `/api/attachments/:id` | 下載附件（stream） |
 | Backup | GET | `/api/backup/changes` | 增量備份 cursor（Backup Agent 專用） |
@@ -615,6 +620,121 @@ DELETE /api/email-addresses/:id?mode=hard     Authorization: owner（或 rescue�
     使用者容易誤以為「已經刪過，不會再刪掉什麼」）
   - ⚠️ 清單載入失敗**只影響這一個區塊**：錯誤顯示在區塊內並提供「重試」，地址清單／建立／密碼
     等既有功能照常運作（**不得讓整頁壞掉**）。
+
+### 2.17 階段 P1：郵件種類、內部直送與寄件者驗證（docs/18，2026-10-21）
+
+> 對象：`POST /api/mail/send`、`GET /api/mail/inbox`、`GET /api/mail/:id`。
+> 分類**只由進入路徑決定**，絕不看 `From` 標頭；SPF／DKIM／DMARC **僅供顯示、永不授權**。
+
+**messages 新增欄位（migration 0008）**
+
+| 欄位 | 值域 | 說明 |
+|---|---|---|
+| `origin` | `external`／`internal` | MX 進信＝external；本地寄送／本地直送＝internal |
+| `kind` | `normal`／`interactive_form` | 只有 `POST /api/forms/send` 能產生 `interactive_form` |
+| `delivery_scope` | `internal`／`external` | 本地直送＝internal；寄往外網＝external |
+| `form_instance_id` | INTEGER／NULL | 互動式表單實例；寄件備份指向該批的**代表實例** |
+| `suspicious_form_claim` | 0／1 | 外部信帶表單標記（已丟棄、未啟用） |
+| `sender_spf`／`sender_dkim`／`sender_dmarc` | `pass`／`fail`／`none`／`unknown`／NULL | **僅供顯示** |
+
+**`POST /api/mail/send` 的本地直送（P1 行為變更）**
+
+- `to + cc + bcc` **全部**為 `atwho.org`、且每個地址都存在、`status='active'`、未刪除
+  → **本地直送**：直接寫入每位收件人的 `messages`（`folder='inbox'`、`origin='internal'`、
+  `kind='normal'`、`delivery_scope='internal'`），不呼叫 `EMAIL.send()`。
+- 只要含**任一個外部收件人** → 維持既有 `EMAIL.send()` 行為不變。
+- 本網域但地址不存在／停用 → 也維持既有 `EMAIL.send()` 行為（零回歸；收信端會靜默丟棄）。
+- 配額、`can_send`、暖機、每小時限流、寄件備份、稽核行為全部不變。
+- 回應新增 `delivery_scope`：`"internal"`／`"external"`（既有欄位不變）。
+- 本地直送會消毒 HTML（與收信端相同的白名單）並為**每位收件人**建立獨立的 raw `.eml`／HTML／附件 R2 物件
+  （避免任一人 hard delete 時波及他人）。
+
+**`GET /api/mail/inbox` 每列新增**：`origin`、`kind`、`delivery_scope`。
+**`GET /api/mail/:id` 新增**：上述三欄＋`form_instance_id`、`suspicious_form_claim`、
+`sender_spf`、`sender_dkim`、`sender_dmarc`。
+前端據此顯示三類徽章（外部／內部／互動式）與寄件者驗證（失敗時顯示「⚠️ 驗證失敗」但仍可正常閱讀）。
+
+**收信端（email-handler）**
+
+- MX 進入的信**一律** `origin='external'`、`kind='normal'`、`delivery_scope='external'`。
+- 解析 `Authentication-Results`（優先）／`Received-SPF`（SPF 備援）→ 寫入三個顯示欄位。
+- 出現 `X-AtWho-Form*` 標頭或 `.atwhoform`／`.atwho-form.json` 附件 → **丟棄標記**、
+  `suspicious_form_claim=1`、寫稽核 `claim_blocked`（只記標記種類，不含信件內容），**不啟用任何表單**。
+
+### 2.18 階段 P2：互動式表單（docs/18，2026-10-21）
+
+> ⚠️ **安全門檻**：互動式表單路徑**絕不呼叫 `EMAIL.send()`**；授權只查 DB（`form_instances`）；
+> 稽核不含主旨／內文／schema／回覆內容（N9）；表單回覆**不支援附件**。
+
+```http
+POST /api/forms/send                       Authorization: owner 或 mailbox
+{
+  "from": "alice@atwho.org",
+  "to": ["bob@atwho.org"],                 // 必填；to+cc+bcc 全部必須是 atwho.org 內部 active 地址
+  "cc": [], "bcc": [],
+  "subject": "填寫表單",
+  "title": "員工調查",                      // 選填；預設=subject
+  "description": "請於本週五前填寫",         // 選填；純文字（後端消毒）
+  "schema": { "type": "object", "properties": { ... }, "required": [...] },
+  "due_at": 1790000000000                  // 選填（epoch ms；NULL=不過期）
+}
+→ 201 {
+  "ok": true, "template_id": 3, "template_key": "<uuid>",
+  "message_id": "<uuid@atwho.org>", "sent_message_id": 42,
+  "instances": [ { "id": 7, "recipient": "bob@atwho.org" } ]
+}
+  // 每位收件人：一筆 form_instances ＋ 一筆 messages（origin=internal、kind=interactive_form、
+  //   delivery_scope=internal、form_instance_id 關聯）；另建立寄件備份（kind=interactive_form，
+  //   form_instance_id 指向代表實例，供寄件人管理 UI 使用）
+  // 失敗：422 FORM_RECIPIENT_NOT_INTERNAL／422 FORM_SCHEMA_INVALID／403 FROM_NOT_ALLOWED／
+  //       403 ACCOUNT_SUSPENDED／403 SEND_NOT_ALLOWED／429 QUOTA_EXCEEDED／429 RATE_LIMITED
+  // 稽核：form_sent（detail 只含 id／數量／欄位數／due_at，不含主旨／地址／schema）
+
+GET /api/forms/:id                         Authorization: 收件人本人（mailbox）
+→ 200 { "form": { "id": 7, "message_id": 11, "subject": "...", "status": "open",
+                  "due_at": null, "title": "...", "description": "...", "schema": { ... } } }
+  // 四道鎖：① messages.kind=interactive_form ② 實例存在＋status='open'＋未過期
+  //          ③ 登入者 address_id == recipient_address_id ④ origin 與 delivery_scope 皆 internal
+  // ⚠️ 任一失敗一律 **404 FORM_NOT_FOUND**（不洩漏存在性）；owner session 亦 404（fail closed）
+  // 稽核：form_viewed
+
+POST /api/forms/:id/responses               Authorization: 收件人本人
+{ "payload": { "answer": "..." } }
+→ 200 { "ok": true, "instance_id": 7, "status": "submitted" }
+  // payload 依 schema 驗證（未知欄位、型別、長度、required、format: date）
+  // 409 FORM_ALREADY_SUBMITTED／409 FORM_CLOSED（已撤回）／409 FORM_EXPIRED
+  // 422 FORM_INVALID_PAYLOAD；404 FORM_NOT_FOUND（非收件人／不存在／非互動式）
+  // 每實例最多一筆（DB UNIQUE）；稽核：form_submitted（不含 payload）
+
+GET /api/forms/:id/responses                Authorization: 僅寄件人
+→ 200 { "form": { ... }, "instances": [ { "id", "recipient", "status", "due_at",
+          "submitted_at", "payload" } ], "responses": [ { "instance_id", "recipient",
+          "payload", "submitted_at" } ] }
+  // 回傳同一 template_id（同一次寄送）的所有實例；非寄件人 → 403 FORM_NOT_AUTHORIZED
+  // 不存在 → 404 FORM_NOT_FOUND
+
+POST /api/forms/:id/revoke                  Authorization: 僅寄件人
+→ 200 { "ok": true, "instance_id": 7, "template_id": 3, "revoked": 2 }
+  // 撤回同一批所有 open／expired 實例；撤回後收件人 GET 立即 404（前端降為靜態文字）、
+  // POST responses → 409 FORM_CLOSED。稽核：form_revoked（只含 id／數量）
+```
+
+**Schema 白名單（後端強制；違反 → `FORM_SCHEMA_INVALID`）**
+
+| 允許 | 禁止 |
+|---|---|
+| `type: object` ＋ `properties` ＋ `required` | `$ref`、`anyOf`、`oneOf`、`allOf`、`not`、`if/then/else` |
+| `string`／`number`／`integer`／`boolean`／`array`（僅基本型別 items）| `patternProperties`、`dependencies`、`dependentSchemas`、`propertyNames` |
+| `enum`、`title`、`description`（後端＋前端皆消毒）| 巢狀 > 2 層、欄位數 > 40、字串 > 2000 字 |
+| `format: date`（僅此 format）| 其他 `format`（含 `data-url`）、`pattern`、未知關鍵字 |
+
+**前端**：`ReadingPane` 在 `kind=interactive_form` 且 `GET /api/forms/:id` 成功時以
+**RJSF**（`@rjsf/core` ＋ `@rjsf/validator-ajv8`，自訂 widgets）渲染；任何失敗 → 顯示靜態文字
+（不報錯、不洩漏）。`ComposeWindow` 提供「互動式表單」模式（收件人只允許 `@atwho.org`，
+送出打 `/api/forms/send`）。寄件備份的 ReadingPane 顯示「表單管理」：查看回覆、撤回整批。
+
+**轉寄降級**：對 `kind=interactive_form` 的信按「轉寄」時，只帶 `GET /api/mail/:id/text` 的
+**靜態文字版**；不複製 `form_instance_id`、不建立新實例（既有 `DraftMode="forward"` 流程）。
 
 ## 3. 通用原則
 
