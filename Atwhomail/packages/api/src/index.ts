@@ -34,6 +34,7 @@ import {
   type Scope,
 } from "./auth";
 import { BACKUP_TABLES, clampLimit, formatCursor, parseCursor, type Cursor } from "./backup";
+import { sanitizeHtml } from "./sanitize";
 
 const app = new Hono<AuthEnv>();
 
@@ -133,6 +134,225 @@ interface SendAttachment {
   type: string;
   content_base64: string;
   disposition?: "attachment" | "inline";
+}
+
+// ══════════════════════ 本地直送（docs/18 P1）══════════════════════
+
+interface LocalRecipient {
+  id: number;
+  user_id: number;
+  email: string;
+}
+
+/** 04 文件：mail/YYYY/MM/<uuid>.eml（YYYY/MM = UTC） */
+function buildMailKey(d: Date): string {
+  return `mail/${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${crypto.randomUUID()}.eml`;
+}
+
+/** 檔名 sanitize：去路徑／控制字元，保留安全字元集；空檔名給 fallback */
+function sanitizeFilename(raw: string, fallback: string): string {
+  const cleaned = raw.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").trim();
+  return cleaned.length > 0 && cleaned !== "." && cleaned !== ".." ? cleaned : fallback;
+}
+
+function decodeBase64(input: string): Uint8Array {
+  const bin = atob(input);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function sha256Hex(data: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** 純文字 .eml（寄件備份與本地直送共用；供 /api/mail/:id/text 解析） */
+function buildPlainEml(input: {
+  from: string;
+  to: string[];
+  cc: string[];
+  subject: string;
+  date: Date;
+  messageId: string;
+  text: string;
+}): string {
+  return (
+    `From: ${input.from}\r\n` +
+    `To: ${input.to.join(", ")}\r\n` +
+    (input.cc.length ? `Cc: ${input.cc.join(", ")}\r\n` : "") +
+    `Subject: ${input.subject}\r\n` +
+    `Date: ${input.date.toUTCString()}\r\n` +
+    `Message-ID: <${input.messageId}>\r\n` +
+    `MIME-Version: 1.0\r\n` +
+    `Content-Type: text/plain; charset=utf-8\r\n\r\n` +
+    input.text
+  );
+}
+
+/**
+ * 收件人是否全部為「本網域 ＋ 存在 ＋ active」。
+ *
+ * 回傳 Map = 可本地直送；回傳 null = 不適用（含任何外部地址，或本網域但不存在／停用／刪除）。
+ * 後者維持既有 `EMAIL.send()` 行為（零回歸）；本地直送只發生在**全部**收件人都可驗證時。
+ */
+async function resolveLocalRecipients(
+  db: D1Database,
+  emails: string[]
+): Promise<Map<string, LocalRecipient> | null> {
+  if (emails.length === 0) return null;
+  if (!emails.every((e) => e.toLowerCase().endsWith(`@${DOMAIN}`))) return null;
+  const placeholders = emails.map((_, i) => `?${i + 1}`).join(",");
+  const { results } = await db
+    .prepare(
+      `SELECT id, user_id, email FROM email_addresses
+       WHERE email IN (${placeholders}) AND status = 'active' AND deleted_at IS NULL`
+    )
+    .bind(...emails)
+    .all<LocalRecipient>();
+  if (results.length !== emails.length) return null;
+  return new Map(results.map((r) => [r.email.toLowerCase(), r]));
+}
+
+/**
+ * 本地直送（docs/18 §3.1 模式 a）：不呼叫 `EMAIL.send()`，直接寫入每位收件人的 messages。
+ *
+ * 每位收件人都有**自己的** raw .eml／HTML／附件 R2 物件 —— 刻意不共用 key，
+ * 否則日後任一收件人永久刪除地址時會把其他人的內容一起刪掉。
+ * 附件 R2／D1 失敗只記 log（與收信端一致，不讓整封信失敗）；messages 本體以單一 batch 建立。
+ */
+async function deliverLocalMail(
+  env: Env,
+  input: {
+    from: string;
+    recipients: LocalRecipient[];
+    to: string[];
+    cc: string[];
+    subject: string;
+    html?: string;
+    text: string;
+    attachments: SendAttachment[];
+    messageId: string;
+    ts: number;
+  }
+): Promise<void> {
+  const d = new Date(input.ts);
+  const toJson = JSON.stringify(input.to.map((address) => ({ address, name: "" })));
+  const ccJson = JSON.stringify(input.cc.map((address) => ({ address, name: "" })));
+
+  // 附件先解碼一次（base64 → bytes）；R2 物件仍為每位收件人各存一份。
+  const decodedAtts = input.attachments.map((a, i) => {
+    const bytes = decodeBase64(a.content_base64);
+    return {
+      filename: a.filename || `attachment-${i + 1}`,
+      storedName: sanitizeFilename(a.filename || "", `attachment-${i + 1}`),
+      type: a.type || "application/octet-stream",
+      bytes,
+      index: i,
+    };
+  });
+
+  const sanitizedHtml = input.html ? await sanitizeHtml(input.html) : "";
+  const inserts: D1PreparedStatement[] = [];
+  const prepared: Array<{ recipient: LocalRecipient; key: string; htmlKey: string | null }> = [];
+
+  for (const recipient of input.recipients) {
+    const key = buildMailKey(d);
+    const uuid = key.split("/")[3]!.replace(/\.eml$/, "");
+    const eml = buildPlainEml({
+      from: input.from,
+      to: input.to,
+      cc: input.cc,
+      subject: input.subject,
+      date: d,
+      messageId: input.messageId,
+      text: input.text,
+    });
+    try {
+      await env.MAIL.put(key, new TextEncoder().encode(eml), {
+        httpMetadata: { contentType: "message/rfc822" },
+        customMetadata: { "d1-address-id": String(recipient.id), "d1-flag": "local-delivery" },
+      });
+    } catch (e) {
+      // raw .eml 缺失時仍可讀 preview；不讓單一 R2 失敗阻斷本地投遞
+      console.error("[atwhomail-api] local raw store failed", { key, error: String(e) });
+    }
+
+    let htmlKey: string | null = null;
+    if (sanitizedHtml.trim().length > 0) {
+      const k = key.replace(/\.eml$/, ".html");
+      try {
+        await env.MAIL.put(k, new TextEncoder().encode(sanitizedHtml), {
+          httpMetadata: { contentType: "text/html; charset=utf-8" },
+          customMetadata: { "d1-address-id": String(recipient.id), "d1-flag": "local-delivery" },
+        });
+        htmlKey = k;
+      } catch (e) {
+        console.error("[atwhomail-api] local html store failed", { key: k, error: String(e) });
+      }
+    }
+
+    inserts.push(
+      env.DB.prepare(
+        `INSERT INTO messages
+           (owner_user_id, address_id, folder, message_id, from_address, to_address, cc,
+            subject, text_preview, received_at, raw_r2_key, html_r2_key, created_at, updated_at,
+            origin, kind, delivery_scope)
+         VALUES (?1, ?2, 'inbox', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?9, ?9,
+                 'internal', 'normal', 'internal')`
+      ).bind(
+        recipient.user_id,
+        recipient.id,
+        input.messageId,
+        input.from,
+        toJson,
+        ccJson,
+        input.subject,
+        input.text.slice(0, 200),
+        input.ts,
+        key,
+        htmlKey
+      )
+    );
+    prepared.push({ recipient, key, htmlKey });
+  }
+
+  const results = await env.DB.batch(inserts);
+
+  // 附件：每位收件人各自的 message id 與 R2 key（失敗只記 log，與收信端一致）
+  const attInserts: D1PreparedStatement[] = [];
+  for (let r = 0; r < results.length; r += 1) {
+    const messageRowId = Number(results[r]!.meta.last_row_id);
+    const { key } = prepared[r]!;
+    const uuid = key.split("/")[3]!.replace(/\.eml$/, "");
+    for (const att of decodedAtts) {
+      const stored = `${att.index}-${att.storedName}`;
+      const r2Key = `attachments/${uuid}/${stored}`;
+      try {
+        const sha = await sha256Hex(att.bytes);
+        await env.MAIL.put(r2Key, att.bytes, {
+          httpMetadata: { contentType: att.type },
+          customMetadata: { "d1-message-id": String(messageRowId) },
+        });
+        attInserts.push(
+          env.DB.prepare(
+            `INSERT INTO attachments
+               (message_id, filename, stored_filename, content_type, size_bytes, r2_key, sha256, disposition, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'attachment', ?8, ?8)`
+          ).bind(messageRowId, att.filename, stored, att.type, att.bytes.byteLength, r2Key, sha, input.ts)
+        );
+      } catch (e) {
+        console.error("[atwhomail-api] local attachment store failed", { messageRowId, r2Key, error: String(e) });
+      }
+    }
+  }
+  if (attInserts.length > 0) {
+    try {
+      await env.DB.batch(attInserts);
+    } catch (e) {
+      console.error("[atwhomail-api] local attachment rows failed", { error: String(e) });
+    }
+  }
 }
 
 // ══════════════════════ Phase 1：訪客註冊（docs/13 v0.2、docs/14 §4）══════════════════════
@@ -1543,7 +1763,7 @@ app.get("/api/mail/inbox", requireSession, async (c) => {
   const sw = scopeWhere(scope);
 
   let sql = `SELECT m.id, m.from_address AS "from", m.to_address, m.cc, m.subject, m.text_preview,
-                    m.folder, m.read_at, m.received_at,
+                    m.folder, m.read_at, m.received_at, m.origin, m.kind, m.delivery_scope,
                     (SELECT COUNT(*) FROM attachments a WHERE a.message_id = m.id) AS att_count
              FROM messages m
              WHERE ${sw.sql} AND m.deleted_at IS NULL`;
@@ -1601,6 +1821,10 @@ app.get("/api/mail/inbox", requireSession, async (c) => {
     read: r.read_at !== null,
     has_attachments: r.att_count > 0,
     folder: r.folder,
+    // docs/18 P1：三類郵件徽章（外部／內部／互動式）
+    origin: r.origin ?? "external",
+    kind: r.kind ?? "normal",
+    delivery_scope: r.delivery_scope ?? "external",
   }));
   const last = page[page.length - 1];
   return c.json({ items, nextCursor: hasMore && last ? `${last.received_at}_${last.id}` : null });
@@ -1654,7 +1878,9 @@ app.get("/api/mail/:id", requireSession, async (c) => {
   const sw = scopeWhere(scope);
   const row = await c.env.DB.prepare(
     `SELECT m.id, m.from_address AS "from", m.to_address, m.cc, m.subject, m.text_preview,
-            m.folder, m.read_at, m.received_at, m.html_r2_key, m.message_id
+            m.folder, m.read_at, m.received_at, m.html_r2_key, m.message_id,
+            m.origin, m.kind, m.delivery_scope, m.form_instance_id, m.suspicious_form_claim,
+            m.sender_spf, m.sender_dkim, m.sender_dmarc
      FROM messages m WHERE m.id = ? AND m.deleted_at IS NULL AND ${sw.sql}`
   )
     .bind(id, ...sw.binds)
@@ -1680,6 +1906,15 @@ app.get("/api/mail/:id", requireSession, async (c) => {
     folder: row.folder,
     html_url: row.html_r2_key ? `/api/mail/${row.id}/html` : null,
     attachments: atts.results,
+    // docs/18 P1：分類與寄件者驗證（**僅供顯示**；SPF／DKIM／DMARC 永不授權）
+    origin: row.origin ?? "external",
+    kind: row.kind ?? "normal",
+    delivery_scope: row.delivery_scope ?? "external",
+    form_instance_id: row.form_instance_id ?? null,
+    suspicious_form_claim: row.suspicious_form_claim === 1,
+    sender_spf: row.sender_spf ?? null,
+    sender_dkim: row.sender_dkim ?? null,
+    sender_dmarc: row.sender_dmarc ?? null,
   });
 });
 
@@ -1995,46 +2230,74 @@ app.post("/api/mail/send", requireSession, async (c) => {
     return err(c, "RATE_LIMITED", `每小時最多寄 ${QUOTA.HOURLY_SEND_LIMIT} 封，請稍後再試`, 429);
   }
 
+  // ── 本地直送判定（docs/18 P1）：to+cc+bcc 全部為本網域＋存在＋active → 不繞 SMTP ──
+  const uniqueRecipients = [...new Set([...toList, ...ccList, ...bccList])];
+  const localRecipients = await resolveLocalRecipients(c.env.DB, uniqueRecipients);
+  const deliveryScope: "internal" | "external" = localRecipients ? "internal" : "external";
+
   let result: { messageId: string };
-  try {
-    result = await c.env.EMAIL.send({
-      from: fromAddr.email,
-      to: toList,
-      cc: ccList.length ? ccList : undefined,
-      bcc: bccList.length ? bccList : undefined,
-      subject: body.subject,
-      html: body.html,
-      text: body.text,
-      attachments: atts.length
-        ? atts.map((a) => ({
-            content: a.content_base64,
-            filename: a.filename,
-            type: a.type || "application/octet-stream",
-            disposition: "attachment" as const,
-          }))
-        : undefined,
-    });
-  } catch (e) {
-    const code = (e as { code?: string })?.code ?? "SEND_FAILED";
-    console.error("[atwhomail-api] send failed", { from: fromAddr.email, code, error: String(e) });
-    await refundQuota(c.env.DB, fromAddr.id); // 未寄出 → 回補配額（避免誤扣）
-    return err(c, "SEND_FAILED", `${code}: ${String(e)}`, 502);
+  if (localRecipients) {
+    // ⚠️ 本地直送：**絕不呼叫 EMAIL.send()**（連內部一般郵件也不繞外網）。
+    const messageId = `${crypto.randomUUID()}@${DOMAIN}`;
+    try {
+      await deliverLocalMail(c.env, {
+        from: fromAddr.email,
+        recipients: [...localRecipients.values()],
+        to: toList,
+        cc: ccList,
+        subject: body.subject,
+        html: body.html,
+        text: body.text ?? (body.html ?? "").replace(/<[^>]+>/g, " "),
+        attachments: atts,
+        messageId,
+        ts: ts0,
+      });
+    } catch (e) {
+      console.error("[atwhomail-api] local delivery failed", { from: fromAddr.email, error: String(e) });
+      await refundQuota(c.env.DB, fromAddr.id);
+      return err(c, "SEND_FAILED", "本地投遞失敗，請稍後再試", 500);
+    }
+    result = { messageId };
+  } else {
+    try {
+      result = await c.env.EMAIL.send({
+        from: fromAddr.email,
+        to: toList,
+        cc: ccList.length ? ccList : undefined,
+        bcc: bccList.length ? bccList : undefined,
+        subject: body.subject,
+        html: body.html,
+        text: body.text,
+        attachments: atts.length
+          ? atts.map((a) => ({
+              content: a.content_base64,
+              filename: a.filename,
+              type: a.type || "application/octet-stream",
+              disposition: "attachment" as const,
+            }))
+          : undefined,
+      });
+    } catch (e) {
+      const code = (e as { code?: string })?.code ?? "SEND_FAILED";
+      console.error("[atwhomail-api] send failed", { from: fromAddr.email, code, error: String(e) });
+      await refundQuota(c.env.DB, fromAddr.id); // 未寄出 → 回補配額（避免誤扣）
+      return err(c, "SEND_FAILED", `${code}: ${String(e)}`, 502);
+    }
   }
 
   // 寄件備份
   const ts = now();
   const d = new Date(ts);
-  const key = `mail/${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${crypto.randomUUID()}.eml`;
-  const eml =
-    `From: ${fromAddr.email}\r\n` +
-    `To: ${toList.join(", ")}\r\n` +
-    (ccList.length ? `Cc: ${ccList.join(", ")}\r\n` : "") +
-    `Subject: ${body.subject}\r\n` +
-    `Date: ${d.toUTCString()}\r\n` +
-    `Message-ID: <${result.messageId}>\r\n` +
-    `MIME-Version: 1.0\r\n` +
-    `Content-Type: text/plain; charset=utf-8\r\n\r\n` +
-    (body.text ?? (body.html ?? "").replace(/<[^>]+>/g, " "));
+  const key = buildMailKey(d);
+  const eml = buildPlainEml({
+    from: fromAddr.email,
+    to: toList,
+    cc: ccList,
+    subject: body.subject,
+    date: d,
+    messageId: result.messageId,
+    text: body.text ?? (body.html ?? "").replace(/<[^>]+>/g, " "),
+  });
   try {
     await c.env.MAIL.put(key, new TextEncoder().encode(eml), {
       httpMetadata: { contentType: "message/rfc822" },
@@ -2055,8 +2318,9 @@ app.post("/api/mail/send", requireSession, async (c) => {
   await c.env.DB.prepare(
     `INSERT INTO messages
        (owner_user_id, address_id, folder, message_id, from_address, to_address, cc,
-        subject, text_preview, received_at, send_status, raw_r2_key, created_at, updated_at)
-     VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)`
+        subject, text_preview, received_at, send_status, raw_r2_key, created_at, updated_at,
+        origin, kind, delivery_scope)
+     VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?, 'internal', 'normal', ?)`
   )
     .bind(
       ownerId,
@@ -2070,11 +2334,18 @@ app.post("/api/mail/send", requireSession, async (c) => {
       ts,
       key,
       ts,
-      ts
+      ts,
+      deliveryScope
     )
     .run();
 
-  return c.json({ messageId: result.messageId, send_status: "sent", from: fromAddr.email, to: toList });
+  return c.json({
+    messageId: result.messageId,
+    send_status: "sent",
+    from: fromAddr.email,
+    to: toList,
+    delivery_scope: deliveryScope,
+  });
 });
 
 // ══════════════════════ Phase 13：增量備份（09 文件 §2）══════════════════════

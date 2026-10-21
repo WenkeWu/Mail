@@ -1,5 +1,13 @@
 import type { AttachmentMeta, BodyState, MailDetail } from "../api/types";
 import { avatarHue, avatarText, displaySender, formatBytes, formatFullDate } from "../lib/format";
+import {
+  CATEGORY_LABEL,
+  CATEGORY_TITLE,
+  hasSenderAuthFailure,
+  mailCategory,
+  senderAuthBadges,
+  SUSPICIOUS_FORM_NOTE,
+} from "../lib/mailCategory";
 import { HtmlBody } from "./HtmlBody";
 import { PlainTextBody } from "./PlainTextBody";
 import {
@@ -62,6 +70,10 @@ export function ReadingPane({
   const unread = detail.read_at === null;
   const toLine = detail.to.map((a) => a.address).join(", ");
   const ccLine = detail.cc.map((a) => a.address).join(", ");
+  // docs/18 P1：三類郵件徽章；寄件者驗證僅供顯示（SPF／DKIM／DMARC ≠ 授權）
+  const category = mailCategory(detail);
+  const authBadges = senderAuthBadges(detail);
+  const authFailure = hasSenderAuthFailure(detail);
 
   return (
     <section className="reading-pane">
@@ -119,8 +131,25 @@ export function ReadingPane({
             <div className="sender-lines">
               <div className="sender-name">{displaySender(detail.from)}</div>
               <div className="sender-meta">
+                <span className={`mail-kind-badge kind-${category}`} title={CATEGORY_TITLE[category]}>
+                  {CATEGORY_LABEL[category]}
+                </span>
                 <span>{formatFullDate(detail.received_at)}</span>
               </div>
+              {detail.origin === "external" && (
+                <div
+                  className={`sender-auth ${authFailure ? "has-failure" : ""}`}
+                  title="寄件者驗證結果僅供顯示，不會授權或改變郵件分類"
+                >
+                  {authBadges.map((badge) => (
+                    <span key={badge.method} className={`auth-chip auth-${badge.tone}`}>
+                      {badge.label}
+                    </span>
+                  ))}
+                  {authFailure && <span className="auth-warning">⚠️ 寄件者驗證失敗，請留意釣魚</span>}
+                </div>
+              )}
+              {detail.suspicious_form_claim && <p className="mail-warning">{SUSPICIOUS_FORM_NOTE}</p>}
               <details className="recipients">
                 <summary>
                   寄給 {toLine.length > 60 ? `${toLine.slice(0, 60)}…` : toLine || "我"}

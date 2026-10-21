@@ -4,6 +4,13 @@ export type Folder = "inbox" | "sent" | "archive" | "trash" | "spam";
 /** UI 可查詢的資料夾：`all` = 跨資料夾（搜尋用） */
 export type FolderQuery = Folder | "all";
 
+/** 分類由「進入路徑」決定（docs/18 §2）：外部 = MX、內部 = 本地寄送／本地直送 */
+export type MailOrigin = "external" | "internal";
+export type MailKind = "normal" | "interactive_form";
+export type DeliveryScope = "internal" | "external";
+/** 寄件者驗證結果（**僅供顯示**，永不授權；docs/18 §5.3） */
+export type SenderAuthResult = "pass" | "fail" | "none" | "unknown";
+
 export interface MailListItem {
   id: number;
   from: string;
@@ -13,6 +20,9 @@ export interface MailListItem {
   read: boolean;
   has_attachments: boolean;
   folder: Folder;
+  origin: MailOrigin;
+  kind: MailKind;
+  delivery_scope: DeliveryScope;
 }
 
 export interface MailListResponse {
@@ -46,6 +56,18 @@ export interface MailDetail {
   /** 相對 API 路徑；null = 此信沒有 HTML 內文 */
   html_url: string | null;
   attachments: AttachmentMeta[];
+  /** docs/18 P1：三類郵件（外部／內部／互動式） */
+  origin: MailOrigin;
+  kind: MailKind;
+  delivery_scope: DeliveryScope;
+  /** kind=interactive_form 時的表單實例；寄件備份指向該次寄送的代表實例 */
+  form_instance_id: number | null;
+  /** 外部信帶有表單標記（已丟棄、未啟用；僅供顯示） */
+  suspicious_form_claim: boolean;
+  /** 寄件者驗證結果（僅供顯示） */
+  sender_spf: SenderAuthResult | null;
+  sender_dkim: SenderAuthResult | null;
+  sender_dmarc: SenderAuthResult | null;
 }
 
 export interface FolderCount {
@@ -128,6 +150,8 @@ export interface SendResult {
   send_status: string;
   from: string;
   to: string[];
+  /** P1：`internal` = 全內部收件人本地直送；`external` = 走 Cloudflare Email Service */
+  delivery_scope?: DeliveryScope;
 }
 
 /** GET /api/me（Phase 1：身分與寄信配額） */
