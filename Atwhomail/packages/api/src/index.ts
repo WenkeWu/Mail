@@ -34,6 +34,13 @@ import {
   type Scope,
 } from "./auth";
 import { BACKUP_TABLES, clampLimit, formatCursor, parseCursor, type Cursor } from "./backup";
+import {
+  buildFormStaticText,
+  sanitizeDisplayText,
+  validateFormPayload,
+  validateFormSchema,
+  type JsonObject,
+} from "./forms";
 import { sanitizeHtml } from "./sanitize";
 
 const app = new Hono<AuthEnv>();
@@ -176,6 +183,8 @@ function buildPlainEml(input: {
   date: Date;
   messageId: string;
   text: string;
+  /** 額外標頭（例如互動式表單的**非權威**提示標記） */
+  extraHeaders?: string[];
 }): string {
   return (
     `From: ${input.from}\r\n` +
@@ -184,6 +193,7 @@ function buildPlainEml(input: {
     `Subject: ${input.subject}\r\n` +
     `Date: ${input.date.toUTCString()}\r\n` +
     `Message-ID: <${input.messageId}>\r\n` +
+    (input.extraHeaders?.length ? `${input.extraHeaders.join("\r\n")}\r\n` : "") +
     `MIME-Version: 1.0\r\n` +
     `Content-Type: text/plain; charset=utf-8\r\n\r\n` +
     input.text
@@ -2346,6 +2356,628 @@ app.post("/api/mail/send", requireSession, async (c) => {
     to: toList,
     delivery_scope: deliveryScope,
   });
+});
+
+// ══════════════════════ docs/18 P2：互動式表單 ══════════════════════
+
+interface FormInstanceRow {
+  id: number;
+  template_id: number;
+  message_id: number;
+  sender_address_id: number;
+  recipient_address_id: number;
+  status: string;
+  due_at: number | null;
+  created_at: number;
+  updated_at: number;
+  kind: string;
+  origin: string;
+  delivery_scope: string;
+  subject: string | null;
+  schema_json: string;
+  message_deleted_at: number | null;
+}
+
+/** 取表單實例＋關聯信件與 schema（四道鎖所需的全部欄位一次查完） */
+function loadFormInstance(db: D1Database, id: number): Promise<FormInstanceRow | null> {
+  return db
+    .prepare(
+      `SELECT i.id, i.template_id, i.message_id, i.sender_address_id, i.recipient_address_id,
+              i.status, i.due_at, i.created_at, i.updated_at,
+              m.kind, m.origin, m.delivery_scope, m.subject, m.deleted_at AS message_deleted_at,
+              t.schema_json
+       FROM form_instances i
+       JOIN messages m ON m.id = i.message_id
+       JOIN form_templates t ON t.id = i.template_id
+       WHERE i.id = ?1`
+    )
+    .bind(id)
+    .first<FormInstanceRow>();
+}
+
+/** 逾期判定（due_at 為 epoch ms；NULL = 不過期） */
+function formExpired(row: FormInstanceRow, ts = now()): boolean {
+  return row.due_at !== null && row.due_at <= ts;
+}
+
+function parseStoredSchema(row: FormInstanceRow): JsonObject | null {
+  try {
+    const parsed = JSON.parse(row.schema_json) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as JsonObject) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 寄件人是否為此實例的寄件者（owner 需名下有該寄件地址；mailbox 需同一地址） */
+async function isFormSender(db: D1Database, row: FormInstanceRow, scope: Scope): Promise<boolean> {
+  if (scope.kind === "mailbox") return row.sender_address_id === scope.addressId;
+  const owned = await db
+    .prepare("SELECT id FROM email_addresses WHERE id = ?1 AND user_id = ?2")
+    .bind(row.sender_address_id, scope.userId)
+    .first();
+  return owned !== null;
+}
+
+/** 收件人四道鎖（不回傳原因；任何一項失敗一律 404，避免洩漏存在性） */
+function recipientLockOk(row: FormInstanceRow | null, scope: Scope): row is FormInstanceRow {
+  if (!row) return false;
+  if (scope.kind !== "mailbox") return false; // owner session 沒有單一 address_id → fail closed
+  if (row.kind !== "interactive_form") return false; // 鎖①
+  if (row.status !== "open" || formExpired(row)) return false; // 鎖②（存在、open、未過期）
+  if (row.recipient_address_id !== scope.addressId) return false; // 鎖③
+  if (row.origin !== "internal" || row.delivery_scope !== "internal") return false; // 鎖④
+  if (row.message_deleted_at !== null) return false;
+  return true;
+}
+
+const FORM_NOT_FOUND_MESSAGE = "form not found";
+
+/**
+ * POST /api/forms/send — 建立並**本地投遞**互動式表單（docs/18 §3.2）
+ *
+ * 安全門檻：
+ *  - 所有 to／cc／bcc 必須為本網域＋存在＋active，否則 `422 FORM_RECIPIENT_NOT_INTERNAL`（fail closed）
+ *  - 每位收件人建立一筆 form_instances 與一筆 messages（origin=internal、kind=interactive_form、
+ *    delivery_scope=internal、form_instance_id 關聯）
+ *  - ⚠️ **此路徑絕不呼叫 `EMAIL.send()`**（物理上不可能外流）
+ *  - schema 先過白名單驗證，才寫入 form_templates
+ *  - 稽核 `form_sent`：只記 id／數量／欄位數，不含主旨、地址、內文或 schema（N9）
+ */
+app.post("/api/forms/send", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const body = await c.req
+    .json<{
+      from?: string;
+      to?: unknown;
+      cc?: unknown;
+      bcc?: unknown;
+      subject?: string;
+      title?: string;
+      description?: string;
+      schema?: unknown;
+      due_at?: unknown;
+      attachments?: unknown;
+    }>()
+    .catch(() => null);
+  if (!body) return err(c, "INVALID_BODY", "invalid JSON body", 400);
+  if (body.attachments !== undefined && (!Array.isArray(body.attachments) || body.attachments.length > 0)) {
+    return err(c, "FORM_ATTACHMENTS_NOT_SUPPORTED", "互動式表單不支援附件", 400);
+  }
+
+  // from 必須在 session scope 內且 active（與一般寄信相同）
+  if (typeof body.from !== "string" || !body.from.includes("@")) {
+    return err(c, "INVALID_FROM", "from 必填且需為完整地址", 400);
+  }
+  const fromEmail = body.from.trim().toLowerCase();
+  const fromAddr =
+    scope.kind === "owner"
+      ? await c.env.DB.prepare(
+          `SELECT id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at
+           FROM email_addresses WHERE email = ?1 AND user_id = ?2 AND status = 'active' AND deleted_at IS NULL`
+        )
+          .bind(fromEmail, scope.userId)
+          .first<{ id: number; email: string; user_id: number; can_send: number; daily_send_quota: number; sent_today: number; quota_reset_at: number | null; created_at: number }>()
+      : await c.env.DB.prepare(
+          `SELECT id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at
+           FROM email_addresses WHERE email = ?1 AND id = ?2 AND status = 'active' AND deleted_at IS NULL`
+        )
+          .bind(fromEmail, scope.addressId)
+          .first<{ id: number; email: string; user_id: number; can_send: number; daily_send_quota: number; sent_today: number; quota_reset_at: number | null; created_at: number }>();
+  if (!fromAddr) return err(c, "FROM_NOT_ALLOWED", "from 不屬於此 session 的 active 地址", 403);
+
+  const toList = normalizeRecipients(body.to);
+  if (toList.length === 0) return err(c, "INVALID_TO", "to 至少需要一個收件人", 400);
+  const ccList = normalizeRecipients(body.cc);
+  const bccList = normalizeRecipients(body.bcc);
+  if (toList.length + ccList.length + bccList.length > 50) {
+    return err(c, "TOO_MANY_RECIPIENTS", "to+cc+bcc 合計不得超過 50", 422);
+  }
+  if (!body.subject || typeof body.subject !== "string") {
+    return err(c, "INVALID_SUBJECT", "subject 必填", 400);
+  }
+
+  // 收件人 fail closed：全部本網域＋存在＋active，否則 422（不得改成 EMAIL.send）
+  const uniqueRecipients = [...new Set([...toList, ...ccList, ...bccList])];
+  const recipientMap = await resolveLocalRecipients(c.env.DB, uniqueRecipients);
+  if (!recipientMap) {
+    return err(c, "FORM_RECIPIENT_NOT_INTERNAL", "互動式表單只能寄給 atwho.org 內部的 active 地址", 422);
+  }
+
+  // schema 白名單驗證（禁止 $ref／anyOf／oneOf／allOf／patternProperties／dependencies…）
+  const schemaResult = validateFormSchema(body.schema);
+  if (!schemaResult.ok) return err(c, "FORM_SCHEMA_INVALID", schemaResult.message, 422);
+  const schema = schemaResult.schema;
+
+  if (body.title !== undefined && typeof body.title !== "string") {
+    return err(c, "INVALID_BODY", "title 必須是字串", 400);
+  }
+  if (body.description !== undefined && typeof body.description !== "string") {
+    return err(c, "INVALID_BODY", "description 必須是字串", 400);
+  }
+  const subject = body.subject.trim();
+  const titleCandidate = body.title ?? (typeof schema.title === "string" ? schema.title : "");
+  schema.title = sanitizeDisplayText(titleCandidate || subject || "互動式表單");
+  if (body.description !== undefined) schema.description = sanitizeDisplayText(body.description);
+
+  let dueAt: number | null = null;
+  if (body.due_at !== undefined && body.due_at !== null) {
+    const n = Number(body.due_at);
+    if (!Number.isInteger(n) || n <= 0) return err(c, "INVALID_DUE_AT", "due_at 需為 epoch ms 正整數", 400);
+    dueAt = n;
+  }
+
+  // 配額／安全閥（與一般寄信相同的判定順序；失敗即回補）
+  const auditCtx = { addressId: fromAddr.id, ip: clientIp(c), userAgent: c.req.header("user-agent") ?? null };
+  const ts0 = now();
+  const acct = await c.env.DB.prepare("SELECT status FROM users WHERE id = ?1")
+    .bind(fromAddr.user_id)
+    .first<{ status: string }>();
+  if (!acct || acct.status !== "active") {
+    auditAsync(c, { ...auditCtx, event: "send_rejected_notallowed", detail: { reason: "ACCOUNT_SUSPENDED" } });
+    return err(c, "ACCOUNT_SUSPENDED", "此帳號已停權，無法寄信", 403);
+  }
+  if (fromAddr.can_send !== 1) {
+    auditAsync(c, { ...auditCtx, event: "send_rejected_notallowed", detail: { reason: "SEND_NOT_ALLOWED" } });
+    return err(c, "SEND_NOT_ALLOWED", "此地址目前不可寄信", 403);
+  }
+  if (fromAddr.quota_reset_at === null || fromAddr.quota_reset_at <= ts0) {
+    const d = new Date(ts0);
+    const nextReset = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
+    await c.env.DB.prepare(
+      `UPDATE email_addresses SET sent_today = 0, quota_reset_at = ?1, updated_at = ?2
+       WHERE id = ?3 AND (quota_reset_at IS NULL OR quota_reset_at <= ?2)`
+    )
+      .bind(nextReset, ts0, fromAddr.id)
+      .run();
+  }
+  const inWarmup = ts0 < Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000;
+  const warmupApplies = inWarmup && !(await isWarmupExempt(c.env.DB, fromAddr.id));
+  const effectiveLimit = warmupApplies
+    ? Math.min(Number(fromAddr.daily_send_quota), QUOTA.WARMUP_QUOTA)
+    : Number(fromAddr.daily_send_quota);
+  const deduct = await c.env.DB.prepare(
+    `UPDATE email_addresses
+     SET sent_today = sent_today + 1, first_send_at = COALESCE(first_send_at, ?1), updated_at = ?1
+     WHERE id = ?2 AND status = 'active' AND can_send = 1 AND sent_today < ?3`
+  )
+    .bind(ts0, fromAddr.id, effectiveLimit)
+    .run();
+  if (deduct.meta.changes !== 1) {
+    auditAsync(c, { ...auditCtx, event: "send_rejected_quota", detail: { limit: effectiveLimit, warmup: warmupApplies } });
+    return err(c, "QUOTA_EXCEEDED", `已達寄信上限（${effectiveLimit} 封）`, 429);
+  }
+  const recent = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM messages WHERE address_id = ?1 AND folder = 'sent' AND received_at >= ?2`
+  )
+    .bind(fromAddr.id, ts0 - 3600_000)
+    .first<{ n: number }>();
+  if ((recent?.n ?? 0) >= QUOTA.HOURLY_SEND_LIMIT) {
+    await refundQuota(c.env.DB, fromAddr.id);
+    auditAsync(c, { ...auditCtx, event: "send_rejected_rate", detail: { hourly_limit: QUOTA.HOURLY_SEND_LIMIT } });
+    return err(c, "RATE_LIMITED", `每小時最多寄 ${QUOTA.HOURLY_SEND_LIMIT} 封，請稍後再試`, 429);
+  }
+
+  const ts = now();
+  const staticText = buildFormStaticText(schema);
+  const templateKey = crypto.randomUUID();
+  const messageId = `${crypto.randomUUID()}@${DOMAIN}`;
+  const recipients = [...recipientMap.values()];
+  const instances: Array<{ id: number; recipient: string }> = [];
+  let created = 0;
+
+  try {
+    const templateRes = await c.env.DB.prepare(
+      `INSERT INTO form_templates (key, version, schema_json, created_at) VALUES (?1, 1, ?2, ?3)`
+    )
+      .bind(templateKey, JSON.stringify(schema), ts)
+      .run();
+    const templateId = Number(templateRes.meta.last_row_id);
+
+    for (const recipient of recipients) {
+      const key = buildMailKey(new Date(ts));
+      const eml = buildPlainEml({
+        from: fromAddr.email,
+        to: toList,
+        cc: ccList,
+        subject,
+        date: new Date(ts),
+        messageId,
+        text: staticText,
+        // 非權威提示標記：即使轉寄／回流，收信端也一律視為一般外部郵件
+        extraHeaders: [`X-AtWho-Form: ${templateKey}`],
+      });
+      try {
+        await c.env.MAIL.put(key, new TextEncoder().encode(eml), {
+          httpMetadata: { contentType: "message/rfc822" },
+          customMetadata: { "d1-address-id": String(recipient.id), "d1-flag": "form" },
+        });
+      } catch (e) {
+        console.error("[atwhomail-api] form raw store failed", { key, error: String(e) });
+      }
+
+      const msgRes = await c.env.DB.prepare(
+        `INSERT INTO messages
+           (owner_user_id, address_id, folder, message_id, from_address, to_address, cc,
+            subject, text_preview, received_at, raw_r2_key, html_r2_key, created_at, updated_at,
+            origin, kind, delivery_scope)
+         VALUES (?1, ?2, 'inbox', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?9, ?9,
+                 'internal', 'interactive_form', 'internal')`
+      )
+        .bind(
+          recipient.user_id,
+          recipient.id,
+          messageId,
+          fromAddr.email,
+          JSON.stringify(toList.map((address) => ({ address, name: "" }))),
+          JSON.stringify(ccList.map((address) => ({ address, name: "" }))),
+          subject,
+          staticText.slice(0, 200),
+          ts,
+          key
+        )
+        .run();
+      const messageRowId = Number(msgRes.meta.last_row_id);
+
+      const instRes = await c.env.DB.prepare(
+        `INSERT INTO form_instances
+           (template_id, message_id, sender_address_id, recipient_address_id, status, due_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?6, ?6)`
+      )
+        .bind(templateId, messageRowId, fromAddr.id, recipient.id, dueAt, ts)
+        .run();
+      const instanceId = Number(instRes.meta.last_row_id);
+      await c.env.DB.prepare("UPDATE messages SET form_instance_id = ?1, updated_at = ?2 WHERE id = ?3")
+        .bind(instanceId, ts, messageRowId)
+        .run();
+      instances.push({ id: instanceId, recipient: recipient.email });
+      created += 1;
+    }
+
+    // 寄件備份：form_instance_id 指向該次寄送的**代表實例**，供寄件人管理 UI 找到整批實例
+    const sentKey = buildMailKey(new Date(ts));
+    const sentEml = buildPlainEml({
+      from: fromAddr.email,
+      to: toList,
+      cc: ccList,
+      subject,
+      date: new Date(ts),
+      messageId,
+      text: staticText,
+      extraHeaders: [`X-AtWho-Form: ${templateKey}`],
+    });
+    try {
+      await c.env.MAIL.put(sentKey, new TextEncoder().encode(sentEml), {
+        httpMetadata: { contentType: "message/rfc822" },
+        customMetadata: { "d1-flag": "sent-copy-form" },
+      });
+    } catch (e) {
+      console.error("[atwhomail-api] form sent-copy R2 store failed", { sentKey, error: String(e) });
+    }
+    let sentMessageId: number | null = null;
+    try {
+      const sentRes = await c.env.DB.prepare(
+        `INSERT INTO messages
+           (owner_user_id, address_id, folder, message_id, from_address, to_address, cc,
+            subject, text_preview, received_at, send_status, raw_r2_key, created_at, updated_at,
+            origin, kind, delivery_scope, form_instance_id)
+         VALUES (?1, ?2, 'sent', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'sent', ?10, ?9, ?9,
+                 'internal', 'interactive_form', 'internal', ?11)`
+      )
+        .bind(
+          fromAddr.user_id,
+          fromAddr.id,
+          messageId,
+          fromAddr.email,
+          JSON.stringify(toList.map((address) => ({ address, name: "" }))),
+          JSON.stringify(ccList.map((address) => ({ address, name: "" }))),
+          subject,
+          staticText.slice(0, 200),
+          ts,
+          sentKey,
+          instances[0]?.id ?? null
+        )
+        .run();
+      sentMessageId = Number(sentRes.meta.last_row_id);
+    } catch (e) {
+      // 收件人已成功收到；寄件備份失敗不應回 500（否則寄件人會誤以為整批失敗而重送）
+      console.error("[atwhomail-api] form sent-copy insert failed", { from: fromAddr.email, error: String(e) });
+    }
+
+    auditAsync(c, {
+      event: "form_sent",
+      userId: fromAddr.user_id,
+      addressId: fromAddr.id,
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+      detail: {
+        by: fromAddr.id,
+        template_id: templateId,
+        template_key: templateKey,
+        instances: recipients.length,
+        fields: schemaResult.fields,
+        due_at: dueAt,
+      },
+    });
+
+    return c.json(
+      {
+        ok: true,
+        template_id: templateId,
+        template_key: templateKey,
+        message_id: messageId,
+        sent_message_id: sentMessageId,
+        instances,
+      },
+      201
+    );
+  } catch (e) {
+    console.error("[atwhomail-api] form send failed", { from: fromAddr.email, created, error: String(e) });
+    if (created === 0) await refundQuota(c.env.DB, fromAddr.id);
+    return err(c, "FORM_SEND_FAILED", "互動式表單寄送失敗，請稍後再試", 500);
+  }
+});
+
+/**
+ * GET /api/forms/:id — 收件人取 schema（四道鎖）
+ *
+ * ① messages.kind = interactive_form｜② 實例存在＋open＋未過期｜③ 登入者 address_id =
+ * recipient_address_id｜④ origin 與 delivery_scope 皆 internal。
+ * ⚠️ 任何一項失敗一律 **404**（不洩漏表單是否存在；docs/18 §4）。
+ */
+app.get("/api/forms/:id", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+
+  const row = await loadFormInstance(c.env.DB, id);
+  if (scope.kind !== "mailbox" || !recipientLockOk(row, scope)) {
+    return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+  }
+
+  const schema = parseStoredSchema(row);
+  if (!schema) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+
+  auditAsync(c, {
+    event: "form_viewed",
+    addressId: scope.addressId,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { instance_id: row.id, template_id: row.template_id, message_id: row.message_id },
+  });
+
+  return c.json({
+    form: {
+      id: row.id,
+      message_id: row.message_id,
+      subject: row.subject,
+      status: row.status,
+      due_at: row.due_at,
+      title: typeof schema.title === "string" ? schema.title : (row.subject ?? "互動式表單"),
+      description: typeof schema.description === "string" ? schema.description : null,
+      schema,
+    },
+  });
+});
+
+/**
+ * POST /api/forms/:id/responses — 送出回覆（收件人本人；不得重複）
+ *
+ * 驗證順序：收件人四道鎖（失敗 404）→ 狀態（已送出／撤回／逾期）→ payload 依 schema 驗證。
+ * ⚠️ 稽核 `form_submitted` 只記 id，**絕不**記錄 payload（N9）。
+ */
+app.post("/api/forms/:id/responses", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+
+  const row = await loadFormInstance(c.env.DB, id);
+  // 先做與 GET 相同的存在性／身分／分類檢查（狀態另判，才能回精確錯誤碼）
+  if (
+    !row ||
+    scope.kind !== "mailbox" ||
+    row.kind !== "interactive_form" ||
+    row.recipient_address_id !== scope.addressId ||
+    row.origin !== "internal" ||
+    row.delivery_scope !== "internal" ||
+    row.message_deleted_at !== null
+  ) {
+    return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+  }
+  if (row.status === "submitted") return err(c, "FORM_ALREADY_SUBMITTED", "此表單已送出", 409);
+  if (row.status === "revoked") return err(c, "FORM_CLOSED", "此表單已撤回", 409);
+  if (row.status === "expired" || formExpired(row)) {
+    if (row.status === "open") {
+      await c.env.DB.prepare("UPDATE form_instances SET status = 'expired', updated_at = ?1 WHERE id = ?2 AND status = 'open'")
+        .bind(now(), row.id)
+        .run();
+    }
+    return err(c, "FORM_EXPIRED", "此表單已逾期", 409);
+  }
+  if (row.status !== "open") return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+
+  const schema = parseStoredSchema(row);
+  if (!schema) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+
+  const body = await c.req.json<{ payload?: unknown }>().catch(() => null);
+  if (!body || !("payload" in body)) return err(c, "FORM_INVALID_PAYLOAD", "需提供 payload", 422);
+  const payloadResult = validateFormPayload(schema, body.payload);
+  if (!payloadResult.ok) return err(c, "FORM_INVALID_PAYLOAD", payloadResult.message, 422);
+
+  const responder = await c.env.DB.prepare("SELECT user_id FROM email_addresses WHERE id = ?1")
+    .bind(scope.addressId)
+    .first<{ user_id: number }>();
+  if (!responder) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+
+  const ts = now();
+  let inserted = 0;
+  try {
+    const results = await c.env.DB.batch([
+      // 只有 status='open' 才插入（避免重複送出）
+      c.env.DB.prepare(
+        `INSERT INTO form_responses (instance_id, responder_user_id, payload_json, submitted_at)
+         SELECT ?1, ?2, ?3, ?4
+         WHERE EXISTS (SELECT 1 FROM form_instances WHERE id = ?1 AND status = 'open')`
+      ).bind(row.id, responder.user_id, JSON.stringify(payloadResult.payload), ts),
+      c.env.DB.prepare(
+        "UPDATE form_instances SET status = 'submitted', updated_at = ?1 WHERE id = ?2 AND status = 'open'"
+      ).bind(ts, row.id),
+    ]);
+    inserted = Number(results[0]!.meta.changes ?? 0);
+  } catch (e) {
+    console.error("[atwhomail-api] form response insert failed", { instanceId: row.id, error: String(e) });
+    return err(c, "FORM_SUBMIT_FAILED", "回覆儲存失敗，請稍後再試", 500);
+  }
+  if (inserted !== 1) {
+    // 競態：另一個請求先送出了
+    const current = await c.env.DB.prepare("SELECT status FROM form_instances WHERE id = ?1")
+      .bind(row.id)
+      .first<{ status: string }>();
+    if (current?.status === "submitted") return err(c, "FORM_ALREADY_SUBMITTED", "此表單已送出", 409);
+    if (current?.status === "revoked") return err(c, "FORM_CLOSED", "此表單已撤回", 409);
+    return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+  }
+
+  auditAsync(c, {
+    event: "form_submitted",
+    addressId: scope.addressId,
+    userId: responder.user_id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { instance_id: row.id, template_id: row.template_id, message_id: row.message_id },
+  });
+
+  return c.json({ ok: true, instance_id: row.id, status: "submitted" });
+});
+
+/**
+ * GET /api/forms/:id/responses — 寄件人查看回覆（僅寄件人；他人 403）
+ *
+ * 回傳同一 `template_id` 的所有實例（一次寄送＝一批），讓寄件人看到所有收件人的狀態與回覆。
+ */
+app.get("/api/forms/:id/responses", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+
+  const row = await loadFormInstance(c.env.DB, id);
+  if (!row) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+  if (!(await isFormSender(c.env.DB, row, scope))) {
+    return err(c, "FORM_NOT_AUTHORIZED", "僅寄件人可查看回覆", 403);
+  }
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT i.id, i.recipient_address_id, a.email AS recipient, i.status, i.due_at, i.created_at,
+            r.payload_json, r.submitted_at
+     FROM form_instances i
+     JOIN email_addresses a ON a.id = i.recipient_address_id
+     LEFT JOIN form_responses r ON r.instance_id = i.id
+     WHERE i.template_id = ?1 ORDER BY i.id`
+  )
+    .bind(row.template_id)
+    .all<{
+      id: number;
+      recipient_address_id: number;
+      recipient: string;
+      status: string;
+      due_at: number | null;
+      created_at: number;
+      payload_json: string | null;
+      submitted_at: number | null;
+    }>();
+
+  const instances = results.map((r) => {
+    let payload: unknown = null;
+    if (r.payload_json !== null) {
+      try {
+        payload = JSON.parse(r.payload_json);
+      } catch {
+        payload = null;
+      }
+    }
+    return {
+      id: r.id,
+      recipient: r.recipient,
+      status: r.status,
+      due_at: r.due_at,
+      created_at: r.created_at,
+      submitted_at: r.submitted_at,
+      payload,
+    };
+  });
+
+  const schema = parseStoredSchema(row);
+  return c.json({
+    form: {
+      id: row.id,
+      template_id: row.template_id,
+      message_id: row.message_id,
+      subject: row.subject,
+      status: row.status,
+      due_at: row.due_at,
+      schema,
+    },
+    instances,
+    responses: instances
+      .filter((r) => r.submitted_at !== null)
+      .map((r) => ({ instance_id: r.id, recipient: r.recipient, payload: r.payload, submitted_at: r.submitted_at })),
+  });
+});
+
+/**
+ * POST /api/forms/:id/revoke — 寄件人撤回（同一批 template 的所有未完成實例）
+ *
+ * 撤回後收件人的 GET 立即失敗（404）→ 前端自動降為靜態文字；POST 回覆則回 FORM_CLOSED。
+ */
+app.post("/api/forms/:id/revoke", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+
+  const row = await loadFormInstance(c.env.DB, id);
+  if (!row) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
+  if (!(await isFormSender(c.env.DB, row, scope))) {
+    return err(c, "FORM_NOT_AUTHORIZED", "僅寄件人可撤回表單", 403);
+  }
+
+  const ts = now();
+  const res = await c.env.DB.prepare(
+    `UPDATE form_instances SET status = 'revoked', updated_at = ?1
+     WHERE template_id = ?2 AND status IN ('open','expired')`
+  )
+    .bind(ts, row.template_id)
+    .run();
+  const revoked = Number(res.meta.changes ?? 0);
+
+  auditAsync(c, {
+    event: "form_revoked",
+    addressId: row.sender_address_id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { instance_id: row.id, template_id: row.template_id, revoked },
+  });
+
+  return c.json({ ok: true, instance_id: row.id, template_id: row.template_id, revoked });
 });
 
 // ══════════════════════ Phase 13：增量備份（09 文件 §2）══════════════════════

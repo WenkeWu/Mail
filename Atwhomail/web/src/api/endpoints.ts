@@ -4,6 +4,10 @@ import type {
   CountsResponse,
   DeletedAddressInfo,
   EmailAddressInfo,
+  FormResponsesResponse,
+  FormSendPayload,
+  FormSendResult,
+  FormView,
   Invite,
   MailDetail,
   MailListResponse,
@@ -198,3 +202,36 @@ export const setVisitorAddressStatus = (id: number, status: "active" | "disabled
  */
 export const deleteVisitor = (id: number) =>
   request<{ ok: boolean; id: number; username: string }>(`/api/users/${id}`, { method: "DELETE" });
+
+// ── 互動式表單（docs/18 P2；僅自家 API，無外部連線）──
+
+/**
+ * 寄出互動式表單：後端會驗證所有收件人為本網域＋存在＋active（否則 `422
+ * FORM_RECIPIENT_NOT_INTERNAL`），且**絕不呼叫 EMAIL.send()**（本地直送）。
+ */
+export const sendForm = (payload: FormSendPayload) =>
+  request<FormSendResult>("/api/forms/send", { method: "POST", json: payload });
+
+/**
+ * 收件人取表單（四道鎖）。任何失敗（非收件人／已撤回／逾期／非互動式）都回 404
+ * —— 呼叫端**不得**區分原因，一律降為靜態文字。
+ */
+export const getForm = (instanceId: number) => request<{ form: FormView }>(`/api/forms/${instanceId}`);
+
+/** 送出回覆（payload 依 schema 驗證；重複送出 → FORM_ALREADY_SUBMITTED） */
+export const submitFormResponse = (instanceId: number, payload: Record<string, unknown>) =>
+  request<{ ok: boolean; instance_id: number; status: "submitted" }>(`/api/forms/${instanceId}/responses`, {
+    method: "POST",
+    json: { payload },
+  });
+
+/** 寄件人查看回覆（同一批 template 的所有實例；他人 → 403） */
+export const getFormResponses = (instanceId: number) =>
+  request<FormResponsesResponse>(`/api/forms/${instanceId}/responses`);
+
+/** 寄件人撤回（同一批所有未完成實例；撤回後收件人 GET 立即 404 → 靜態） */
+export const revokeForm = (instanceId: number) =>
+  request<{ ok: boolean; instance_id: number; template_id: number; revoked: number }>(
+    `/api/forms/${instanceId}/revoke`,
+    { method: "POST" }
+  );

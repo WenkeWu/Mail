@@ -224,3 +224,70 @@ export type BodyState =
   | { kind: "html"; html: string }
   | { kind: "text"; text: string }
   | { kind: "empty" };
+
+// ── docs/18 P2：互動式表單 ──
+
+/** 後端已驗證／消毒的 JSON Schema 子集（前端只當資料使用） */
+export type FormSchema = Record<string, unknown>;
+
+export interface FormView {
+  id: number;
+  message_id: number;
+  subject: string | null;
+  status: "open" | "submitted" | "revoked" | "expired";
+  due_at: number | null;
+  title: string;
+  description: string | null;
+  schema: FormSchema;
+}
+
+/** 回覆狀態（寄件人管理面板用） */
+export interface FormInstanceSummary {
+  id: number;
+  recipient: string;
+  status: "open" | "submitted" | "revoked" | "expired";
+  due_at: number | null;
+  created_at: number;
+  submitted_at: number | null;
+  payload: Record<string, unknown> | null;
+}
+
+export interface FormResponsesResponse {
+  form: {
+    id: number;
+    template_id: number;
+    message_id: number;
+    subject: string | null;
+    status: string;
+    due_at: number | null;
+    schema: FormSchema | null;
+  };
+  instances: FormInstanceSummary[];
+  responses: Array<{
+    instance_id: number;
+    recipient: string;
+    payload: Record<string, unknown> | null;
+    submitted_at: number | null;
+  }>;
+}
+
+export interface FormSendPayload {
+  from: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  title?: string;
+  description?: string;
+  schema: FormSchema;
+  due_at?: number;
+}
+
+export interface FormSendResult {
+  ok: boolean;
+  template_id: number;
+  template_key: string;
+  message_id: string;
+  sent_message_id: number;
+  instances: Array<{ id: number; recipient: string }>;
+}

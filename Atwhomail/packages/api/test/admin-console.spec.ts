@@ -394,7 +394,9 @@ describe("T14：PATCH /api/users/:id/quota", () => {
 });
 
 // ══════════════════════ T15：暖機豁免 ══════════════════════
-describe("T15：warmup_exempt（migration 0007）", () => {
+// 2026-10-21：全套件 + 機器高負載時，argon2id 會慢到 30 秒上限（單獨跑 100% 通過）。
+// 本組一次要跑 7 封寄信 + 2 次登入，故比照檔內其他 describe 明確放寬（僅放寬逾時，行為不變）。
+describe("T15：warmup_exempt（migration 0007）", { timeout: 120_000 }, () => {
   /** 連續寄 n 封，回傳每次的狀態碼 */
   async function sendTimes(token: string, from: string, n: number): Promise<number[]> {
     const out: number[] = [];

@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
-import { sendMail } from "../api/endpoints";
-import type { EmailAddressInfo, Session } from "../api/types";
+import { sendForm, sendMail } from "../api/endpoints";
+import type { EmailAddressInfo, FormSchema, Session } from "../api/types";
 import { checkFileSize, fileToBase64, type PendingAttachment } from "../lib/files";
 import { formatBytes } from "../lib/format";
 import { splitRecipients, textToHtml } from "../lib/recipients";
 import { IconClose, IconFile, IconPaperclip, IconSend } from "./icons";
 
-export type DraftMode = "new" | "reply" | "replyAll" | "forward";
+export type DraftMode = "new" | "reply" | "replyAll" | "forward" | "form";
 
 export interface Draft {
   /** 每次開新草稿遞增 → 讓 ComposeWindow 重新掛載並套用初始值 */
@@ -38,7 +38,24 @@ const MODE_TITLE: Record<DraftMode, string> = {
   reply: "回覆",
   replyAll: "全部回覆",
   forward: "轉寄",
+  form: "互動式表單",
 };
+
+/** 互動式表單的預設 schema（可編輯；後端仍會做白名單驗證） */
+const DEFAULT_FORM_SCHEMA = JSON.stringify(
+  {
+    type: "object",
+    properties: {
+      name: { type: "string", title: "姓名", maxLength: 100 },
+      message: { type: "string", title: "內容", maxLength: 2000 },
+    },
+    required: ["message"],
+  },
+  null,
+  2
+);
+
+const INTERNAL_DOMAIN = "@atwho.org";
 
 export function ComposeWindow({ draft, session, addresses, onClose, onSent, onError, onDirty }: Props) {
   const [from, setFrom] = useState(draft.from);
@@ -51,13 +68,18 @@ export function ComposeWindow({ draft, session, addresses, onClose, onSent, onEr
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // docs/18 P2：「互動式表單」模式（收件人只允許內部地址；送出打 /api/forms/send）
+  const [interactive, setInteractive] = useState(draft.mode === "form");
+  const [formDescription, setFormDescription] = useState("");
+  const [schemaText, setSchemaText] = useState(DEFAULT_FORM_SCHEMA);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   // 初始內文（引用原文）；使用 innerHTML 前先 escape（textToHtml）
+  // interactive 切回一般模式時編輯器會重新掛載 → 依賴 interactive 重新填入內容
   useEffect(() => {
-    if (editorRef.current) editorRef.current.innerHTML = textToHtml(draft.bodyText);
-  }, [draft.key, draft.bodyText]);
+    if (!interactive && editorRef.current) editorRef.current.innerHTML = textToHtml(draft.bodyText);
+  }, [draft.key, draft.bodyText, interactive]);
 
   const activeAddresses = addresses.filter((a) => a.status === "active");
   const fromOptions = session.kind === "mailbox" ? [] : activeAddresses.map((a) => a.email);
@@ -123,34 +145,83 @@ export function ComposeWindow({ draft, session, addresses, onClose, onSent, onEr
       setError("請填寫主旨");
       return;
     }
-    const html = editorRef.current?.innerHTML ?? "";
-    const text = editorRef.current?.innerText ?? "";
-    if (!text.trim()) {
-      setError("請輸入信件內容");
-      return;
+    let formSchema: FormSchema | null = null;
+    let html = "";
+    let text = "";
+    if (interactive) {
+      const allRecipients = [...toList, ...ccList, ...bccList];
+      if (allRecipients.some((a) => !a.toLowerCase().endsWith(INTERNAL_DOMAIN))) {
+        setError("互動式表單只能寄給 @atwho.org 內部地址");
+        return;
+      }
+      if (attachments.length > 0) {
+        setError("互動式表單不支援附件");
+        return;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(schemaText);
+      } catch {
+        setError("表單 schema 不是有效的 JSON");
+        return;
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setError("表單 schema 必須是 JSON 物件");
+        return;
+      }
+      const candidate = parsed as Record<string, unknown>;
+      if (
+        candidate.type !== "object" ||
+        typeof candidate.properties !== "object" ||
+        candidate.properties === null ||
+        Array.isArray(candidate.properties)
+      ) {
+        setError("表單 schema 需為 type=object 且包含 properties");
+        return;
+      }
+      formSchema = candidate as FormSchema;
+    } else {
+      html = editorRef.current?.innerHTML ?? "";
+      text = editorRef.current?.innerText ?? "";
+      if (!text.trim()) {
+        setError("請輸入信件內容");
+        return;
+      }
     }
 
     setSending(true);
     try {
-      await sendMail({
-        from,
-        to: toList,
-        ...(ccList.length ? { cc: ccList } : {}),
-        ...(bccList.length ? { bcc: bccList } : {}),
-        subject: subject.trim(),
-        text,
-        html,
-        ...(attachments.length
-          ? {
-              attachments: attachments.map((a) => ({
-                filename: a.filename,
-                type: a.type,
-                content_base64: a.content_base64,
-                disposition: "attachment" as const,
-              })),
-            }
-          : {}),
-      });
+      if (interactive && formSchema) {
+        await sendForm({
+          from,
+          to: toList,
+          ...(ccList.length ? { cc: ccList } : {}),
+          ...(bccList.length ? { bcc: bccList } : {}),
+          subject: subject.trim(),
+          ...(formDescription.trim() ? { description: formDescription.trim() } : {}),
+          schema: formSchema,
+        });
+      } else {
+        await sendMail({
+          from,
+          to: toList,
+          ...(ccList.length ? { cc: ccList } : {}),
+          ...(bccList.length ? { bcc: bccList } : {}),
+          subject: subject.trim(),
+          text,
+          html,
+          ...(attachments.length
+            ? {
+                attachments: attachments.map((a) => ({
+                  filename: a.filename,
+                  type: a.type,
+                  content_base64: a.content_base64,
+                  disposition: "attachment" as const,
+                })),
+              }
+            : {}),
+        });
+      }
       onSent({ from, to: toList });
     } catch (err) {
       const message = err instanceof ApiError ? `${err.message}（${err.code}）` : "寄送失敗，請稍後再試";
@@ -164,7 +235,33 @@ export function ComposeWindow({ draft, session, addresses, onClose, onSent, onEr
   return (
     <div className="compose-window" role="dialog" aria-label={MODE_TITLE[draft.mode]}>
       <div className="compose-head">
-        <strong>{MODE_TITLE[draft.mode]}</strong>
+        <strong>{interactive ? "互動式表單" : MODE_TITLE[draft.mode]}</strong>
+        <div className="compose-mode-switch" role="tablist" aria-label="郵件模式">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!interactive}
+            className={!interactive ? "active" : ""}
+            onClick={() => {
+              touch();
+              setInteractive(false);
+            }}
+          >
+            一般信件
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={interactive}
+            className={interactive ? "active" : ""}
+            onClick={() => {
+              touch();
+              setInteractive(true);
+            }}
+          >
+            互動式表單
+          </button>
+        </div>
         <button type="button" className="icon-btn" onClick={onClose} aria-label="關閉">
           <IconClose size={16} />
         </button>
@@ -260,62 +357,103 @@ export function ComposeWindow({ draft, session, addresses, onClose, onSent, onEr
           />
         </div>
 
-        <div className="compose-toolbar">
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("bold")} title="粗體">
-            <strong>B</strong>
-          </button>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("italic")} title="斜體">
-            <em>I</em>
-          </button>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("underline")} title="底線">
-            <u>U</u>
-          </button>
-          <button
-            type="button"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => exec("insertUnorderedList")}
-            title="項目符號"
-          >
-            •≡
-          </button>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={addLink} title="插入連結">
-            🔗
-          </button>
-          <span className="toolbar-spacer" />
-          <button type="button" onClick={() => fileRef.current?.click()} title="加入附件">
-            <IconPaperclip size={16} />
-          </button>
-        </div>
+        {interactive ? (
+          <>
+            <div className="compose-row compose-stack-row">
+              <label htmlFor="compose-form-description">表單說明</label>
+              <textarea
+                id="compose-form-description"
+                className="form-control"
+                value={formDescription}
+                onChange={(e) => {
+                  touch();
+                  setFormDescription(e.target.value);
+                }}
+                rows={2}
+                maxLength={2000}
+                placeholder="選填；會顯示在表單上方（純文字）"
+              />
+            </div>
+            <div className="compose-form-schema">
+              <label htmlFor="compose-form-schema">表單欄位（JSON Schema）</label>
+              <textarea
+                id="compose-form-schema"
+                className="schema-editor"
+                value={schemaText}
+                onChange={(e) => {
+                  touch();
+                  setSchemaText(e.target.value);
+                }}
+                rows={12}
+                spellCheck={false}
+                aria-label="表單 schema"
+              />
+              <p className="compose-hint">
+                僅支援基本型別、enum、format: date；禁止 $ref／anyOf／oneOf／allOf／patternProperties／dependencies。
+                收件人僅限 @atwho.org 內部地址。
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="compose-toolbar">
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("bold")} title="粗體">
+                <strong>B</strong>
+              </button>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("italic")} title="斜體">
+                <em>I</em>
+              </button>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("underline")} title="底線">
+                <u>U</u>
+              </button>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => exec("insertUnorderedList")}
+                title="項目符號"
+              >
+                •≡
+              </button>
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={addLink} title="插入連結">
+                🔗
+              </button>
+              <span className="toolbar-spacer" />
+              <button type="button" onClick={() => fileRef.current?.click()} title="加入附件">
+                <IconPaperclip size={16} />
+              </button>
+            </div>
 
-        <div
-          className="compose-editor"
-          ref={editorRef}
-          contentEditable
-          suppressContentEditableWarning
-          role="textbox"
-          aria-multiline="true"
-          aria-label="信件內容"
-          onInput={touch}
-        />
+            <div
+              className="compose-editor"
+              ref={editorRef}
+              contentEditable
+              suppressContentEditableWarning
+              role="textbox"
+              aria-multiline="true"
+              aria-label="信件內容"
+              onInput={touch}
+            />
 
-        {attachments.length > 0 && (
-          <ul className="compose-attachments">
-            {attachments.map((a, i) => (
-              <li key={`${a.filename}-${i}`}>
-                <IconFile size={15} />
-                <span className="att-name">{a.filename}</span>
-                <span className="att-size">{formatBytes(a.size)}</span>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
-                  aria-label={`移除 ${a.filename}`}
-                >
-                  <IconClose size={14} />
-                </button>
-              </li>
-            ))}
-          </ul>
+            {attachments.length > 0 && (
+              <ul className="compose-attachments">
+                {attachments.map((a, i) => (
+                  <li key={`${a.filename}-${i}`}>
+                    <IconFile size={15} />
+                    <span className="att-name">{a.filename}</span>
+                    <span className="att-size">{formatBytes(a.size)}</span>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
+                      aria-label={`移除 ${a.filename}`}
+                    >
+                      <IconClose size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
 
         {error && <p className="compose-error">{error}</p>}
@@ -323,9 +461,13 @@ export function ComposeWindow({ draft, session, addresses, onClose, onSent, onEr
         <div className="compose-footer">
           <button type="submit" className="btn-primary" disabled={sending}>
             <IconSend size={16} />
-            {sending ? "傳送中…" : "傳送"}
+            {sending ? (interactive ? "送出中…" : "傳送中…") : interactive ? "送出表單" : "傳送"}
           </button>
-          <span className="compose-hint">附件單檔 ≤ 3.5 MiB（含內文總計 ≤ 5 MiB）</span>
+          <span className="compose-hint">
+            {interactive
+              ? "互動式表單僅在 atwho.org 內部流動（不繞外網、不支援附件）"
+              : "附件單檔 ≤ 3.5 MiB（含內文總計 ≤ 5 MiB）"}
+          </span>
         </div>
 
         <input

@@ -1,4 +1,7 @@
-import type { AttachmentMeta, BodyState, MailDetail } from "../api/types";
+import { useEffect, useState } from "react";
+import { ApiError } from "../api/client";
+import { getForm, submitFormResponse } from "../api/endpoints";
+import type { AttachmentMeta, BodyState, FormView, MailDetail } from "../api/types";
 import { avatarHue, avatarText, displaySender, formatBytes, formatFullDate } from "../lib/format";
 import {
   CATEGORY_LABEL,
@@ -8,6 +11,8 @@ import {
   senderAuthBadges,
   SUSPICIOUS_FORM_NOTE,
 } from "../lib/mailCategory";
+import { FormManagePanel } from "./FormManagePanel";
+import { FormRenderer } from "./FormRenderer";
 import { HtmlBody } from "./HtmlBody";
 import { PlainTextBody } from "./PlainTextBody";
 import {
@@ -40,6 +45,13 @@ interface Props {
   onDownloadAttachment: (att: AttachmentMeta) => void;
 }
 
+type FormState =
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "fallback" }
+  | { kind: "submitted" }
+  | { kind: "ready"; form: FormView };
+
 export function ReadingPane({
   detail,
   body,
@@ -55,6 +67,60 @@ export function ReadingPane({
   onDelete,
   onDownloadAttachment,
 }: Props) {
+  // docs/18 P2：互動式表單。收件人 GET 成功才渲染；任何失敗 → 靜態文字（不報錯、不洩漏）。
+  // 寄件備份（folder=sent）不嘗試以收件人身分取表單，改顯示下方的表單管理面板。
+  const [formState, setFormState] = useState<FormState>({ kind: "idle" });
+  const [formSubmitting, setFormSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const instanceId = detail?.kind === "interactive_form" ? detail.form_instance_id : null;
+  const formFolder = detail?.folder;
+
+  useEffect(() => {
+    setFormError(null);
+    if (!detail || detail.kind !== "interactive_form" || detail.form_instance_id === null || detail.folder === "sent") {
+      setFormState({ kind: "idle" });
+      return;
+    }
+    let cancelled = false;
+    const id = detail.form_instance_id;
+    setFormState({ kind: "loading" });
+    getForm(id)
+      .then((res) => {
+        if (!cancelled) setFormState({ kind: "ready", form: res.form });
+      })
+      .catch(() => {
+        // 四道鎖任一失敗（含 404）→ 靜態文字；不顯示錯誤、不洩漏存在性
+        if (!cancelled) setFormState({ kind: "fallback" });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // 只用穩定欄位當依賴：切換已讀／未讀會更新 detail 物件，但不得重設表單輸入
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.id, detail?.kind, detail?.form_instance_id, formFolder]);
+
+  const submitForm = async (data: Record<string, unknown>) => {
+    if (instanceId === null || formSubmitting) return;
+    setFormSubmitting(true);
+    setFormError(null);
+    try {
+      await submitFormResponse(instanceId, data);
+      setFormState({ kind: "submitted" });
+    } catch (e) {
+      // 已關閉／已送出／逾期 → 直接降為靜態（不顯示技術錯誤）
+      if (
+        e instanceof ApiError &&
+        ["FORM_CLOSED", "FORM_ALREADY_SUBMITTED", "FORM_EXPIRED", "FORM_NOT_FOUND"].includes(e.code)
+      ) {
+        setFormState({ kind: "fallback" });
+      } else {
+        setFormError(e instanceof ApiError ? e.message : "送出失敗，請稍後再試");
+      }
+    } finally {
+      setFormSubmitting(false);
+    }
+  };
+
   if (!detail) {
     return (
       <section className="reading-pane empty">
@@ -180,6 +246,11 @@ export function ReadingPane({
           </div>
         </header>
 
+        {/* docs/18 §3.4：寄件人可檢視回覆、撤回（僅寄件人；非寄件人端點回 403 → 元件自動隱藏） */}
+        {detail.folder === "sent" && detail.kind === "interactive_form" && detail.form_instance_id !== null && (
+          <FormManagePanel instanceId={detail.form_instance_id} />
+        )}
+
         {detail.attachments.length > 0 && (
           <div className="attachment-strip">
             {detail.attachments.map((att) => (
@@ -201,7 +272,27 @@ export function ReadingPane({
         )}
 
         <div className="reading-body">
-          {loading || body.kind === "loading" ? (
+          {formState.kind === "loading" ? (
+            <div className="list-state">
+              <div className="spinner" />
+              <p>載入表單…</p>
+            </div>
+          ) : formState.kind === "ready" ? (
+            <div className="form-pane">
+              <p className="form-intro">{formState.form.description ?? ""}</p>
+              <FormRenderer
+                schema={formState.form.schema}
+                submitting={formSubmitting}
+                onSubmit={(data) => void submitForm(data)}
+              />
+              {formError && <p className="compose-error">{formError}</p>}
+            </div>
+          ) : formState.kind === "submitted" ? (
+            <div className="form-success" role="status">
+              <strong>已送出回覆</strong>
+              <p>寄件人現在可以查看你的回覆。</p>
+            </div>
+          ) : loading || body.kind === "loading" ? (
             <div className="list-state">
               <div className="spinner" />
               <p>載入內容…</p>
