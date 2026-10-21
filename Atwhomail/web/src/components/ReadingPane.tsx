@@ -279,7 +279,6 @@ export function ReadingPane({
             </div>
           ) : formState.kind === "ready" ? (
             <div className="form-pane">
-              <p className="form-intro">{formState.form.description ?? ""}</p>
               <FormRenderer
                 schema={formState.form.schema}
                 submitting={formSubmitting}
