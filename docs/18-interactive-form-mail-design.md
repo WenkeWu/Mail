@@ -351,3 +351,29 @@ CREATE TABLE form_responses (
 | 5 | owner session 不能填表單 | 四道鎖③要求「登入者 address_id == recipient_address_id」；owner session 沒有單一 address_id → 一律 404（fail closed）。owner 需以該地址的 mailbox session 登入填寫 |
 | 6 | 前端 bundle 變大 | RJSF 讓 web bundle 約 682 kB（gzip 216 kB），Vite 有 chunk size 警告；不影響功能 |
 | 7 | 表單寄送非全批次交易 | 若在建立多個實例的中途發生 D1 錯誤，已建立的實例會保留（安全：無 instance 的 message 只會降為靜態）；寄件備份失敗不影響已投遞的收件人 |
+
+---
+
+## 14. 部署紀錄與已知缺口（2026-10-15）
+
+**已上線**：migration `0008`（8 欄位 ＋ 3 表，既有 95 封信維持 `external`／`normal`）、email-handler `6d67188e…`、API `98d8ebda…`、前端 `index-CybSA6R6.js`。
+
+**端到端驗收（全部通過 ✅）**：內部一般郵件本地直送（`origin=internal` ✅）／互動式表單建立＋取用＋回覆＋撤回／**寄外部 → `422`**／owner token 取表單 → **404 fail-closed**／收件人取他人表單 → 403／重複送出 → 409／撤回後 GET → 404／稽核齊全且不含信件內容 ✅
+
+### 14.1 🐞 已知 Bug（待修）：刪除含表單的訪客／地址會 500
+
+| 項目 | 內容 |
+|---|---|
+| 現象 | `DELETE /api/users/:id`（D9）與 `DELETE /api/email-addresses/:id?mode=hard`（D11-5）在有 `form_instances` 時回 **500 `DELETE_FAILED`（已回滾）** |
+| 原因 | `form_instances.message_id`／`recipient_address_id`／`sender_address_id` 有 FK；舊刪除順序未涵蓋 `form_responses`／`form_instances` → FK 阻擋 |
+| 修正規格（D16） | 兩個端點的刪除順序最前面加入：<br>① `form_responses`（`instance_id` 屬於本次將刪的實例）<br>② `form_instances`（`message_id` 屬於該用戶／地址的訊息 **或** `recipient_address_id`／`sender_address_id` 為該地址）<br>③ 之後才接既有順序（messages → attachments → email_aliases → email_addresses → users → auth_attempts）<br>⚠️ **不得刪除 `form_templates`**（可重用）<br>✅ `soft` 刪除地址時，建議把該地址的 `open` 實例標為 `revoked`（寄件人可見狀態）|
+| 測試 | **T56**：刪除有（open ＋ submitted）表單實例的訪客 → 200，`form_responses`／`form_instances`／messages／address／user 全清、稽核保留 ✅<br>**T57**：`mode=hard` 刪除有表單實例的地址 → 同上 ✅<br>**T58**：`mode=soft` 刪除地址 → 該地址 `open` 實例轉 `revoked`，其餘資料不動 ✅ |
+
+### 14.2 其他已知限制
+
+| # | 限制 | 建議 |
+|---|---|---|
+| 1 | owner 收到表單需以「該地址的 mailbox session」登入才能填（用管理員登入 → 404 fail-closed）| P3 放寬：owner 且地址屬於自己 → 允許 |
+| 2 | 前端 bundle 682 kB（gzip 216 kB），RJSF 為靜態 import | P3：`React.lazy()` 動態載入 `FormRenderer` |
+| 3 | 無 `FORMS_ENABLED` feature flag | 回退＝重新部署上一版前端 |
+| 4 | 表單寄送非單一交易（中途失敗會留下已建立的實例；無實例的訊息只降為靜態，安全 ✅）| P3 改批次 |
