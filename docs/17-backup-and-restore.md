@@ -164,3 +164,21 @@ PGPASSWORD=<備份密碼> pg_dump -U atwhomail_backup -h localhost -d atwhomail_
 
 - ❌ 不改 D1 既有資料、不改 migration `0008`、不部署 production
 - ❌ 不改 `docs/16`、`docs/18`（由 owner／助手維護）
+
+### 7.5 ✅ 完成紀錄（2026-10-22，commit `247c02d`）
+
+| 項目 | 驗收證據（助手獨立複跑）|
+|---|---|
+| **D17-1 備份涵蓋** | ✅ 備份庫表數 9 → **13**（新增 `form_templates`／`form_instances`／`form_responses`／`registration_audit`）<br>✅ 筆數：`form_templates` 1=1、`registration_audit` 25=25、`invites` 4=4、`messages` PG 118 ≥ D1 102（含軟刪除列，符合 §1 預期）<br>✅ `messages` 新 8 欄已回填（`kind IS NULL` = **0**；例：`id=116` → `kind=interactive_form`、`form_instance_id=1`）<br>✅ 本機 migration：`0004_local_forms_audit.sql` 已套 |
+| **D17-2 連線重試** | ✅ 單元測試：4 次嘗試、退避 `[1000,2000,4000]`、非連線錯誤只嘗試 1 次<br>✅ `verify` 實跑：143/143、missing 0、corrupt 0 |
+| **D17-3 告警去抖** | ✅ 單元測試 8 例（1 次不寄→2 次寄→恢復寄一次→重啟續計→雙排程去抖→舊格式相容）<br>✅ **實機證據**：15:15 偵測 agent 不存在 → log「連續失敗 1/2 次，未達門檻，本次不寄信」→ **未寄任何信** ✅，狀態自動清除 ✅ |
+| 常駐 agent | ✅ 已以新程式重啟：tick #4 正常、`mirrorTables: 10`（10 張表筆數全部列出）、`directRows: 0` |
+| canonical 三指令 | ✅ `lint` 0／`build` 0／`test` **329 個案例全綠**（workerd 301 ＋ web DOM 28）<br>ℹ️ 全套件滿載時 `registration.spec.ts` T7 曾 flake 一次，**單獨重跑 16/16 全過**（4.3 秒）→ 屬負載 flake，非回歸 |
+
+**新增環境變數**：`WATCHDOG_FAIL_THRESHOLD`（預設 2）、`WATCHDOG_DEDUPE_SEC`（預設 60）；直讀 D1 需要 `CF_ACCOUNT_ID`／`CF_API_TOKEN`（或 `~/.atwhomail-cf-token`）／`D1_PROD_ID`（皆已在本機 `.env`，`.env.example` 已註明）。
+
+**後續建議**
+1. 🟡 把 `form_templates`／`form_instances`／`form_responses`／`registration_audit` 加入 **API 的 `BACKUP_TABLES`**（需部署 API）→ 之後即可移除 agent 的「直讀 production D1」路徑，減少一組憑證需求 ✅
+2. 🟢 新表的真實 restore 演練（沿用 §3 的 schema 層做法）✅
+3. 🟢 測試 flake 硬化（API suite 提高 `testTimeout` 或改序列執行）✅
+4. ℹ️ `delivery_scope` 小不一致：內部信的**寄件備份**列為 `external`（4 筆歷史列）；收件人列為 `internal`（正確）→ P3 統一 ✅
