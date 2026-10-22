@@ -377,3 +377,33 @@ CREATE TABLE form_responses (
 | 2 | 前端 bundle 682 kB（gzip 216 kB），RJSF 為靜態 import | P3：`React.lazy()` 動態載入 `FormRenderer` |
 | 3 | 無 `FORMS_ENABLED` feature flag | 回退＝重新部署上一版前端 |
 | 4 | 表單寄送非單一交易（中途失敗會留下已建立的實例；無實例的訊息只降為靜態，安全 ✅）| P3 改批次 |
+
+---
+
+## 15. P3-1／P3-2 規格（2026-10-22 派工，D18）
+
+### D18-1 放寬四道鎖③：owner 可填「自己地址」的表單
+
+**問題**：目前鎖③只接受 mailbox session（`scope.addressId == instance.recipient_address_id`）
+→ owner 用管理員 JWT 登入時，即使表單寄到自己的地址（`itag@`／`alerts@`…），也一律 404（fail-closed）⚠️
+
+**修正**
+- 鎖③改為「**兩種合格身分之一**」：
+  1. mailbox session 且 `scope.addressId == instance.recipient_address_id` ✅（現況）
+  2. **owner JWT session**（`kind='owner'` 且 `via='jwt'`）且該 `recipient_address_id` 的 `user_id == scope.userId` ✅
+- ⚠️ **rescue token（`via='rescue'`）仍一律 404**（機器憑證不得填表單）
+- ⚠️ owner 對**訪客地址**的表單仍 404（不得跨使用者）
+- 稽核：`form_viewed`／`form_submitted` 增加 `via`（`mailbox`／`owner`）以利追溯
+
+**測試**：T59（owner JWT 讀自己地址表單 → 200）／T60（owner JWT 讀訪客地址表單 → 404）／T61（rescue → 404）／T62（owner 送出回覆 → 200；重複 → 409）
+
+### D18-2 RJSF lazy-load（bundle 優化）
+
+- `FormRenderer` 改為 `React.lazy()` ＋ `Suspense` 動態載入（fallback：載入中提示）
+- 目標：**首屏 bundle 移除 RJSF（約 -380 kB）**，只有開啟互動式郵件時才載入
+- 必須記錄**改前／改後**的 `dist/assets/index-*.js` 大小（build 輸出）於本節
+- 測試：既有 web DOM 測試需改為等待 lazy 元件載入（`findBy*`）；新增 1 例「lazy 載入後表單可渲染並送出」
+
+### 尚未做（P3 其餘）
+
+`FORMS_ENABLED` feature flag／撤回與期限 UI 完善／表單統計與稽核頁／已讀狀態／單一批次交易／視覺化表單設計器
