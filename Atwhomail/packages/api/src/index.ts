@@ -1289,10 +1289,14 @@ async function deleteR2Objects(bucket: R2Bucket, keys: string[]): Promise<number
  * ⚠️ 刪除後該地址的既有 mailbox JWT 立即失效 → `401 TOKEN_STALE`（D10，docs/16 §3 T23）。
  *
  * 刪除範圍與順序（依 FK，由子到父；整批 `batch`＝單一交易，任一句失敗即全部回滾，不留半刪狀態）：
- *   `attachments`（透過 messages）→ `messages`（該地址與該 owner_user_id 的）
+ *   `form_responses`（本次將刪實例的回覆）→ `form_instances`（`message_id` 屬於該用戶的訊息，
+ *   或 `recipient_address_id`／`sender_address_id` 屬於該用戶的地址；D16）
+ *   → `attachments`（透過 messages）→ `messages`（該地址與該 owner_user_id 的）
  *   → `email_aliases`（指向該地址）→ `email_addresses`（該 user 名下，含已軟刪除者）
  *   → `users` → `auth_attempts`（該地址的 mailbox 計數 key，逐一字串精準比對）
  * 註：`attachments` 參照 `messages`，故必須**先於** messages 刪除（規格的「透過 messages」是範圍描述）。
+ * 註：`form_responses.instance_id` 參照 `form_instances`、`responder_user_id` 參照 `users`，
+ *     故必須**先於**兩者刪除；`form_templates` 可重用，**絕不刪除**（D16）。
  */
 app.delete("/api/users/:id", requireOwner, async (c) => {
   const scope = c.get("scope");
@@ -1319,6 +1323,10 @@ app.delete("/api/users/:id", requireOwner, async (c) => {
 
   /** 本帳號的信：掛在自己名下（owner_user_id）或收在名下任一地址（address_id） */
   const MSG_SCOPE = "owner_user_id = ?1 OR address_id IN (SELECT id FROM email_addresses WHERE user_id = ?1)";
+  /** 本次刪除涵蓋的表單實例：訊息屬本帳號，或寄／收地址屬本帳號的地址（D16） */
+  const INSTANCE_SCOPE = `message_id IN (SELECT id FROM messages WHERE ${MSG_SCOPE})
+       OR recipient_address_id IN (SELECT id FROM email_addresses WHERE user_id = ?1)
+       OR sender_address_id IN (SELECT id FROM email_addresses WHERE user_id = ?1)`;
 
   const { results: msgRows } = await c.env.DB.prepare(
     `SELECT raw_r2_key, html_r2_key FROM messages WHERE ${MSG_SCOPE}`
@@ -1335,6 +1343,16 @@ app.delete("/api/users/:id", requireOwner, async (c) => {
   let counts: number[];
   try {
     const results = await c.env.DB.batch([
+      // ①／② 表單（D16）：回覆先於實例（`form_responses.instance_id` → `form_instances`）。
+      //     `responder_user_id` 亦參照 `users`：正常情況下此使用者的回覆必然落在上面的實例範圍內
+      //     （四道鎖要求回覆者＝收件地址的擁有者），多帶這個條件是 FK 的縱深防禦。
+      c.env.DB.prepare(
+        `DELETE FROM form_responses
+          WHERE responder_user_id = ?1
+             OR instance_id IN (SELECT id FROM form_instances WHERE ${INSTANCE_SCOPE})`
+      ).bind(id),
+      c.env.DB.prepare(`DELETE FROM form_instances WHERE ${INSTANCE_SCOPE}`).bind(id),
+      // ③ 既有順序：附件 → 信件 → 別名 → 地址 → 使用者 → 登入計數
       c.env.DB.prepare(
         `DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE ${MSG_SCOPE})`
       ).bind(id),
@@ -1354,10 +1372,11 @@ app.delete("/api/users/:id", requireOwner, async (c) => {
     console.error("[atwhomail-api] user delete failed (rolled back)", { id, error: String(e) });
     return err(c, "DELETE_FAILED", "刪除失敗（已回滾，資料未變更）", 500);
   }
-  const attachments = counts[0] ?? 0;
-  const messages = counts[1] ?? 0;
-  const aliases = counts[2] ?? 0;
-  const addressesDeleted = counts[3] ?? 0;
+  // 前兩句是 D16 的表單清除（form_responses／form_instances），回應與稽核格式維持既有欄位不變。
+  const attachments = counts[2] ?? 0;
+  const messages = counts[3] ?? 0;
+  const aliases = counts[4] ?? 0;
+  const addressesDeleted = counts[5] ?? 0;
 
   // 4) R2 物件（best-effort；D1 列已刪 → 物件不再可達）
   const r2Keys = [
@@ -1560,10 +1579,14 @@ app.patch("/api/email-addresses/:id", requireOwner, async (c) => {
  *
  * 兩種語意（規格 D11-2）：
  * - `soft`（**預設**，維持既有行為相容）：只標記 `status='deleted'`／`deleted_at`，
- *   **保留**信件與 R2 物件；回應維持 `204`（舊版行為，前端既有呼叫不受影響）。
- * - `hard`：同一交易內先做 soft，接續刪除該地址**所有** `messages`（含所有資料夾與垃圾桶）
+ *   **保留**信件與 R2 物件；同一 batch 內把**該地址為收件人**的 `open` 表單實例標為 `revoked`
+ *   （`updated_at` 同步；寄件人可見），其餘資料不動（D16）。回應維持 `204`。
+ * - `hard`：同一交易內先清除表單（`form_responses` → `form_instances`，D16），再做 soft，
+ *   接續刪除該地址**所有** `messages`（含所有資料夾與垃圾桶）
  *   → `attachments` → 指向該地址的 `email_aliases` → **真正移除 `email_addresses` 該列**
  *   → 該地址的 `auth_attempts` 計數 key；之後 best-effort 刪除 R2 物件。回應 `200` 附數量。
+ *   表單實例範圍涵蓋「該地址的信件所屬實例」與 `recipient_address_id`／`sender_address_id`
+ *   為該地址的實例；`form_templates` 可重用，**絕不刪除**（D16）。
  *
  * ⚠️ **名稱釋放（D11-2）**：`email` 與 `(local_part, domain)` 皆為 UNIQUE 且**不含 `deleted_at`**
  *    → 只做 soft 的列會永遠佔住名稱（重建同名地址會在 INSERT 撞 UNIQUE）；因此 hard **必須**
@@ -1631,15 +1654,21 @@ app.delete("/api/email-addresses/:id", requireOwner, async (c) => {
   };
   const by = scope.userId; // 操作者＝目前的 owner session（rescue 亦為 owner id）
 
-  // ── soft：只標記，保留信件與 R2（既有行為不變） ──
+  // ── soft：只標記，保留信件與 R2（既有行為不變）＋ 該地址的 open 表單實例轉 revoked（D16） ──
   if (mode === "soft") {
     const retained = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE address_id = ?1")
       .bind(id)
       .first<{ n: number }>();
+    // D16：soft 不得刪除任何表單資料；只把「該地址為收件人」且仍在 open 的實例標為 revoked
+    // （寄件人可見）。submitted 等其餘狀態與回覆一律不動。
+    const revokeStep = c.env.DB.prepare(
+      "UPDATE form_instances SET status = 'revoked', updated_at = ?1 WHERE recipient_address_id = ?2 AND status = 'open'"
+    ).bind(ts, id);
     try {
-      await softStep.run();
+      // 兩句在同一個 batch（＝單一交易）：任一失敗即全部回滾。
+      await c.env.DB.batch([revokeStep, softStep]);
     } catch (e) {
-      console.error("[atwhomail-api] address soft delete failed", { id, error: String(e) });
+      console.error("[atwhomail-api] address soft delete failed (rolled back)", { id, error: String(e) });
       return err(c, "DELETE_FAILED", "刪除失敗（已回滾，資料未變更）", 500);
     }
     auditAsync(c, {
@@ -1667,17 +1696,28 @@ app.delete("/api/email-addresses/:id", requireOwner, async (c) => {
     .bind(id)
     .all<{ r2_key: string | null }>();
 
+  // D16：hard 必須先清除表單（回覆 → 實例），否則 `form_instances` 的 FK 會擋住 messages／地址刪除。
+  // 範圍：該地址的信件所屬實例，或 recipient／sender_address_id 為該地址的實例。
+  // `form_templates` 可重用 → **絕不刪除**。
+  const INSTANCE_SCOPE = `message_id IN (SELECT id FROM messages WHERE address_id = ?1)
+       OR recipient_address_id = ?1
+       OR sender_address_id = ?1`;
+
   // 步驟以**名稱**索引（而非固定位置）：已軟刪除的列會少一個 soft 步驟（D11-5），
   // 用位置取值會在兩種路徑間錯位。
   const steps: Record<string, D1PreparedStatement> = {};
-  if (!alreadyDeleted) steps.soft = softStep; // 1) 先 soft（與 soft 模式同一語意；已刪除的列跳過）
+  steps.form_responses = c.env.DB.prepare(
+    `DELETE FROM form_responses WHERE instance_id IN (SELECT id FROM form_instances WHERE ${INSTANCE_SCOPE})`
+  ).bind(id); // 1) 回覆先於實例（FK）
+  steps.form_instances = c.env.DB.prepare(`DELETE FROM form_instances WHERE ${INSTANCE_SCOPE}`).bind(id); // 2) 再刪實例
+  if (!alreadyDeleted) steps.soft = softStep; // 3) 先 soft（與 soft 模式同一語意；已刪除的列跳過）
   steps.attachments = c.env.DB.prepare(
     "DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE address_id = ?1)"
-  ).bind(id); // 2) 附件先於信件（FK）
-  steps.messages = c.env.DB.prepare("DELETE FROM messages WHERE address_id = ?1").bind(id); // 3) 含所有資料夾與垃圾桶
-  steps.aliases = c.env.DB.prepare("DELETE FROM email_aliases WHERE target_email_address_id = ?1").bind(id); // 4) 指向此地址的別名
-  steps.address = c.env.DB.prepare("DELETE FROM email_addresses WHERE id = ?1").bind(id); // 5) 真正移除該列 → 釋放名稱
-  steps.attempts = c.env.DB.prepare("DELETE FROM auth_attempts WHERE key = ?1").bind(`mailbox:${row.email}`); // 6) 登入失敗計數
+  ).bind(id); // 4) 附件先於信件（FK）
+  steps.messages = c.env.DB.prepare("DELETE FROM messages WHERE address_id = ?1").bind(id); // 5) 含所有資料夾與垃圾桶
+  steps.aliases = c.env.DB.prepare("DELETE FROM email_aliases WHERE target_email_address_id = ?1").bind(id); // 6) 指向此地址的別名
+  steps.address = c.env.DB.prepare("DELETE FROM email_addresses WHERE id = ?1").bind(id); // 7) 真正移除該列 → 釋放名稱
+  steps.attempts = c.env.DB.prepare("DELETE FROM auth_attempts WHERE key = ?1").bind(`mailbox:${row.email}`); // 8) 登入失敗計數
 
   const stepNames = Object.keys(steps);
   let counts: Record<string, number>;

@@ -445,10 +445,13 @@ DELETE /api/users/:id                      Authorization: owner（訪客 JWT →
   //    另以 findOwnerId 做縱深防禦（即使 role 欄位被誤設，也刪不到管理帳號）
   // 一律以**精準 id** 操作（`= ?` 與「取 id 的子查詢」）；**禁止** LIKE 模糊比對
   // 先 SELECT 確認存在且 role 正確才刪；id 非正整數 → 400 INVALID_ID；不存在 → 404
-  // 刪除順序（依 FK，由子到父；單一 `batch` ＝ 單一交易，任一句失敗即全部回滾 → 500 DELETE_FAILED）
-  //   attachments（透過 messages）→ messages（該地址與該 owner_user_id 的）
+  // 刪除順序（依 FK，由子到父；單一 `batch` ＝單一交易，任一句失敗即全部回滾 → 500 DELETE_FAILED）
+  //   form_responses（本次將刪實例的回覆）→ form_instances（message_id 屬該用戶的訊息，
+  //   或 recipient_address_id／sender_address_id 屬該用戶的地址；D16，2026-10-22）
+  //   → attachments（透過 messages）→ messages（該地址與該 owner_user_id 的）
   //   → email_aliases（指向該地址）→ email_addresses（該 user 名下，含已軟刪除者）
   //   → users → auth_attempts（該地址的 mailbox 計數 key，逐一字串精準比對）
+  // ⚠️ form_templates 可重用 → **絕不刪除**（D16；刪除只清 form_responses／form_instances）
   // R2：上述信件與附件的物件（raw_r2_key／html_r2_key／attachments.r2_key）一併刪除（best-effort；
   //     R2 失敗只記 log，不影響 D1 已完成的刪除——沒有 DB 列就沒有 key，物件已不可達）
   // ⚠️ **不可復原**；只是要暫停請改用 PATCH /api/users/:id/status（停權：可逆、來信照收）
@@ -510,8 +513,8 @@ DELETE /api/email-addresses/:id?mode=soft|hard      Authorization: owner（或 r
 
 | mode | 行為 | 回應 |
 |---|---|---|
-| `soft`（**預設**；未帶＝soft） | 只標記 `status='deleted'`、`deleted_at`；**保留**信件、附件與 R2 物件 | `204`（無 body，與舊版一致） |
-| `hard` | 單一交易內：先 soft → 刪除該地址**所有** `messages`（含所有資料夾與垃圾桶）→ `attachments` → 指向該地址的 `email_aliases` → **真正移除 `email_addresses` 該列** → 該地址的 `auth_attempts` 計數 key；之後 best-effort 刪除 R2 物件 | `200 { ok, id, email, mode, previously_deleted, deleted: { messages, attachments, aliases, r2_objects } }` |
+| `soft`（**預設**；未帶＝soft） | 只標記 `status='deleted'`、`deleted_at`；**保留**信件、附件與 R2 物件。同一個 batch 內把**該地址為收件人**的 `open` 表單實例改為 `revoked`（`updated_at` 同步；寄件人可見），submitted 實例／回覆等其餘資料**不動**（D16，2026-10-22） | `204`（無 body，與舊版一致） |
+| `hard` | 單一交易內：先清除表單（`form_responses` → `form_instances`；範圍涵蓋該地址的信件所屬實例與 `recipient_address_id`／`sender_address_id` 為該地址的實例；D16）→ 再 soft → 刪除該地址**所有** `messages`（含所有資料夾與垃圾桶）→ `attachments` → 指向該地址的 `email_aliases` → **真正移除 `email_addresses` 該列** → 該地址的 `auth_attempts` 計數 key；之後 best-effort 刪除 R2 物件 | `200 { ok, id, email, mode, previously_deleted, deleted: { messages, attachments, aliases, r2_objects } }`（格式不變；表單清除數量不另回傳） |
 
 **`mode` × 列的狀態（D11-5，2026-10-15）**
 
@@ -529,6 +532,11 @@ DELETE /api/email-addresses/:id?mode=soft|hard      Authorization: owner（或 r
   失敗只記 log，**不讓已完成的 D1 刪除回報失敗** —— 沒有 DB 列就沒有 key，物件已不可達）。
 - **交易性**：D1 部分一律**單一 `batch`**（＝單一交易），任一句失敗即全部回滾 →
   `500 DELETE_FAILED`「刪除失敗／永久刪除失敗（已回滾，資料未變更）」。
+  `soft` 的「撤銷 open 實例＋標記地址」、`hard` 的「清除 form 表＋既有清除」都在**同一個 batch**（D16）。
+- **表單（D16）**：`form_responses`（`instance_id`／`responder_user_id` 的 FK）必須先於
+  `form_instances` 刪除；`form_instances` 又參照 `messages`／`email_addresses`，故必須在兩者之前清除。
+  `form_templates` 可重用 → **絕不刪除**（soft 亦同）。修正前此 FK 未涵蓋 → 有表單的地址 `hard` 會
+  `500 DELETE_FAILED`（已回滾）。
 - ⚠️ **名稱釋放（soft 與 hard 的關鍵差別）**：`email` 與 `(local_part, domain)` 皆為 UNIQUE
   且**不含 `deleted_at`** → 只做 soft 的列**永遠佔住名稱**，重建同名地址會在 `INSERT` 撞 UNIQUE。
   因此 **hard 會真的移除該列**；soft 的行為不變（名稱未釋放）。
@@ -605,7 +613,8 @@ DELETE /api/email-addresses/:id?mode=hard     Authorization: owner（或 rescue�
   只回**已軟刪除**（`deleted_at` 非空）的列，欄位為
   `id`／`email`／`status`／`has_password`／`created_at`／`updated_at`／**`deleted_at`**／**`messages`**
   （`messages` ＝ 該地址仍保留的信件數，含所有資料夾與垃圾桶，與 `hard` 實際清除數量一致）。
-- **`mode=hard` 用在已軟刪除的列**：清除範圍與稽核欄位與「對未刪除的列 hard」**完全相同**，
+- **`mode=hard` 用在已軟刪除的列**：清除範圍與稽核欄位與「對未刪除的列 hard」**完全相同**
+  （含 D16 的 `form_responses` → `form_instances` 清除），
   且會**移除該列以釋放名稱** → 同名可重建（201）。`mode` × 列狀態的完整對照表見 §2.14。
   回應另帶 `previously_deleted: true`（新增欄位，既有呼叫端不受影響）。
 - **權限不因 D11-5 放寬**：仍為 `requireOwner` ＋ `user_id = 自己` 且 `role='owner'`

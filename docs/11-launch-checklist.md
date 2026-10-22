@@ -369,6 +369,17 @@
       - [ ] **互動式表單驗收**：`/api/forms/send` 寄給內部地址 → 收件人可渲染並送出；
             `GET /api/forms/:id` 對非收件人／已撤回／逾期一律 404；寄件人可查看回覆與撤回。
             ⚠️ 互動式表單路徑**不得**出現 EMAIL Sending 用量（設計上物理不可能）。
+      - [ ] **D16 驗收（刪除含表單的訪客／地址）**（2026-10-22 程式完成；對應 `docs/18` §14.1 **T56–T58**；
+            **請用測試帳號／地址**，刪除不可復原）：
+            ① `DELETE /api/users/:id` 對有（open ＋ submitted）表單實例的訪客 → `200`；
+               `form_responses`／`form_instances`／messages／attachments／aliases／address／user／
+               `auth_attempts` 全清，`registration_audit` 保留 ✅
+            ② `DELETE /api/email-addresses/:id?mode=hard` 對有表單實例的地址 → `200`（同上清除、
+               名稱可重建；已軟刪除的地址升級清除亦同）✅
+            ③ `?mode=soft` 刪除地址 → 該地址的 `open` 實例轉 `revoked`（`updated_at` 同步），
+               submitted 實例／回覆／messages／attachments／R2 **全部保留** ✅
+            ④ ⚠️ `form_templates` **不得刪除**（可重用）；修正前上述①②會因 FK 阻擋回
+               `500 DELETE_FAILED`（已回滾）
       - [ ] **寄件者驗證顯示**：外部信詳情應顯示 SPF／DKIM／DMARC（pass／fail／none／unknown）；
             fail 僅顯示警告，**不得**影響閱讀或授權。
       - [ ] **回退**：前端重新部署上一版即可讓表單自動降為靜態（後端端點保留、不再被呼叫）；
@@ -387,14 +398,14 @@
 | `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（**預設只回遮罩碼**；`?reveal=1` 額外回全碼並寫稽核）／撤銷 |
 | `GET /api/me` | owner 或 mailbox | 身分與寄信配額（供前端顯示） |
 | **（session 檢查）** | owner 或 mailbox | `401 TOKEN_STALE`：**查不到列**（帳號／地址已被刪除，階段 6／D10）或密碼已變更；rescue 不受影響（N5） |
-| `DELETE /api/users/:id` | owner 或 rescue（**僅 `role='visitor'`**） | **永久刪除訪客**（帳號／地址／所有信件與附件／別名／登入計數；稽核保留，階段 6／D9）；對 owner → 403 `FORBIDDEN` |
+| `DELETE /api/users/:id` | owner 或 rescue（**僅 `role='visitor'`**） | **永久刪除訪客**（帳號／地址／所有信件與附件／別名／登入計數；稽核保留，階段 6／D9）；對 owner → 403 `FORBIDDEN`。**D16**：一併清除該用戶相關的 `form_responses`／`form_instances`（`form_templates` 保留）|
 | `PATCH /api/users/:id/status` | owner 或 rescue | 停權／復權（立即生效：**含既有 session 立即 403**，階段 5／D8-4；來信仍照收） |
 | `GET /api/users?role=visitor` | owner 或 rescue | 訪客清單（**只回數量與時間**：信件數／最近活動，N9） |
 | `PATCH /api/users/:id/quota` | owner 或 rescue | 調整每日配額（1–200）＋寄信安全閥（階段 3／D5） |
 | `PATCH /api/users/:id/warmup` | owner 或 rescue | 暖機豁免（需 migration 0007；階段 3／D5） |
 | `/api/email-addresses*`（含密碼） | owner 或 rescue | 地址管理（**自身名下**，越權／訪客地址一律 404） |
 | `GET /api/email-addresses?deleted=1` | owner 或 rescue | **已軟刪除**（垃圾桶）的地址清單（階段 7／D11-5）：`deleted_at`／`messages`，供網頁「已刪除的地址」區塊；未帶參數＝既有清單（僅未刪除的列） |
-| `DELETE /api/email-addresses/:id?mode=soft\|hard` | owner 或 rescue（**自身名下**） | address 刪除（階段 7／D11）：`soft`（預設，信件與 R2 保留）／`hard`（信件／附件／R2 一併清除＋**釋放名稱**）；一律寫稽核 `address_deleted`。**D11-5**：對**已軟刪除**的列 `hard` → `200`（`previously_deleted: true`）、`soft` → `404`（不重複標記、非 500） |
+| `DELETE /api/email-addresses/:id?mode=soft\|hard` | owner 或 rescue（**自身名下**） | address 刪除（階段 7／D11）：`soft`（預設，信件與 R2 保留）／`hard`（信件／附件／R2 一併清除＋**釋放名稱**）；一律寫稽核 `address_deleted`。**D11-5**：對**已軟刪除**的列 `hard` → `200`（`previously_deleted: true`）、`soft` → `404`（不重複標記、非 500）。**D16**：`hard` 先清 `form_responses`／`form_instances`（`form_templates` 保留）；`soft` 把該地址的 `open` 實例轉 `revoked`（其餘資料不動）|
 | `PATCH /api/email-addresses/:id/status` | owner 或 rescue | 停用／啟用**訪客**地址（階段 3／D5；解 404 缺口）；**立即生效**且**連收信都停止**（階段 5／D8-4） |
 | `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9）。`/api/mail/send`：全內部 active 收件人→**本地直送**（不呼叫 EMAIL.send） |
 | `POST /api/forms/send` | owner 或 mailbox（from 需在 scope 內） | **互動式表單**：收件人全內部 active（否則 422 `FORM_RECIPIENT_NOT_INTERNAL`）、schema 白名單、每人一筆實例、**絕不呼叫 EMAIL.send** |
