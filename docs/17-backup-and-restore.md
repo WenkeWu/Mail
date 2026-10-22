@@ -125,3 +125,42 @@ PGPASSWORD=<備份密碼> pg_dump -U atwhomail_backup -h localhost -d atwhomail_
 - [ ] §2-④ R2 抽驗 sha256 相符
 - [ ] §3 還原演練（schema 層）通過
 - [ ] `docs/16` §10 的相關決策是否有變更
+
+---
+
+## 7. 缺口修補：D17（備份涵蓋與韌性）
+
+> 起因：2026-10-21 的一次 `verify exit code=1`（`Connection terminated due to connection timeout`）排查中發現的缺口。
+> 該次為**單次連線抖動**，10-22 09:00 已自動恢復（exit 0 ✅）；但暴露出下列問題。
+
+### 7.1 🔴 缺口一：新表與新欄位沒有備份
+
+| 項目 | 現況（2026-10-22 實查）| 影響 |
+|---|---|---|
+| `form_templates`／`form_instances`／`form_responses` | ❌ 不在備份庫 | **表單定義與回覆只存在 D1，無本機備份** ⚠️ |
+| `messages` 的 8 個新欄位（`origin`／`kind`／`delivery_scope`／`form_instance_id`／`suspicious_form_claim`／`sender_spf`／`sender_dkim`／`sender_dmarc`）| ❌ 不在 `TABLE_COLUMNS` | 分類與寄件者驗證結果不會備份 ⚠️ |
+
+**原因**：`packages/backup-agent/src/db.ts:70` 的 `MIRROR_TABLES` 為**明確列舉**（5 張表），欄位亦列舉於 `tables.ts` 的 `TABLE_COLUMNS` → **不會自動跟隨 D1 schema** ✅
+
+**修正（D17-1）**
+1. `MIRROR_TABLES` 增加 `form_templates`、`form_instances`、`form_responses`
+2. `TABLE_COLUMNS.messages` 增加上述 8 欄
+3. 備份庫（PostgreSQL）以既有 `local_migrations/` 機制新增 migration：建立 3 張新表 ＋ 為 `messages` 加 8 欄（冪等／可重跑）
+4. 驗收：mirror 後 **PG 筆數 = D1 筆數**，且新欄位有實際值（例如 `kind='interactive_form'` 的信件）
+
+### 7.2 🟡 缺口二：單次連線抖動就失敗
+
+| 現象 | `Connection terminated due to connection timeout`（PostgreSQL）於 verify（10-21）與 agent tick（10-22）各出現一次 |
+|---|---|
+| 修正（D17-2） | agent 的 sync tick 與 `verify-r2` 對 **PG／D1 的連線錯誤**（`Connection terminated`／`ECONNRESET`／`ETIMEDOUT`／`timeout`）做**重試 3 次、退避 1s／2s／4s**；全數失敗才算該次失敗（**不得無限重試** ✅）|
+
+### 7.3 🟡 缺口三：告警沒有去抖
+
+| 現象 | 單次 verify 失敗即寄告警（本次即為單次抖動 ⚠️）|
+|---|---|
+| 修正（D17-3） | watchdog 改為**連續 2 次失敗才寄信**（連續次數記錄於狀態檔）；恢復正常時可寄一次「已恢復」通知（選配 ✅）|
+
+### 7.4 不在本次範圍
+
+- ❌ 不改 D1 既有資料、不改 migration `0008`、不部署 production
+- ❌ 不改 `docs/16`、`docs/18`（由 owner／助手維護）
