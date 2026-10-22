@@ -362,13 +362,22 @@
             pnpm --filter @atwhomail/api exec wrangler d1 migrations apply mail-d1 --remote
             ```
             ⚠️ 部署順序：**migration 先於 API**（`/api/forms/*` 需要新表；`/api/mail/send` 會寫新欄位）。
-      - [ ] 部署 API 與前端（前端需在 `web/` 目錄 build；RJSF 會讓 bundle 增至約 682 kB／gzip 216 kB）。
+      - [ ] 部署 API 與前端（前端需在 `web/` 目錄 build；**D18-2** 後首屏 `index-*.js`
+            約 305 kB／gzip 93 kB，RJSF 另為 lazy chunk `FormRenderer-*.js` 約 378 kB／gzip 122 kB，
+            僅開啟互動式表單時載入）。
       - [ ] **本地直送驗收**：以內部地址互寄 → 收件人 `origin=internal`、`kind=normal`、
             `delivery_scope=internal`，且 **Workers Email Sending 用量不增加**（未繞 SMTP）。
       - [ ] **外部信仍走 EMAIL.send**：寄到外部地址 → `delivery_scope=external`，用量正常增加。
       - [ ] **互動式表單驗收**：`/api/forms/send` 寄給內部地址 → 收件人可渲染並送出；
             `GET /api/forms/:id` 對非收件人／已撤回／逾期一律 404；寄件人可查看回覆與撤回。
             ⚠️ 互動式表單路徑**不得**出現 EMAIL Sending 用量（設計上物理不可能）。
+      - [ ] **D18 驗收（owner 填自己地址＋RJSF lazy-load）**（2026-10-22 程式完成；docs/18 §15）：
+            ① owner 以管理員 JWT 開啟寄到**自己名下地址**的表單 → 可渲染並送出（200）；
+               對**訪客地址**的表單 → 404；rescue token（`x-admin-token`）→ GET／POST 皆 404。
+            ② 稽核 `form_viewed`／`form_submitted` 的 `detail.via` 為 `mailbox`／`owner`，
+               且不含主旨／schema／payload（N9）。
+            ③ 前端重新部署後，首屏 `index-*.js` 不含 RJSF；開啟互動式郵件時才載入
+               `FormRenderer-*.js`（載入期間顯示「表單載入中…」）。
       - [ ] **D16 驗收（刪除含表單的訪客／地址）**（2026-10-22 程式完成；對應 `docs/18` §14.1 **T56–T58**；
             **請用測試帳號／地址**，刪除不可復原）：
             ① `DELETE /api/users/:id` 對有（open ＋ submitted）表單實例的訪客 → `200`；
@@ -409,8 +418,8 @@
 | `PATCH /api/email-addresses/:id/status` | owner 或 rescue | 停用／啟用**訪客**地址（階段 3／D5；解 404 缺口）；**立即生效**且**連收信都停止**（階段 5／D8-4） |
 | `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9）。`/api/mail/send`：全內部 active 收件人→**本地直送**（不呼叫 EMAIL.send） |
 | `POST /api/forms/send` | owner 或 mailbox（from 需在 scope 內） | **互動式表單**：收件人全內部 active（否則 422 `FORM_RECIPIENT_NOT_INTERNAL`）、schema 白名單、每人一筆實例、**絕不呼叫 EMAIL.send** |
-| `GET /api/forms/:id` | 收件人本人（mailbox） | 表單 schema；四道鎖任一失敗→**404**（不洩漏存在性） |
-| `POST /api/forms/:id/responses` | 收件人本人 | 送出回覆（payload 依 schema 驗證；重複→409 `FORM_ALREADY_SUBMITTED`） |
+| `GET /api/forms/:id` | 收件人本人（mailbox 同地址 **或 owner JWT 且地址屬於自己**；D18-1；rescue／訪客地址→404） | 表單 schema；四道鎖任一失敗→**404**（不洩漏存在性）；稽核 `form_viewed` 含 `via` |
+| `POST /api/forms/:id/responses` | 收件人本人（同上；D18-1） | 送出回覆（payload 依 schema 驗證；重複→409 `FORM_ALREADY_SUBMITTED`）；稽核 `form_submitted` 含 `via`、不含 payload |
 | `GET /api/forms/:id/responses` | **僅寄件人** | 查看同批所有實例與回覆；他人→403 |
 | `POST /api/forms/:id/revoke` | **僅寄件人** | 撤回整批；撤回後收件人 GET 立即 404（前端降靜態） |
 | `/api/backup/changes`、`/api/backup/r2/*` | owner 或 rescue | 備份拉取（**含 password_hash → 僅維運**） |

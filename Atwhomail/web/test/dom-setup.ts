@@ -10,8 +10,16 @@
  *    `fetch`，任何忘記 mock 的測試會**立刻失敗**而不是靜默地對外連線。
  *    （測試檔的 `beforeEach` 在本檔之後執行 → 測試自己的 mock 會覆蓋這一層。）
  */
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { afterEach, beforeEach, vi } from "vitest";
+
+/**
+ * D18-2：`FormRenderer` 改為 `React.lazy` 後，`findBy*` 必須等待動態 import 完成。
+ * Testing Library 預設只等 1 秒；完整 `pnpm test`（workerd＋DOM 平行）滿載時，
+ * RJSF（約 378 kB）的首次 transform／載入可能超過 1 秒 → 放寬到 5 秒（仍遠低於
+ * vitest 的 15 秒 testTimeout）。
+ */
+configure({ asyncUtilTimeout: 5000 });
 
 afterEach(() => {
   cleanup();

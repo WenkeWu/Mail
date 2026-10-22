@@ -699,21 +699,24 @@ POST /api/forms/send                       Authorization: owner 或 mailbox
   //       403 ACCOUNT_SUSPENDED／403 SEND_NOT_ALLOWED／429 QUOTA_EXCEEDED／429 RATE_LIMITED
   // 稽核：form_sent（detail 只含 id／數量／欄位數／due_at，不含主旨／地址／schema）
 
-GET /api/forms/:id                         Authorization: 收件人本人（mailbox）
+GET /api/forms/:id                         Authorization: 收件人本人
 → 200 { "form": { "id": 7, "message_id": 11, "subject": "...", "status": "open",
                   "due_at": null, "title": "...", "description": "...", "schema": { ... } } }
   // 四道鎖：① messages.kind=interactive_form ② 實例存在＋status='open'＋未過期
-  //          ③ 登入者 address_id == recipient_address_id ④ origin 與 delivery_scope 皆 internal
-  // ⚠️ 任一失敗一律 **404 FORM_NOT_FOUND**（不洩漏存在性）；owner session 亦 404（fail closed）
-  // 稽核：form_viewed
+  //          ③ 收件人本人：mailbox session 且 address_id == recipient_address_id，
+  //             **或** owner JWT session 且該地址的 user_id == scope.userId（D18-1）
+  //          ④ origin 與 delivery_scope 皆 internal
+  // ⚠️ 任一失敗一律 **404 FORM_NOT_FOUND**（不洩漏存在性）
+  // ⚠️ rescue token（x-admin-token，via='rescue'）一律 404；owner 對訪客地址亦 404（不得跨使用者）
+  // 稽核：form_viewed（detail.via = mailbox／owner；不含信件內容，N9）
 
-POST /api/forms/:id/responses               Authorization: 收件人本人
+POST /api/forms/:id/responses               Authorization: 收件人本人（同上：mailbox／owner JWT）
 { "payload": { "answer": "..." } }
 → 200 { "ok": true, "instance_id": 7, "status": "submitted" }
   // payload 依 schema 驗證（未知欄位、型別、長度、required、format: date）
   // 409 FORM_ALREADY_SUBMITTED／409 FORM_CLOSED（已撤回）／409 FORM_EXPIRED
-  // 422 FORM_INVALID_PAYLOAD；404 FORM_NOT_FOUND（非收件人／不存在／非互動式）
-  // 每實例最多一筆（DB UNIQUE）；稽核：form_submitted（不含 payload）
+  // 422 FORM_INVALID_PAYLOAD；404 FORM_NOT_FOUND（非收件人／不存在／非互動式／rescue）
+  // 每實例最多一筆（DB UNIQUE）；稽核：form_submitted（detail.via = mailbox／owner；不含 payload，N9）
 
 GET /api/forms/:id/responses                Authorization: 僅寄件人
 → 200 { "form": { ... }, "instances": [ { "id", "recipient", "status", "due_at",
@@ -739,7 +742,9 @@ POST /api/forms/:id/revoke                  Authorization: 僅寄件人
 
 **前端**：`ReadingPane` 在 `kind=interactive_form` 且 `GET /api/forms/:id` 成功時以
 **RJSF**（`@rjsf/core` ＋ `@rjsf/validator-ajv8`，自訂 widgets）渲染；任何失敗 → 顯示靜態文字
-（不報錯、不洩漏）。`ComposeWindow` 提供「互動式表單」模式（收件人只允許 `@atwho.org`，
+（不報錯、不洩漏）。**D18-2**：RJSF 經 `FormRendererLazy`（`React.lazy` ＋ `Suspense`）動態載入，
+fallback 為「表單載入中…」；首屏 bundle 不含 RJSF（index 682→305 kB／gzip 216→93 kB）。
+`ComposeWindow` 提供「互動式表單」模式（收件人只允許 `@atwho.org`，
 送出打 `/api/forms/send`）。寄件備份的 ReadingPane 顯示「表單管理」：查看回覆、撤回整批。
 
 **轉寄降級**：對 `kind=interactive_form` 的信按「轉寄」時，只帶 `GET /api/mail/:id/text` 的

@@ -6,7 +6,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { FormSchema, MailDetail } from "../src/api/types";
-import { FormRenderer } from "../src/components/FormRenderer";
+// D18-2：一律經 lazy 入口（React.lazy ＋ Suspense），動態載入 RJSF
+import { FormRenderer } from "../src/components/FormRendererLazy";
 import { ReadingPane } from "../src/components/ReadingPane";
 import { apiError, installFetch } from "./dom-fetch";
 
@@ -68,12 +69,29 @@ function renderPane(d: MailDetail, bodyText = "STATIC FALLBACK") {
 }
 
 describe("FormRenderer（RJSF）", () => {
+  it("lazy 載入後表單可渲染並送出（D18-2）", async () => {
+    const submitted: Array<Record<string, unknown>> = [];
+    render(<FormRenderer schema={SCHEMA} onSubmit={(data) => submitted.push(data)} />);
+
+    // 動態 import 尚未完成時顯示 Suspense fallback；載入後才出現欄位。
+    // （本檔第一個渲染 RJSF 的案例，lazy 模組此時一定還沒載入。）
+    expect(screen.getByText("表單載入中…")).toBeTruthy();
+
+    const answer = (await screen.findByLabelText(/Answer/)) as HTMLInputElement;
+    expect(screen.getByText("Team survey")).toBeTruthy();
+    fireEvent.change(answer, { target: { value: "lazy ok" } });
+    fireEvent.click(screen.getByText("送出回覆"));
+
+    await waitFor(() => expect(submitted).toHaveLength(1));
+    expect(submitted[0]).toMatchObject({ answer: "lazy ok" });
+  });
+
   it("渲染欄位並以 formData 呼叫 onSubmit", async () => {
     const submitted: Array<Record<string, unknown>> = [];
     render(<FormRenderer schema={SCHEMA} onSubmit={(data) => submitted.push(data)} />);
 
-    expect(screen.getByText("Team survey")).toBeTruthy();
-    const answer = screen.getByLabelText(/Answer/) as HTMLInputElement;
+    expect(await screen.findByText("Team survey")).toBeTruthy();
+    const answer = (await screen.findByLabelText(/Answer/)) as HTMLInputElement;
     fireEvent.change(answer, { target: { value: "hello" } });
     fireEvent.click(screen.getByText("送出回覆"));
 
@@ -81,17 +99,18 @@ describe("FormRenderer（RJSF）", () => {
     expect(submitted[0]).toMatchObject({ answer: "hello" });
   });
 
-  it("title／description 消毒：script 標籤不會進入 DOM，只留純文字", () => {
+  it("title／description 消毒：script 標籤不會進入 DOM，只留純文字", async () => {
     const unsafe: FormSchema = {
       ...SCHEMA,
       title: "<script>alert(1)</script>Safe title",
       description: "<img src=x onerror=alert(1)>Safe description",
     };
     const { container } = render(<FormRenderer schema={unsafe} onSubmit={() => {}} />);
+    // 等待 lazy 元件載入後再檢查消毒結果
+    expect(await screen.findByText(/Safe title/)).toBeTruthy();
+    expect(screen.getByText(/Safe description/)).toBeTruthy();
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("img")).toBeNull();
-    expect(screen.getByText(/Safe title/)).toBeTruthy();
-    expect(screen.getByText(/Safe description/)).toBeTruthy();
   });
 });
 

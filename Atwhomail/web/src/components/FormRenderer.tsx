@@ -131,14 +131,14 @@ const WIDGETS = {
   TextareaWidget,
 };
 
-interface Props {
+export interface FormRendererProps {
   schema: FormSchema;
   onSubmit: (data: Record<string, unknown>) => void;
   submitting?: boolean;
   submitLabel?: string;
 }
 
-export function FormRenderer({ schema, onSubmit, submitting = false, submitLabel = "送出回覆" }: Props) {
+export function FormRenderer({ schema, onSubmit, submitting = false, submitLabel = "送出回覆" }: FormRendererProps) {
   // 縱深防禦：後端已消毒，前端再消毒一次；RJSF 只以文字渲染 title／description
   const safeSchema = useMemo(() => sanitizeSchemaForDisplay(schema) as RJSFSchema, [schema]);
 

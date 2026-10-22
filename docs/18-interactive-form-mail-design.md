@@ -1,6 +1,6 @@
 # 18 — 郵件種類與互動式表單運作模式（設計文件 v0.1）
 
-> 狀態：**P1／P2 已實作（2026-10-21；未部署、migration 0008 未套用）**；P3 尚未實作。
+> 狀態：**P1／P2 已實作（2026-10-21；未部署、migration 0008 未套用）**；**P3-1／P3-2（D18）已實作（2026-10-22；未部署）**；P3 其餘尚未實作。
 > 實作狀態、測試與已知限制見 §14。
 > 建立於 2026-10-15｜前置：`docs/16`（管理強化 D1–D15）、`docs/17`（備份還原）
 > 本文件只定義「要什麼、怎麼判定、怎麼防」；**不含實作**。
@@ -348,8 +348,8 @@ CREATE TABLE form_responses (
 | 2 | 表單回覆附件 | 依 §12 決策 P1／P2 不做（P3 再評估） |
 | 3 | 期限 UI／已讀狀態／統計／稽核頁 | P3 範圍 |
 | 4 | 寄件備份的「代表實例」 | `messages.form_instance_id` 指向該批第一筆實例，僅供寄件人管理 UI 找到同批 template；收件人四道鎖仍以 `form_instances` 為準 |
-| 5 | owner session 不能填表單 | 四道鎖③要求「登入者 address_id == recipient_address_id」；owner session 沒有單一 address_id → 一律 404（fail closed）。owner 需以該地址的 mailbox session 登入填寫 |
-| 6 | 前端 bundle 變大 | RJSF 讓 web bundle 約 682 kB（gzip 216 kB），Vite 有 chunk size 警告；不影響功能 |
+| 5 | ~~owner session 不能填表單~~ → ✅ **D18-1 已放寬（2026-10-22）** | 四道鎖③增加「owner JWT 且收件地址屬於自己」；rescue 與訪客地址仍 404。詳見 §15 |
+| 6 | ~~前端 bundle 變大~~ → ✅ **D18-2 已 lazy-load（2026-10-22）** | RJSF 改為動態載入：首屏 682→305 kB（gzip 216→93 kB），RJSF 另為 lazy chunk 378 kB。詳見 §15 |
 | 7 | 表單寄送非全批次交易 | 若在建立多個實例的中途發生 D1 錯誤，已建立的實例會保留（安全：無 instance 的 message 只會降為靜態）；寄件備份失敗不影響已投遞的收件人 |
 
 ---
@@ -373,8 +373,8 @@ CREATE TABLE form_responses (
 
 | # | 限制 | 建議 |
 |---|---|---|
-| 1 | owner 收到表單需以「該地址的 mailbox session」登入才能填（用管理員登入 → 404 fail-closed）| P3 放寬：owner 且地址屬於自己 → 允許 |
-| 2 | 前端 bundle 682 kB（gzip 216 kB），RJSF 為靜態 import | P3：`React.lazy()` 動態載入 `FormRenderer` |
+| 1 | ~~owner 收到表單需以「該地址的 mailbox session」登入才能填~~ → ✅ **D18-1 已放寬（2026-10-22）** | owner JWT 且地址屬於自己 → 允許；rescue／訪客地址仍 404 |
+| 2 | ~~前端 bundle 682 kB（gzip 216 kB），RJSF 為靜態 import~~ → ✅ **D18-2 已 lazy-load（2026-10-22）** | 首屏 305 kB（gzip 93 kB）；RJSF 為 lazy chunk（378 kB／gzip 122 kB） |
 | 3 | 無 `FORMS_ENABLED` feature flag | 回退＝重新部署上一版前端 |
 | 4 | 表單寄送非單一交易（中途失敗會留下已建立的實例；無實例的訊息只降為靜態，安全 ✅）| P3 改批次 |
 
@@ -403,6 +403,21 @@ CREATE TABLE form_responses (
 - 目標：**首屏 bundle 移除 RJSF（約 -380 kB）**，只有開啟互動式郵件時才載入
 - 必須記錄**改前／改後**的 `dist/assets/index-*.js` 大小（build 輸出）於本節
 - 測試：既有 web DOM 測試需改為等待 lazy 元件載入（`findBy*`）；新增 1 例「lazy 載入後表單可渲染並送出」
+
+### D18 完成紀錄（2026-10-22；未部署）
+
+| 項目 | 結果 |
+|---|---|
+| D18-1 實作 | `packages/api/src/index.ts`：鎖③改為「mailbox 同地址 **或** owner JWT 且收件地址屬於該 owner」；`via='rescue'` 一律 404；owner 對訪客地址仍 404。`GET /api/forms/:id`、`POST /api/forms/:id/responses` 皆適用（`GET responses`／`revoke` 仍僅寄件人，未變） |
+| D18-1 稽核 | `form_viewed`／`form_submitted` 的 `detail.via` 為 `mailbox`／`owner`；owner 路徑另記 `user_id` 與收件 `address_id`。**不含**主旨／schema／payload（N9） |
+| D18-1 測試 | T59（owner JWT 讀自己地址 → 200）／T60（owner 讀訪客地址 → 404；訪客本人 → 200）／T61（rescue GET＋POST → 404，未寫入回覆）／T62（owner 送出 → 200、重複 → 409、稽核 via=owner）。⚠️ 既有 **T42** 的「owner session → 404」子案例改以**訪客地址**驗證（原寫法假設 owner 一律不能填，已被 D18-1 取代）；其餘 T39–T58 零回歸 |
+| D18-2 實作 | 新增 `web/src/components/FormRendererLazy.tsx`（`React.lazy` ＋ `Suspense`，fallback「表單載入中…」）；`ReadingPane` 改走 lazy 入口；`FormRenderer.tsx` 僅保留實作與型別 |
+| D18-2 測試 | 既有 `formRenderer.dom.spec.tsx` 改以 `findBy*` 等待 lazy 元件；新增 1 例「lazy 載入後表單可渲染並送出」（含 fallback 斷言）。`web/test/dom-setup.ts` 的 `asyncUtilTimeout` 放寬至 5 秒（滿載時 RJSF 首次動態載入可能 >1 秒） |
+| canonical 三指令 | ✅ `pnpm test`：workerd **25 files／305 tests** ＋ web DOM **5 files／29 tests** 全綠；`pnpm lint`（typecheck 7 packages）全過；`pnpm build` 全過（web 產物如下） |
+| **build 改前**（commit `6d26f77`） | `dist/assets/index-DT_P8xQk.js`：**682.17 kB／gzip 216.39 kB**（單一 chunk，含 RJSF） |
+| **build 改後**（D18-2） | 首屏 `dist/assets/index-B_p_rwwe.js`：**305.23 kB／gzip 93.44 kB**；lazy chunk `dist/assets/FormRenderer-BgAQNMm1.js`：**378.31 kB／gzip 122.23 kB**（僅開啟互動式表單時載入） |
+| 差異 | 首屏 **−376.94 kB（−55.3%）**、gzip **−122.95 kB（−56.8%）**；達成「移除 RJSF 約 380 kB」目標 |
+| 未部署 | ✅ 未部署、未跑遠端 migration、未對 production D1／R2 寫入 |
 
 ### 尚未做（P3 其餘）
 

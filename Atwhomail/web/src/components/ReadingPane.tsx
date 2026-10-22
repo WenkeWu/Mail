@@ -12,7 +12,8 @@ import {
   SUSPICIOUS_FORM_NOTE,
 } from "../lib/mailCategory";
 import { FormManagePanel } from "./FormManagePanel";
-import { FormRenderer } from "./FormRenderer";
+// D18-2：RJSF 以 React.lazy 動態載入（首屏不含 RJSF；fallback：表單載入中…）
+import { FormRenderer } from "./FormRendererLazy";
 import { HtmlBody } from "./HtmlBody";
 import { PlainTextBody } from "./PlainTextBody";
 import {

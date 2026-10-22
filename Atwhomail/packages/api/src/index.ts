@@ -2459,16 +2459,62 @@ async function isFormSender(db: D1Database, row: FormInstanceRow, scope: Scope):
   return owned !== null;
 }
 
+type FormRecipientVia = "mailbox" | "owner";
+
+/**
+ * 鎖③（D18-1）：兩種合格身分之一
+ *   1. mailbox session 且 `addressId == recipient_address_id`（原本行為）
+ *   2. owner **JWT** session 且該收件地址屬於此 owner（`email_addresses.user_id == scope.userId`）
+ *
+ * ⚠️ rescue（`via='rescue'`）一律不合格：機器憑證不得填表單。
+ * ⚠️ owner 對訪客地址的表單仍不合格（不得跨使用者）。
+ * 回傳 `via` 供稽核；不合格回 `null`（呼叫端一律轉 404，不洩漏原因）。
+ */
+async function formRecipientVia(
+  db: D1Database,
+  row: FormInstanceRow,
+  scope: Scope
+): Promise<FormRecipientVia | null> {
+  if (scope.kind === "mailbox") {
+    return row.recipient_address_id === scope.addressId ? "mailbox" : null;
+  }
+  if (scope.via !== "jwt") return null; // rescue token：fail closed
+  const owned = await db
+    .prepare("SELECT id FROM email_addresses WHERE id = ?1 AND user_id = ?2")
+    .bind(row.recipient_address_id, scope.userId)
+    .first();
+  return owned ? "owner" : null;
+}
+
+/**
+ * 鎖①③④＋信件未刪除（不含狀態）。
+ * POST responses 需要先辨識身分，才能對「已送出／已撤回／逾期」回精確 409。
+ */
+async function formRecipientClassifiedVia(
+  db: D1Database,
+  row: FormInstanceRow | null,
+  scope: Scope
+): Promise<FormRecipientVia | null> {
+  if (!row) return null;
+  if (row.kind !== "interactive_form") return null; // 鎖①
+  const via = await formRecipientVia(db, row, scope); // 鎖③
+  if (!via) return null;
+  if (row.origin !== "internal" || row.delivery_scope !== "internal") return null; // 鎖④
+  if (row.message_deleted_at !== null) return null;
+  return via;
+}
+
 /** 收件人四道鎖（不回傳原因；任何一項失敗一律 404，避免洩漏存在性） */
-function recipientLockOk(row: FormInstanceRow | null, scope: Scope): row is FormInstanceRow {
-  if (!row) return false;
-  if (scope.kind !== "mailbox") return false; // owner session 沒有單一 address_id → fail closed
-  if (row.kind !== "interactive_form") return false; // 鎖①
-  if (row.status !== "open" || formExpired(row)) return false; // 鎖②（存在、open、未過期）
-  if (row.recipient_address_id !== scope.addressId) return false; // 鎖③
-  if (row.origin !== "internal" || row.delivery_scope !== "internal") return false; // 鎖④
-  if (row.message_deleted_at !== null) return false;
-  return true;
+async function recipientLockOk(
+  db: D1Database,
+  row: FormInstanceRow | null,
+  scope: Scope
+): Promise<FormRecipientVia | null> {
+  if (!row) return null;
+  const via = await formRecipientClassifiedVia(db, row, scope);
+  if (!via) return null;
+  if (row.status !== "open" || formExpired(row)) return null; // 鎖②（存在、open、未過期）
+  return via;
 }
 
 const FORM_NOT_FOUND_MESSAGE = "form not found";
@@ -2781,9 +2827,10 @@ app.post("/api/forms/send", requireSession, async (c) => {
 /**
  * GET /api/forms/:id — 收件人取 schema（四道鎖）
  *
- * ① messages.kind = interactive_form｜② 實例存在＋open＋未過期｜③ 登入者 address_id =
- * recipient_address_id｜④ origin 與 delivery_scope 皆 internal。
- * ⚠️ 任何一項失敗一律 **404**（不洩漏表單是否存在；docs/18 §4）。
+ * ① messages.kind = interactive_form｜② 實例存在＋open＋未過期｜
+ * ③ 收件人本人（mailbox 同地址，或 owner JWT 對自己名下地址；D18-1）｜
+ * ④ origin 與 delivery_scope 皆 internal。
+ * ⚠️ 任何一項失敗（含 rescue token）一律 **404**（不洩漏表單是否存在；docs/18 §4）。
  */
 app.get("/api/forms/:id", requireSession, async (c) => {
   const scope = c.get("scope");
@@ -2791,7 +2838,8 @@ app.get("/api/forms/:id", requireSession, async (c) => {
   if (!Number.isInteger(id) || id <= 0) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
 
   const row = await loadFormInstance(c.env.DB, id);
-  if (scope.kind !== "mailbox" || !recipientLockOk(row, scope)) {
+  const via = await recipientLockOk(c.env.DB, row, scope);
+  if (!row || !via) {
     return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
   }
 
@@ -2800,10 +2848,11 @@ app.get("/api/forms/:id", requireSession, async (c) => {
 
   auditAsync(c, {
     event: "form_viewed",
-    addressId: scope.addressId,
+    userId: scope.kind === "owner" ? scope.userId : null,
+    addressId: scope.kind === "mailbox" ? scope.addressId : row.recipient_address_id,
     ip: clientIp(c),
     userAgent: c.req.header("user-agent") ?? null,
-    detail: { instance_id: row.id, template_id: row.template_id, message_id: row.message_id },
+    detail: { instance_id: row.id, template_id: row.template_id, message_id: row.message_id, via },
   });
 
   return c.json({
@@ -2833,15 +2882,8 @@ app.post("/api/forms/:id/responses", requireSession, async (c) => {
 
   const row = await loadFormInstance(c.env.DB, id);
   // 先做與 GET 相同的存在性／身分／分類檢查（狀態另判，才能回精確錯誤碼）
-  if (
-    !row ||
-    scope.kind !== "mailbox" ||
-    row.kind !== "interactive_form" ||
-    row.recipient_address_id !== scope.addressId ||
-    row.origin !== "internal" ||
-    row.delivery_scope !== "internal" ||
-    row.message_deleted_at !== null
-  ) {
+  const via = await formRecipientClassifiedVia(c.env.DB, row, scope);
+  if (!row || !via) {
     return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
   }
   if (row.status === "submitted") return err(c, "FORM_ALREADY_SUBMITTED", "此表單已送出", 409);
@@ -2864,8 +2906,9 @@ app.post("/api/forms/:id/responses", requireSession, async (c) => {
   const payloadResult = validateFormPayload(schema, body.payload);
   if (!payloadResult.ok) return err(c, "FORM_INVALID_PAYLOAD", payloadResult.message, 422);
 
+  // 回覆者一律是收件地址的擁有者；owner 路徑已在鎖③驗證 `user_id == scope.userId`
   const responder = await c.env.DB.prepare("SELECT user_id FROM email_addresses WHERE id = ?1")
-    .bind(scope.addressId)
+    .bind(row.recipient_address_id)
     .first<{ user_id: number }>();
   if (!responder) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
 
@@ -2900,11 +2943,11 @@ app.post("/api/forms/:id/responses", requireSession, async (c) => {
 
   auditAsync(c, {
     event: "form_submitted",
-    addressId: scope.addressId,
+    addressId: scope.kind === "mailbox" ? scope.addressId : row.recipient_address_id,
     userId: responder.user_id,
     ip: clientIp(c),
     userAgent: c.req.header("user-agent") ?? null,
-    detail: { instance_id: row.id, template_id: row.template_id, message_id: row.message_id },
+    detail: { instance_id: row.id, template_id: row.template_id, message_id: row.message_id, via },
   });
 
   return c.json({ ok: true, instance_id: row.id, status: "submitted" });

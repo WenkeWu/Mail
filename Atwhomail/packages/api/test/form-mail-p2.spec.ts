@@ -141,14 +141,27 @@ beforeEach(async () => {
   )
     .bind(await cachedHash(OWNER_PW), ts, ts)
     .run();
+  // D18：第二位使用者（訪客）擁有 visitor@，用於驗證 owner 不得跨使用者讀取表單
+  await E.DB.prepare(
+    "INSERT INTO users (id, username, display_name, password_hash, role, status, created_at, updated_at) VALUES (2, 'visitor', 'Visitor', ?, 'visitor', 'active', ?, ?)"
+  )
+    .bind(aliceHash, ts, ts)
+    .run();
   await E.DB.prepare(
     `INSERT INTO email_addresses (id, user_id, local_part, domain, email, password_hash, status, password_changed_at, created_at, updated_at)
      VALUES (1, 1, 'alice', 'atwho.org', 'alice@atwho.org', ?, 'active', ?, ?, ?),
             (2, 1, 'bob',   'atwho.org', 'bob@atwho.org',   ?, 'active', ?, ?, ?),
             (3, 1, 'carol', 'atwho.org', 'carol@atwho.org', ?, 'active', ?, ?, ?),
-            (4, 1, 'dave',  'atwho.org', 'dave@atwho.org',  ?, 'active', ?, ?, ?)`
+            (4, 1, 'dave',  'atwho.org', 'dave@atwho.org',  ?, 'active', ?, ?, ?),
+            (5, 2, 'visitor', 'atwho.org', 'visitor@atwho.org', ?, 'active', ?, ?, ?)`
   )
-    .bind(aliceHash, ts, ts, ts, bobHash, ts, ts, ts, aliceHash, ts, ts, ts, aliceHash, ts, ts, ts)
+    .bind(
+      aliceHash, ts, ts, ts,
+      bobHash, ts, ts, ts,
+      aliceHash, ts, ts, ts,
+      aliceHash, ts, ts, ts,
+      aliceHash, ts, ts, ts
+    )
     .run();
 });
 
@@ -218,11 +231,18 @@ describe("P2：送出互動式表單", () => {
       "SELECT COUNT(*) AS n FROM registration_audit WHERE event = 'form_viewed'"
     ).first<{ n: number }>();
     expect(audit?.n).toBe(1);
+    // D18-1：稽核需可辨識登入途徑（mailbox）；不得含信件內容
+    const viewed = await E.DB.prepare(
+      "SELECT detail FROM registration_audit WHERE event = 'form_viewed' ORDER BY id LIMIT 1"
+    ).first<{ detail: string }>();
+    expect(JSON.parse(viewed!.detail)).toMatchObject({ via: "mailbox" });
+    expect(viewed!.detail).not.toContain("Team survey");
   });
 
-  it("T42：非收件人／owner session／不存在 id → 一律 404（不洩漏存在性）", async () => {
+  it("T42：非收件人／owner 對訪客地址／不存在 id → 一律 404（不洩漏存在性）", async () => {
     const token = await ownerToken();
-    const { body } = await createForm(token);
+    // 寄到訪客（user 2）名下的地址：owner（user 1）不得跨使用者讀取 → 維持 404
+    const { body } = await createForm(token, { to: ["visitor@atwho.org"] });
     const id = body.instances![0]!.id;
     const dave = await mailboxToken("dave@atwho.org", ALICE_PW);
 
@@ -487,5 +507,106 @@ describe("P2：轉寄降級與寄件人管理", () => {
       expect(detail).not.toContain("Sensitive question");
       expect(detail).not.toContain("secret answer value");
     }
+  });
+});
+
+describe("P3-1／D18-1：owner 填寫自己地址的表單", () => {
+  it("T59：owner JWT 讀自己地址的表單 → 200；稽核 form_viewed via=owner", async () => {
+    const token = await ownerToken();
+    // bob@ 屬於 owner（user 1）
+    const { body } = await createForm(token);
+    const id = body.instances![0]!.id;
+
+    const res = await req(`/api/forms/${id}`, {}, token);
+    expect(res.status).toBe(200);
+    const view = await json<{ form: { title: string; schema: { properties: Record<string, unknown> } } }>(res);
+    expect(view.form.title).toBe("Team survey");
+    expect(view.form.schema.properties.answer).toBeTruthy();
+
+    const audit = await E.DB.prepare(
+      "SELECT user_id, address_id, detail FROM registration_audit WHERE event = 'form_viewed' ORDER BY id DESC LIMIT 1"
+    ).first<{ user_id: number; address_id: number; detail: string }>();
+    expect(audit).toMatchObject({ user_id: 1, address_id: 2 });
+    expect(JSON.parse(audit!.detail)).toMatchObject({ instance_id: id, via: "owner" });
+    // N9：稽核不含信件內容／schema
+    expect(audit!.detail).not.toContain("Team survey");
+    expect(audit!.detail).not.toContain("Answer");
+  });
+
+  it("T60：owner JWT 讀訪客地址的表單 → 404（不得跨使用者）", async () => {
+    const token = await ownerToken();
+    const { body } = await createForm(token, { to: ["visitor@atwho.org"] });
+    const id = body.instances![0]!.id;
+
+    const denied = await req(`/api/forms/${id}`, {}, token);
+    expect(denied.status).toBe(404);
+    expect((await json<{ error: { code: string } }>(denied)).error.code).toBe("FORM_NOT_FOUND");
+
+    // 對照：訪客本人的 mailbox session 仍可讀（404 是身分判定，不是表單失效）
+    const visitor = await mailboxToken("visitor@atwho.org", ALICE_PW);
+    expect((await req(`/api/forms/${id}`, {}, visitor)).status).toBe(200);
+  });
+
+  it("T61：rescue token → 一律 404（機器憑證不得填表單）", async () => {
+    const token = await ownerToken();
+    const { body } = await createForm(token);
+    const id = body.instances![0]!.id;
+    const rescue = { "x-admin-token": "test-admin-token" };
+
+    const get = await req(`/api/forms/${id}`, {}, undefined, rescue);
+    expect(get.status).toBe(404);
+    expect((await json<{ error: { code: string } }>(get)).error.code).toBe("FORM_NOT_FOUND");
+
+    const post = await req(
+      `/api/forms/${id}/responses`,
+      { method: "POST", body: JSON.stringify({ payload: { answer: "rescue" } }) },
+      undefined,
+      rescue
+    );
+    expect(post.status).toBe(404);
+
+    // 未建立回覆、實例仍為 open
+    expect(
+      await E.DB.prepare("SELECT COUNT(*) AS n FROM form_responses WHERE instance_id = ?1").bind(id).first<{ n: number }>()
+    ).toEqual({ n: 0 });
+    expect(
+      await E.DB.prepare("SELECT status FROM form_instances WHERE id = ?1").bind(id).first<{ status: string }>()
+    ).toEqual({ status: "open" });
+  });
+
+  it("T62：owner JWT 送出回覆 → 200；重複 → 409；稽核 form_submitted via=owner", async () => {
+    const token = await ownerToken();
+    const { body } = await createForm(token);
+    const id = body.instances![0]!.id;
+
+    const first = await req(
+      `/api/forms/${id}/responses`,
+      { method: "POST", body: JSON.stringify({ payload: { answer: "owner reply" } }) },
+      token
+    );
+    expect(first.status).toBe(200);
+    expect(await json(first)).toMatchObject({ ok: true, instance_id: id, status: "submitted" });
+
+    const second = await req(
+      `/api/forms/${id}/responses`,
+      { method: "POST", body: JSON.stringify({ payload: { answer: "again" } }) },
+      token
+    );
+    expect(second.status).toBe(409);
+    expect((await json<{ error: { code: string } }>(second)).error.code).toBe("FORM_ALREADY_SUBMITTED");
+
+    const stored = await E.DB.prepare(
+      "SELECT responder_user_id, payload_json FROM form_responses WHERE instance_id = ?1"
+    ).bind(id).first<{ responder_user_id: number; payload_json: string }>();
+    expect(stored).toMatchObject({ responder_user_id: 1 });
+    expect(JSON.parse(stored!.payload_json)).toEqual({ answer: "owner reply" });
+
+    const audit = await E.DB.prepare(
+      "SELECT user_id, address_id, detail FROM registration_audit WHERE event = 'form_submitted' ORDER BY id DESC LIMIT 1"
+    ).first<{ user_id: number; address_id: number; detail: string }>();
+    expect(audit).toMatchObject({ user_id: 1, address_id: 2 });
+    expect(JSON.parse(audit!.detail)).toMatchObject({ instance_id: id, via: "owner" });
+    // N9：稽核不得含回覆內容
+    expect(audit!.detail).not.toContain("owner reply");
   });
 });
