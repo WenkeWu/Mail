@@ -5,6 +5,12 @@ Designed to run every 10 minutes from BOTH a Windows scheduled task and a Hermes
 The two schedulers are safe to run together because alert emails are throttled via a shared
 state file (a persistent problem is re-mailed at most every THROTTLE_H hours).
 
+D17-3 (docs/17 §7.3): alerts are DEBOUNCED — a run with problems only sends mail after
+FAIL_THRESHOLD consecutive failing runs (default 2). The consecutive count lives in the state
+file, so it survives restarts. A run that is healthy after an alert sends one "recovered"
+notification and resets the state. Near-simultaneous runs from the two schedulers are counted
+once (DEDUPE_SEC).
+
 Alert channel: email through our own mail system (POST /api/mail/send, rescue token) so the
 message lands in a mailbox the operator actually reads (Gmail). stdout is kept as a local
 record. NOTE: if the API itself is down the email cannot go out - that case is reported on
@@ -30,6 +36,7 @@ Env overrides (for testing):
   WATCHDOG_LOG WATCHDOG_VLOG WATCHDOG_API WATCHDOG_API_SEND WATCHDOG_ENV_FILE
   WATCHDOG_ALERT_TO WATCHDOG_ALERT_FROM WATCHDOG_STATE WATCHDOG_STALE_MIN
   WATCHDOG_RESTART_LIMIT WATCHDOG_THROTTLE_H WATCHDOG_SKIP_PROC WATCHDOG_NO_EMAIL
+  WATCHDOG_FAIL_THRESHOLD WATCHDOG_DEDUPE_SEC
   WATCHDOG_DKIM_NAMES WATCHDOG_DKIM_STATE WATCHDOG_DKIM_MIN_BITS
 """
 from __future__ import annotations
@@ -57,6 +64,9 @@ STATE = os.environ.get("WATCHDOG_STATE", r"D:\Mail\mail-backup\logs\watchdog-ale
 STALE_MIN = int(os.environ.get("WATCHDOG_STALE_MIN", "12"))       # agent ticks every 5 min
 RESTART_LIMIT = int(os.environ.get("WATCHDOG_RESTART_LIMIT", "3"))
 THROTTLE_H = float(os.environ.get("WATCHDOG_THROTTLE_H", "6"))
+# D17-3：連續 N 次失敗才寄告警；同一輪的多個排程器（Windows＋Hermes）在 DEDUPE_SEC 內只算一次
+FAIL_THRESHOLD = max(1, int(os.environ.get("WATCHDOG_FAIL_THRESHOLD", "2")))
+DEDUPE_SEC = max(0, int(os.environ.get("WATCHDOG_DEDUPE_SEC", "60")))
 WINDOW_MIN = 60
 VERIFY_MAX_AGE_H = 26
 UA = {"User-Agent": "AtWhoMail-Watchdog/1.0"}   # Cloudflare blocks Python-urllib's default UA (1010)
@@ -372,25 +382,31 @@ def admin_token() -> str | None:
     return None
 
 
-def throttled(signature: str) -> str | None:
-    """Return a human note if the same alert was already mailed recently."""
+def load_state() -> dict:
+    """Load the shared alert state; tolerate missing/corrupt/old-format files."""
     try:
         with open(STATE, "r", encoding="utf-8") as fh:
-            prev = json.load(fh)
-        if prev.get("sig") == signature:
-            prev_at = parse_iso(prev.get("at", ""))
-            if prev_at is not None and age_min(prev_at) < THROTTLE_H * 60:
-                return prev_at.astimezone().strftime("%Y-%m-%d %H:%M")
+            st = json.load(fh)
+        return st if isinstance(st, dict) else {}
     except (OSError, ValueError):
-        pass
-    return None
+        return {}
 
 
-def mark_sent(signature: str) -> None:
+def save_state(st: dict) -> None:
+    """Atomic-ish write (tmp + replace) so a crash cannot leave half a JSON file."""
     try:
         os.makedirs(os.path.dirname(STATE), exist_ok=True)
-        with open(STATE, "w", encoding="utf-8") as fh:
-            json.dump({"sig": signature, "at": datetime.now(timezone.utc).isoformat()}, fh)
+        tmp = f"{STATE}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(st, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, STATE)
+    except OSError:
+        pass
+
+
+def clear_state() -> None:
+    try:
+        os.remove(STATE)
     except OSError:
         pass
 
@@ -425,44 +441,81 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             problems.append(f"watchdog 檢查 {fn.__name__} 時發生例外：{exc}")
 
+    now = datetime.now(timezone.utc)
+    st = load_state()
+
+    # 同一輪（Windows 排程＋Hermes cron 幾乎同時觸發）只算一次失敗
+    last_check = parse_iso(st.get("last_check_at", "")) if isinstance(st.get("last_check_at"), str) else None
+    duplicate = last_check is not None and (now - last_check).total_seconds() < DEDUPE_SEC
+
     if not problems:
-        # 健康 → 清掉節流狀態：確保「恢復後又發生」的新事件能立即告警，
-        # 而不是被上一次（可能只是換版瞬間的同簽章）記錄靜音 6 小時。
-        try:
-            os.remove(STATE)
-        except OSError:
-            pass
+        # 健康 → 若先前真的寄過告警，寄一次「已恢復」通知，然後清除狀態。
+        # 清除 state 也讓「恢復後又失敗」重新從 1 開始計數，不會被舊紀錄干擾。
+        alerted = bool(st.get("alerted"))
+        previous = st.get("problems") if isinstance(st.get("problems"), list) else []
+        clear_state()
+        if alerted:
+            local_now = datetime.now()
+            subject = f"[AtWhoMail 已恢復] 備份／服務恢復正常（{local_now.strftime('%m-%d %H:%M')}）"
+            lines = [f"AtWhoMail 已恢復正常（{local_now.strftime('%Y-%m-%d %H:%M')}）", ""]
+            if previous:
+                lines += ["上次異常項目："] + [f"• {p}" for p in previous[:10]]
+                lines.append("")
+            lines.append("此為恢復通知；往後若再次連續失敗達門檻，才會再寄送告警。")
+            if os.environ.get("WATCHDOG_NO_EMAIL"):
+                result = "（已停用寄信）"
+            else:
+                result = send_alert_email(subject, "\n".join(lines))
+            print(f"✅ {subject}")
+            print(result)
         return 0
 
-    now = datetime.now()
-    subject = f"[AtWhoMail 告警] {len(problems)} 項異常（{now.strftime('%m-%d %H:%M')}）"
-    lines = [f"AtWhoMail 備份／服務告警（{now.strftime('%Y-%m-%d %H:%M')}）", ""]
+    fail_count = int(st.get("fail_count") or 0)
+    if not duplicate:
+        fail_count += 1
+        st["last_check_at"] = now.isoformat()
+    st["fail_count"] = fail_count
+    st["problems"] = problems
+
+    local_now = datetime.now()
+    subject = f"[AtWhoMail 告警] {len(problems)} 項異常（{local_now.strftime('%m-%d %H:%M')}）"
+    lines = [f"AtWhoMail 備份／服務告警（{local_now.strftime('%Y-%m-%d %H:%M')}）", ""]
     lines += [f"• {p}" for p in problems]
     lines += ["", "排查：",
               '  Get-Content D:\\Mail\\mail-backup\\logs\\agent.log -Tail 20',
               '  Get-Content D:\\Mail\\mail-backup\\logs\\verify.log -Tail 5',
               '  Get-ScheduledTask -TaskName "AtWhoMail Backup *" | Format-Table TaskName, State']
-    body = "\n".join(lines)
+    lines += ["", f"（連續失敗 {fail_count} 次；告警門檻 {FAIL_THRESHOLD} 次）"]
 
     si = hashlib.sha1("\n".join(sorted(problems)).encode()).hexdigest()[:12]
-    note = throttled(si)
-    if note and not os.environ.get("WATCHDOG_NO_EMAIL"):
-        lines.append("")
-        lines.append(f"（同類告警已於 {note} 寄出，{THROTTLE_H:.0f} 小時內不重複寄送）")
-        body = "\n".join(lines)
+    if fail_count < FAIL_THRESHOLD:
+        # D17-3 去抖：第一次失敗先不寄，記錄在狀態檔；下一次仍失敗才寄
+        note = f"（連續失敗 {fail_count}/{FAIL_THRESHOLD} 次，未達告警門檻，本次不寄信）"
     else:
-        result = "（已停用寄信）" if os.environ.get("WATCHDOG_NO_EMAIL") else send_alert_email(subject, body)
-        lines.append("")
-        lines.append(result)
-        if "已寄出" in result:
-            mark_sent(si)
-        body = "\n".join(lines)
+        prev_at = parse_iso(st.get("at", "")) if isinstance(st.get("at"), str) else None
+        same_recent = (
+            st.get("sig") == si
+            and prev_at is not None
+            and (now - prev_at).total_seconds() < THROTTLE_H * 3600
+        )
+        if same_recent and not os.environ.get("WATCHDOG_NO_EMAIL"):
+            note = (f"（同類告警已於 {prev_at.astimezone().strftime('%Y-%m-%d %H:%M')} 寄出，"
+                    f"{THROTTLE_H:.0f} 小時內不重複寄送）")
+        else:
+            note = ("（已停用寄信）" if os.environ.get("WATCHDOG_NO_EMAIL")
+                    else send_alert_email(subject, "\n".join(lines)))
+            if "已寄出" in note:
+                st["alerted"] = True
+                st["sig"] = si
+                st["at"] = now.isoformat()
+
+    save_state(st)
 
     print(f"⚠️ {subject}")
     for p in problems:
         print(f"• {p}")
     print("")
-    print(lines[-1])
+    print(note)
     return 0
 
 

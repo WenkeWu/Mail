@@ -7,6 +7,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import pg from "pg";
 import type { Config } from "./config.ts";
+import { BACKUP_TABLES } from "./tables.ts";
 
 const { Pool } = pg;
 
@@ -67,7 +68,11 @@ export interface Health {
   counts: Record<string, number>;
 }
 
-const MIRROR_TABLES = ["users", "email_addresses", "email_aliases", "messages", "attachments"];
+/**
+ * 健康檢查的鏡像表清單（D17：改為與 BACKUP_TABLES 同步，避免再次漏表）
+ * 注意：`mirrorTables` 是「PG 已存在的表數」，遷移完成後應等於 BACKUP_TABLES.length。
+ */
+const MIRROR_TABLES = BACKUP_TABLES;
 
 export async function health(pool: Pool): Promise<Health> {
   const version = await pool.query<{ version: string }>("SHOW server_version");

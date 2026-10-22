@@ -6,12 +6,17 @@
  */
 import { loadConfig } from "./config.ts";
 import { createPool } from "./db.ts";
+import { withConnectionRetry } from "./retry.ts";
 import { verifyManifest } from "./sync-r2.ts";
 
 const cfg = loadConfig();
 const pool = createPool(cfg);
 try {
-  const r = await verifyManifest(pool);
+  // D17-2：PG 連線抖動重試 3 次（1s／2s／4s），全數失敗才讓這次 verify 失敗
+  const r = await withConnectionRetry(() => verifyManifest(pool), {
+    log: (msg, extra) =>
+      console.error(JSON.stringify({ ts: new Date().toISOString(), level: "warn", msg, ...extra })),
+  });
   console.log(
     JSON.stringify({
       ts: new Date().toISOString(),

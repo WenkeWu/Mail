@@ -12,6 +12,7 @@
  */
 import { loadConfig } from "./config.ts";
 import { createPool, ensureSchema, health } from "./db.ts";
+import { withConnectionRetry } from "./retry.ts";
 import { syncD1 } from "./sync-d1.ts";
 import { syncR2 } from "./sync-r2.ts";
 
@@ -44,11 +45,15 @@ async function main(): Promise<void> {
 
   const pool = createPool(cfg);
   try {
-    const applied = await ensureSchema(pool, cfg.migrationsDir);
+    const applied = await withConnectionRetry(() => ensureSchema(pool, cfg.migrationsDir), {
+      log: (msg, extra) => log("warn", msg, extra),
+    });
     if (applied.length > 0) log("info", "migrations applied", { applied });
     else log("info", "schema up to date");
 
-    const h = await health(pool);
+    const h = await withConnectionRetry(() => health(pool), {
+      log: (msg, extra) => log("warn", msg, extra),
+    });
     log("info", "db ok", {
       serverVersion: h.serverVersion,
       mirrorTables: h.mirrorTables,
@@ -71,14 +76,18 @@ async function main(): Promise<void> {
     while (running) {
       tick += 1;
       let syncLine: Record<string, unknown>;
-      // Phase 13：D1 metadata 增量備份（單向：只讀 API、只寫本機 PG）
+      // Phase 13：D1 metadata 增量備份（單向：只讀 API／D1、只寫本機 PG）
+      // D17-2：連線類錯誤重試 3 次（1s／2s／4s）；非連線錯誤直接失敗
       try {
-        const sync = await syncD1(pool, cfg, (msg, extra) => log("info", msg, extra ?? {}));
+        const sync = await withConnectionRetry(() => syncD1(pool, cfg, (msg, extra) => log("info", msg, extra ?? {})), {
+          log: (msg, extra) => log("warn", msg, extra),
+        });
         syncLine = {
           pages: sync.pages,
           created: sync.created,
           updated: sync.updated,
           deleted: sync.deleted,
+          directRows: sync.directRows,
         };
         watermarks = sync.cursors;
       } catch (e) {
@@ -90,7 +99,9 @@ async function main(): Promise<void> {
       let r2Line: Record<string, unknown>;
       if (Date.now() - lastR2At >= cfg.r2SyncIntervalMs) {
         try {
-          const r2 = await syncR2(pool, cfg, (msg, extra) => log("warn", msg, extra ?? {}));
+          const r2 = await withConnectionRetry(() => syncR2(pool, cfg, (msg, extra) => log("warn", msg, extra ?? {})), {
+            log: (msg, extra) => log("warn", msg, extra),
+          });
           r2Line = {
             listed: r2.listed,
             downloaded: r2.downloaded,
@@ -107,7 +118,10 @@ async function main(): Promise<void> {
         r2Line = { dueAt: new Date(lastR2At + cfg.r2SyncIntervalMs).toISOString() };
       }
 
-      const hh = await health(pool); // 同步後才統計 → 列數反映最新狀態
+      // 同步後才統計 → 列數反映最新狀態；健康檢查同樣只對連線類錯誤重試
+      const hh = await withConnectionRetry(() => health(pool), {
+        log: (msg, extra) => log("warn", msg, extra),
+      });
       log("info", `tick #${tick}`, {
         uptimeSec: Math.round(process.uptime()),
         mirrorTables: hh.mirrorTables,

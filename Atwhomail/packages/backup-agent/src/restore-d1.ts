@@ -17,8 +17,15 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, type Config } from "./config.ts";
 import { createPool, type Pool } from "./db.ts";
-import { BACKUP_TABLES, TABLE_COLUMNS, toD1Row } from "./tables.ts";
-import { buildInsertStatement, buildUpsertStatement, chunk, type SqlValue } from "./sql-build.ts";
+import {
+  API_BACKUP_TABLES,
+  BACKUP_TABLES,
+  DIRECT_TABLES,
+  TABLE_COLUMNS,
+  cursorColumnFor,
+  toD1Row,
+} from "./tables.ts";
+import { buildInsertStatement, buildUpsertStatement, chunk, sqlLiteral, type SqlValue } from "./sql-build.ts";
 import { d1Count, d1Query } from "./cf-api.ts";
 
 const args = process.argv.slice(2);
@@ -42,6 +49,31 @@ function resolveTarget(cfg: Config): { id: string; isProd: boolean; label: strin
   return { id: t, isProd: cfg.d1ProdId === t, label: t === cfg.d1ProdId ? "prod" : "custom" };
 }
 
+/**
+ * 直讀 D1 表（備份 API 未涵蓋的表單／稽核表）→ 全量列。
+ * 以 id 做 keyset 分頁，避免一次拉回過大結果。
+ */
+async function snapshotDirectTable(cfg: Config, table: string): Promise<Array<Record<string, SqlValue>>> {
+  if (!cfg.cfAccountId || !cfg.cfApiToken || !cfg.d1ProdId) {
+    throw new Error(`快照 ${table} 需要 CF_ACCOUNT_ID／CF_API_TOKEN／D1_PROD_ID`);
+  }
+  const cols = TABLE_COLUMNS[table]!;
+  const all: Array<Record<string, SqlValue>> = [];
+  let lastId = 0;
+  for (let page = 0; page < 10_000; page += 1) {
+    const sql = `SELECT * FROM ${table} WHERE id > ${sqlLiteral(lastId)} ORDER BY id ASC LIMIT 501`;
+    const rows = ((await d1Query(cfg, cfg.d1ProdId, sql)) ?? []) as Array<Record<string, unknown>>;
+    const more = rows.length > 500;
+    const pageRows = more ? rows.slice(0, 500) : rows;
+    for (const row of pageRows) {
+      all.push(Object.fromEntries(cols.map((c) => [c, (row[c] ?? null) as SqlValue])) as Record<string, SqlValue>);
+      lastId = Number(row.id);
+    }
+    if (!more) break;
+  }
+  return all;
+}
+
 /** 事前快照：把當前 production D1 全量 dump 成 SQL（可回滾） */
 async function snapshotProduction(cfg: Config): Promise<string> {
   if (!cfg.adminToken) throw new Error("ADMIN_TOKEN 未設定：快照需要備份 API");
@@ -54,7 +86,7 @@ async function snapshotProduction(cfg: Config): Promise<string> {
     "",
   ];
   let totalRows = 0;
-  for (const table of BACKUP_TABLES) {
+  for (const table of API_BACKUP_TABLES) {
     const cols = TABLE_COLUMNS[table]!;
     let cursor = "0_0";
     let more = true;
@@ -62,7 +94,7 @@ async function snapshotProduction(cfg: Config): Promise<string> {
     while (more) {
       const url = new URL(`${cfg.apiUrl}/api/backup/changes`);
       url.searchParams.set("limit", "500");
-      for (const t of BACKUP_TABLES) url.searchParams.set(`c_${t}`, t === table ? cursor : "0_0");
+      for (const t of API_BACKUP_TABLES) url.searchParams.set(`c_${t}`, t === table ? cursor : "0_0");
       const res = await fetch(url, { headers: { "x-admin-token": cfg.adminToken } });
       if (!res.ok) throw new Error(`快照拉取失敗 HTTP ${res.status}`);
       const body = (await res.json()) as {
@@ -83,6 +115,16 @@ async function snapshotProduction(cfg: Config): Promise<string> {
     totalRows += all.length;
     log("snapshot table", { table, rows: all.length });
   }
+
+  // 備份 API 未涵蓋的表：以 D1 REST 唯讀直查（D17）
+  for (const table of DIRECT_TABLES) {
+    const cols = TABLE_COLUMNS[table]!;
+    const all = await snapshotDirectTable(cfg, table);
+    for (const part of chunk(all, 100)) lines.push(buildInsertStatement(table, cols, part) + ";");
+    totalRows += all.length;
+    log("snapshot table (direct D1)", { table, rows: all.length });
+  }
+
   writeFileSync(file, lines.join("\n") + "\n", "utf8");
   log("snapshot written", { file, rows: totalRows });
   return file;
@@ -97,8 +139,10 @@ async function readMirror(pool: Pool, table: string): Promise<Array<Record<strin
 async function resetWatermarks(pool: Pool): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const table of BACKUP_TABLES) {
+    const tsColumn = cursorColumnFor(table);
+    // keyset 游標必須是「同一列」的 (時間, id)；分開取 MAX 會在同時刻多列時跳過資料
     const { rows } = await pool.query<{ ts: string | null; id: string | null }>(
-      `SELECT MAX(updated_at) AS ts, MAX(id) AS id FROM ${table}`
+      `SELECT ${tsColumn} AS ts, id FROM ${table} ORDER BY ${tsColumn} DESC, id DESC LIMIT 1`
     );
     const ts = rows[0]?.ts ? Number(rows[0].ts) : 0;
     const id = rows[0]?.id ? Number(rows[0].id) : 0;
