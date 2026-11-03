@@ -96,3 +96,31 @@ app.delete("/api/mail/:id", requireSession, async (c) => {
 - T76 清空需二次確認；取消則不呼叫 API
 - T77 ReadingPane 單封「還原」→ 回 inbox
 - T78 ReadingPane 單封「永久刪除」→ 需確認；成功後關閉 ReadingPane 並更新清單
+
+---
+
+## 6. D19-4：每封信列加入 checkbox（方便選取）
+
+**動機**：目前只能用 Ctrl／Shift 點選 ✅，對一般使用者不夠直覺；owner 要求「每封信前面加 checkbox」✅。
+
+**規格**
+1. 每一列信件左側加 `<input type="checkbox">`
+   - `aria-label` 例：「選取信件：<主旨>」
+   - 點 checkbox **只切換選取**，`stopPropagation()` → **不得開啟信件**
+   - 勾選／取消勾選即時反映在「已選 N 封」與批次工具列（不需 Ctrl ✅）
+2. **Shift + 點 checkbox** → 範圍連選（以最近一次點擊為錨點 ✅）
+3. **清單表頭**加全選 checkbox
+   - 全部選取 → 勾選 ✅
+   - 部分選取 → **indeterminate（半選）** ✅
+   - 點擊 → 全選／取消全選（只作用於目前資料夾／目前載入的清單 ✅）
+4. 已選列的視覺樣式（背景高亮 ＋ 左側色條）需與未選列明顯區隔 ✅
+5. 鍵盤：列的 checkbox 可 Tab 聚焦、Space 切換 ✅
+6. 切換資料夾／地址 → 清空選取（既有行為 ✅，需保持）
+7. 手機／窄螢幕：checkbox 仍可見（不可因空間被隱藏 ✅）
+
+**測試 T79–T83**
+- T79 每列都有 checkbox；點擊切換選取且**不開啟信件**
+- T80 Shift＋點 checkbox → 範圍連選
+- T81 表頭全選 → 全部勾選；再點 → 全部取消
+- T82 部分選取時表頭為 indeterminate
+- T83 切換資料夾後選取清空、checkbox 全部未勾
