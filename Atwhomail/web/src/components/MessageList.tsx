@@ -17,6 +17,8 @@ interface Props {
   query: string;
   onLoadMore: () => void;
   onSelect: (id: number, event: MouseEvent<HTMLButtonElement>) => void;
+  /** 每列 checkbox：只切換選取（Shift＝範圍連選），不開信（docs/19 §6 D19-4） */
+  onToggleSelect: (id: number, event: { shiftKey: boolean }) => void;
   /** Ctrl／Cmd+A（清單聚焦時）→ 全選 */
   onSelectAll: () => void;
 }
@@ -32,6 +34,7 @@ export function MessageList({
   query,
   onLoadMore,
   onSelect,
+  onToggleSelect,
   onSelectAll,
 }: Props) {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -101,6 +104,7 @@ export function MessageList({
             selected={selectedIds.has(item.id)}
             showFolder={showFolderChip}
             onSelect={onSelect}
+            onToggleSelect={onToggleSelect}
           />
         ))}
       </ul>

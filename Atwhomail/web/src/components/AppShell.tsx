@@ -112,10 +112,13 @@ export function AppShell({
    * 複選（docs/19 §3）。`scopeKey` 一變（資料夾／地址／搜尋）即清空選取，
    * 避免把上一份清單的 id 帶到新清單做批次動作。
    */
-  const { selectedIds, select, selectAll, clear: clearSelection } = useMailSelection(
-    items,
-    `${listFolder}|${addressFilter ?? ""}|${query}`
-  );
+  const {
+    selectedIds,
+    select,
+    toggle: toggleSelection,
+    selectAll,
+    clear: clearSelection,
+  } = useMailSelection(items, `${listFolder}|${addressFilter ?? ""}|${query}`);
   const [batchBusy, setBatchBusy] = useState(false);
   const [emptyTrashBusy, setEmptyTrashBusy] = useState(false);
 
@@ -124,6 +127,25 @@ export function AppShell({
    * `GET /api/mail/counts` 尚未載入時，退回目前清單長度（至少不是 0）。
    */
   const trashCount = counts?.folders?.trash?.total ?? (listFolder === "trash" ? items.length : 0);
+
+  /**
+   * docs/19 D19-4：表頭「全選」checkbox。
+   * 只以**目前載入的清單**（`items`）計算，不跨資料夾、不含尚未載入的分頁。
+   * 全部已選 → checked；部分已選 → indeterminate（DOM 屬性以 ref 設定）。
+   */
+  const selectedInListCount = useMemo(
+    () => items.reduce((count, item) => (selectedIds.has(item.id) ? count + 1 : count), 0),
+    [items, selectedIds]
+  );
+  const allInListSelected = items.length > 0 && selectedInListCount === items.length;
+  const someInListSelected = selectedInListCount > 0;
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someInListSelected && !allInListSelected;
+    }
+  }, [someInListSelected, allInListSelected]);
 
   const showToast = useCallback((message: string, kind: "info" | "error" = "info") => {
     setToast({ message, kind });
@@ -384,6 +406,18 @@ export function AppShell({
     [select, selectMail]
   );
 
+  /**
+   * docs/19 D19-4：每列 checkbox。
+   * 一般點擊＝切換單封（不需要 Ctrl／Cmd）；Shift＋點＝範圍連選。
+   * ⚠️ 只改選取，**不得開信**（`toggleSelection` 永遠回傳 false，也不呼叫 selectMail）。
+   */
+  const handleCheckboxToggle = useCallback(
+    (id: number, event: { shiftKey: boolean }) => {
+      toggleSelection(id, { shiftKey: event.shiftKey });
+    },
+    [toggleSelection]
+  );
+
   const handleBatch = useCallback(
     async (action: MailBatchAction) => {
       const ids = [...selectedIds];
@@ -637,6 +671,20 @@ export function AppShell({
 
           <section className={`list-pane ${selectedId !== null ? "has-selection" : ""}`}>
             <div className="list-head">
+              {/* 表頭全選（docs/19 §6 D19-4）：全部已選／部分已選（indeterminate）／未選 */}
+              <input
+                ref={selectAllRef}
+                type="checkbox"
+                className="list-select-all"
+                aria-label="全選信件"
+                title="全選目前清單的信件"
+                checked={allInListSelected}
+                disabled={items.length === 0}
+                onChange={() => {
+                  if (allInListSelected) clearSelection();
+                  else selectAll();
+                }}
+              />
               <h2>{listTitle}</h2>
               <button
                 type="button"
@@ -684,6 +732,7 @@ export function AppShell({
               query={query}
               onLoadMore={loadMore}
               onSelect={handleRowSelect}
+              onToggleSelect={handleCheckboxToggle}
               onSelectAll={selectAll}
             />
           </section>

@@ -364,17 +364,35 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   padding: 12px 14px 10px;
   border-bottom: 1px solid var(--border);
 }
 
 .list-head h2 {
+  flex: 1;
+  min-width: 0;
   margin: 0;
   font-size: 15px;
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 表頭全選 checkbox（docs/19 D19-4）；窄螢幕一樣保留、不可隱藏 */
+.list-select-all {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--purple);
+  cursor: pointer;
+}
+
+.list-select-all:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .search-bar {
@@ -462,36 +480,55 @@ select {
   padding: 0;
 }
 
+/* 每列 checkbox（docs/19 D19-4）；flex: none → 窄螢幕仍保留、不可隱藏 */
+.mail-row-item {
+  display: flex;
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+
+.mail-row-checkbox {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  /* 與 34px 頭像的垂直中心（列 padding 10 + 17）對齊 */
+  margin: 17px 0 0 12px;
+  accent-color: var(--purple);
+  cursor: pointer;
+}
+
+.mail-row-item:hover {
+  background: #f7f5fb;
+}
+
+.mail-row-item.unread {
+  background: var(--unread-bg);
+}
+
+.mail-row-item.unread .mail-sender,
+.mail-row-item.unread .mail-subject {
+  font-weight: 700;
+}
+
+/* 已選列：背景高亮＋左側色條；放在 hover／unread 之後以確保覆蓋 */
+.mail-row-item.selected {
+  background: var(--purple-soft);
+  box-shadow: inset 3px 0 0 var(--purple);
+}
+
 .mail-row {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr) auto;
   gap: 10px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   border: none;
-  border-bottom: 1px solid var(--border);
   background: none;
-  padding: 10px 14px;
+  padding: 10px 14px 10px 10px;
   cursor: pointer;
   align-items: start;
-}
-
-.mail-row:hover {
-  background: #f7f5fb;
-}
-
-.mail-row.unread {
-  background: var(--unread-bg);
-}
-
-.mail-row.unread .mail-sender,
-.mail-row.unread .mail-subject {
-  font-weight: 700;
-}
-
-.mail-row.selected {
-  background: var(--purple-soft);
-  box-shadow: inset 3px 0 0 var(--purple);
 }
 
 .mail-row-main {

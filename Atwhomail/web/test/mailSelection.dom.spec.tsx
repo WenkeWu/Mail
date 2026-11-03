@@ -80,6 +80,7 @@ function Harness({
         onSelect={(id, event) => {
           if (select(id, event)) setOpened(id);
         }}
+        onToggleSelect={() => {}}
         onSelectAll={selectAll}
       />
     </div>

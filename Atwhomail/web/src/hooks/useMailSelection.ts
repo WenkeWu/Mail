@@ -73,10 +73,25 @@ export function useMailSelection(items: MailListItem[], scopeKey: string) {
     [items]
   );
 
+  /**
+   * 每列 checkbox 點擊（docs/19 §6 D19-4）：
+   * - Shift → 範圍連選（**沿用** `select` 的 range 邏輯，不另寫一套）
+   * - 一般點擊 → 切換單封（以 ctrl 分支表達，不需要真的按 Ctrl／Cmd）
+   *
+   * 永遠回傳 `false`：checkbox 只改選取、**不得開啟信件**。
+   */
+  const toggle = useCallback(
+    (id: number, mods: SelectionModifiers = {}): false => {
+      select(id, { shiftKey: mods.shiftKey, ctrlKey: !mods.shiftKey });
+      return false;
+    },
+    [select]
+  );
+
   const selectAll = useCallback(() => {
     setSelectedIds(new Set(items.map((i) => i.id)));
     anchorRef.current = items.length > 0 ? items[0]!.id : null;
   }, [items]);
 
-  return { selectedIds, select, selectAll, clear };
+  return { selectedIds, select, toggle, selectAll, clear };
 }

@@ -848,6 +848,35 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
 - 任一動作失敗 → 顯示錯誤訊息且**不清空畫面**（ReadingPane 與清單保留）。
 - 測試：`web/test/mailTrash.dom.spec.tsx`（T75–T78）。
 
+### 2.21 D19-4：每封信列 checkbox（2026-11-03）
+
+> 純前端（`web/src`），**無 API 變更**。目的：讓一般使用者不必知道 Ctrl／Shift 也能複選。
+
+**每列 checkbox（`MessageListItem`）**
+
+- 每一列左側新增 `<input type="checkbox">`，`aria-label="選取信件：<主旨>"`（無主旨時為 `(無主旨)`）。
+- 點擊 checkbox **只切換該封的選取**（`stopPropagation()`）→ **不得開啟信件**（不會呼叫 `GET /api/mail/:id`）。
+- **一般點擊即切換**（不需要 Ctrl／Cmd）；勾選／取消即時反映「已選 N 封」與批次工具列。
+- **Shift＋點 checkbox**：以最近一次點擊（列或 checkbox）為錨點做範圍連選；沿用
+  `useMailSelection` 的 `rangeSelection`，不另寫一套。
+- 鍵盤：checkbox 為原生控制項，可 Tab 聚焦、Space 切換。
+- 已選列視覺：背景 `--purple-soft` ＋ 左側 3px `--purple` 色條（加在整列 `<li>`，checkbox 一併涵蓋）。
+- 窄螢幕（≤960px）checkbox 仍顯示（`flex: none`，不得隱藏）。
+
+**表頭全選 checkbox**
+
+- 位於清單表頭 `.list-head`，`aria-label="全選信件"`。
+- 全部已選 → `checked`；部分已選 → `indeterminate`（以 ref 設定 DOM 屬性）；未選 → unchecked。
+- 點擊：全部已選時**取消全選**，否則**全選**；只作用於目前資料夾／目前已載入的清單（`items`）。
+- 清單為空或載入中（`items.length === 0`）→ 停用。
+
+**既有行為保持**
+
+- 切換資料夾／地址／搜尋 → 清空選取（`useMailSelection` 的 `scopeKey`，D19-2 既有邏輯）。
+- Ctrl／Cmd+A 全選、一般列點擊開信、Ctrl／Shift 列點擊等 D19-2 行為不變。
+
+- 測試：`web/test/mailCheckbox.dom.spec.tsx`（T79–T83）。
+
 ## 3. 通用原則
 
 | 原則 | 說明 |

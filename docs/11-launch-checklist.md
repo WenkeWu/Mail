@@ -402,7 +402,7 @@
             部署前可抽驗：`SELECT COUNT(*) FROM messages WHERE folder='trash' AND deleted_at IS NOT NULL;` 應為 **0**。
       - [ ] **部署 API 與前端**（無 migration）。⚠️ **前端必須重新部署**：
             `MailList`／`AppShell` 新增複選與批次工具列，D19-3 另新增「清空垃圾桶」與 ReadingPane
-            單封「還原／永久刪除」；只部署 API 會看不到新功能。
+            單封「還原／永久刪除」，D19-4 再新增每列 checkbox 與表頭全選；只部署 API 會看不到新功能。
       - [ ] **D19-1 驗收（刪除語意）**：
             ① 在收件匣刪一封信 → 垃圾桶**看得到**、可讀取；DB 斷言 `folder='trash' AND deleted_at IS NULL`。
             ② 「還原」→ 回收件匣；非垃圾桶的信呼叫 restore → `400 NOT_IN_TRASH`。
@@ -422,6 +422,15 @@
                「永久刪除」→ 二次確認後 `?mode=hard` 並關閉。
             ④ 所有動作完成後左側資料夾計數同步更新；失敗顯示錯誤且**不清空畫面**。
             ⑤ T75–T78 通過（`web/test/mailTrash.dom.spec.tsx`）。
+      - [ ] **D19-4 驗收（每列 checkbox，2026-11-03）**：
+            ① 每列左側有 checkbox（`aria-label="選取信件：<主旨>"`）；點擊只切換選取、
+               **不開信**（不得呼叫 `GET /api/mail/:id`），不需按 Ctrl。
+            ② Shift＋點 checkbox → 範圍連選（錨點＝最近一次點擊）。
+            ③ 表頭「全選信件」：全部勾選 → 再點全部取消；部分選取 → **indeterminate**；
+               只作用於目前資料夾目前已載入的清單。
+            ④ 已選列有背景高亮＋左側色條；checkbox 可 Tab 聚焦、Space 切換；窄螢幕仍可見。
+            ⑤ 切換資料夾／地址後選取清空、checkbox 全部未勾。
+            ⑥ T79–T83 通過（`web/test/mailCheckbox.dom.spec.tsx`）。
       - [ ] **N9 抽查**：`registration_audit` 的 `mail_purged`／`mail_restored`／`trash_emptied`／
             `mail_batch` detail **不得**含主旨、寄件者、收件者或內文。
       - [ ] **回退**：API 刪除語意回到舊行為並不好（舊行為是 bug）；若需回退前端，重新部署上一版即可，
