@@ -74,3 +74,25 @@ app.delete("/api/mail/:id", requireSession, async (c) => {
 
 - 拖放移動、標籤／規則、無限捲動
 - 垃圾桶「自動清理 N 天」機制
+
+---
+
+## 5. D19-3（補做）：UI 缺少「清空垃圾桶」與單封操作按鈕
+
+**問題**：API 已有 `POST /api/mail/trash/empty`、`POST /api/mail/:id/restore`、`DELETE /api/mail/:id?mode=hard`，
+但前端只有「複選工具列」的批次動作，**沒有**
+1. 垃圾桶的「**清空垃圾桶**」按鈕
+2. ReadingPane 內單封的「還原」「永久刪除」按鈕
+
+**規格**
+1. 垃圾桶檢視（`folder='trash'`）工具列新增「清空垃圾桶」：二次確認（顯示「將永久刪除 N 封，含附件與原始檔，無法復原」）→ 呼叫 `POST /api/mail/trash/empty` → 顯示 `{count, r2_objects}` → 重新載入清單與計數
+2. ReadingPane：
+   - 非垃圾桶資料夾 → 「刪除」（軟刪除 → 垃圾桶）
+   - 垃圾桶內 → 「還原」＋「永久刪除」（二次確認）
+3. 所有動作完成後同步更新左側資料夾計數
+
+**測試 T75–T78**
+- T75 垃圾桶顯示「清空垃圾桶」按鈕；非垃圾桶不顯示
+- T76 清空需二次確認；取消則不呼叫 API
+- T77 ReadingPane 單封「還原」→ 回 inbox
+- T78 ReadingPane 單封「永久刪除」→ 需確認；成功後關閉 ReadingPane 並更新清單
