@@ -41,7 +41,10 @@
 | Mail | PATCH | `/api/mail/:id/read` | 標記已讀/未讀 |
 | Mail | PATCH | `/api/mail/:id/archive` | 封存 |
 | Mail | PATCH | `/api/mail/:id/folder` | 移動 folder（trash/spam…） |
-| Mail | DELETE | `/api/mail/:id` | Soft delete → trash |
+| Mail | DELETE | `/api/mail/:id` | **軟刪除**→ trash（可還原；`?mode=hard` 永久刪除，docs/19 D19-1） |
+| Mail | POST | `/api/mail/:id/restore` | **從垃圾桶還原**→ inbox（docs/19 D19-1） |
+| Mail | POST | `/api/mail/trash/empty` | **清空自己的垃圾桶**（永久刪除；上限 500 封，docs/19 D19-1） |
+| Mail | POST | `/api/mail/batch` | **批次動作** trash／restore／read／purge（上限 200 id，docs/19 D19-2） |
 | Mail | POST | `/api/mail/send` | 寄信（全內部收件人→本地直送，docs/18 P1） |
 | Form | POST | `/api/forms/send` | **建立並本地投遞互動式表單**（docs/18 P2；絕不呼叫 EMAIL.send） |
 | Form | GET | `/api/forms/:id` | **收件人取表單 schema**（四道鎖；失敗一律 404） |
@@ -175,7 +178,9 @@ GET /api/mail/:id
 PATCH /api/mail/:id/read      body: { "read": true }   → 200
 PATCH /api/mail/:id/archive                         → 200（folder: inbox→archive）
 PATCH /api/mail/:id/folder    body: { "folder": "trash" } → 200
-DELETE /api/mail/:id                                 → 204（soft delete）
+DELETE /api/mail/:id                                 → 204（**軟刪除**：只設 folder='trash'；deleted_at 保持 NULL）
+  // ⚠️ D19-1 語意：folder='trash' ＝ 可還原；deleted_at IS NOT NULL ＝ 永久刪除（全站隱藏）。
+  //    永久刪除／還原／清空垃圾桶見 §2.19。
 
 GET /api/mail/:id/text
 → 200 { "id": 9001, "text": "完整純文字內文" }        // 無純文字內文 → text: null
@@ -749,6 +754,74 @@ fallback 為「表單載入中…」；首屏 bundle 不含 RJSF（index 682→3
 
 **轉寄降級**：對 `kind=interactive_form` 的信按「轉寄」時，只帶 `GET /api/mail/:id/text` 的
 **靜態文字版**；不複製 `form_instance_id`、不建立新實例（既有 `DraftMode="forward"` 流程）。
+
+### 2.19 D19：刪除語意修正與複選批次（2026-11-03）
+
+> 起因（docs/19 §1）：`DELETE /api/mail/:id` 曾同時設定 `folder='trash'` 與 `deleted_at=now`；
+> 但全站 28 處查詢都帶 `deleted_at IS NULL` → 被「刪除」的信**同時是 trash 又同時被隱藏**，
+> 任何資料夾都看不到。現已把 33 筆歷史資料的 `deleted_at` 設回 NULL，且**修正程式**。
+
+**刪除語意（單一定義，全站適用）**
+
+| 狀態 | 條件 | 行為 |
+|---|---|---|
+| **軟刪除（可還原）** | `folder='trash'` 且 `deleted_at IS NULL` | 垃圾桶可見、可讀信、可 restore；所有列表／詳情查詢照常 |
+| **永久刪除（全站隱藏）** | `deleted_at IS NOT NULL` | 所有 `/api/mail/*` 查詢一律看不到（`deleted_at IS NULL`）；只有地址硬刪除流程會用到，不再由信件刪除端點設定 |
+
+> ⚠️ `DELETE /api/mail/:id`（軟刪除）**不得**設定 `deleted_at`。`deleted_at` 一旦寫入，
+> 該封信就從垃圾桶、搜尋、計數與詳情全部消失（且無還原端點）。
+
+```http
+DELETE /api/mail/:id                       → 204
+  // 軟刪除：只設 folder='trash'、updated_at=now；deleted_at 保持 NULL。
+
+DELETE /api/mail/:id?mode=hard             → 200 { "ok": true, "id": 1,
+                                                    "messages": 1, "attachments": 2, "r2_objects": 4 }
+  // 永久刪除（不可復原）。順序固定：
+  //   ① 刪 R2：raw_r2_key、html_r2_key、attachments.r2_key（空值略過）
+  //   ② 刪 attachments 列  ③ 刪 messages 列
+  // ⚠️ R2 刪除失敗 → 500 DELETE_FAILED，且 **D1 完全不變**（與地址刪除的 best-effort 不同）
+  // 權限同其他信件端點：不存在／越權 → 404 MAIL_NOT_FOUND
+  // 稽核：mail_purged（detail 只有 { id, r2_objects }，不含主旨／寄件者／內文，N9）
+
+POST /api/mail/:id/restore                 → 200 { "ok": true, "id": 1, "folder": "inbox" }
+  // 僅 folder='trash' 可還原；其他資料夾 → 400 NOT_IN_TRASH
+  // 越權／不存在 → 404 MAIL_NOT_FOUND；稽核：mail_restored（detail 只有 { id }）
+
+POST /api/mail/trash/empty                 → 200 { "count": 12, "r2_objects": 15 }
+  // 對 session scope 內所有 folder='trash' AND deleted_at IS NULL 執行 hard delete（同上順序）
+  // 一次上限 500 封；超過 → 400 TRASH_TOO_LARGE（請分批處理）。空垃圾桶 → { count: 0, r2_objects: 0 }（不寫稽核）
+  // 稽核：trash_emptied（detail 只有 { count, r2_objects }，N9）
+```
+
+**批次動作（D19-2）**
+
+```http
+POST /api/mail/batch                       Authorization: owner 或 mailbox
+{ "action": "trash" | "restore" | "read" | "purge", "ids": [1, 2, 3] }
+→ 200 { "ok": true, "action": "trash", "count": 3 }
+
+  // action：
+  //   trash   → folder='trash'（軟刪除，不動 deleted_at）
+  //   restore → folder='inbox'（只對原本在 trash 的列生效）
+  //   read    → read_at=now（已讀者保留原 read_at）
+  //   purge   → 走 D19-1 的 hard delete 邏輯（R2 → attachments → messages）
+  // ids：1–200 個正整數（重複會去重，count 以唯一 id 計）
+  // ⚠️ 每個 id 都必須通過 scopedMessage() 權限檢查；**任一不合格 → 404 MAIL_NOT_FOUND，整批不執行**
+  //    （先全部驗證，再執行；不會出現「前面幾封已改、後面才 404」的半套結果）
+  // 參數錯誤 → 400 INVALID_BODY／INVALID_ACTION／INVALID_IDS
+  // R2／D1 失敗 → 500 DELETE_FAILED（purge）
+  // 稽核：mail_batch（detail 只有 { action, count }，N9）
+```
+
+**前端（`web/src`）**
+
+- 選取狀態以 `Set<number>` 管理；點擊：`shiftKey` → 範圍連選、`ctrlKey`／`metaKey` → 切換單封、
+  一般點擊 → 單選並開信；清單聚焦時 `Ctrl/Cmd+A` → 全選。
+- 工具列顯示「已選 N 封」：垃圾桶內為「還原／永久刪除」，其他資料夾（含跨資料夾搜尋）為
+  「移至垃圾桶／標為已讀」；永久刪除需二次確認。
+- 切換資料夾／地址（或搜尋）→ 清空選取；列表為 `role="listbox"`、每列 `role="option"` 並帶
+  `aria-selected`，可鍵盤操作。
 
 ## 3. 通用原則
 

@@ -238,7 +238,10 @@ describe("信件隔離與操作（08 §11 #37–44）", () => {
     const badFolder = await req("/api/mail/1/folder", { method: "PATCH", body: JSON.stringify({ folder: "sent" }) }, token);
     expect(badFolder.status).toBe(400);
     expect((await req("/api/mail/1", { method: "DELETE" }, token)).status).toBe(204);
-    expect((await req("/api/mail/1", {}, token)).status).toBe(404);
+    // D19-1：軟刪除只改 folder（deleted_at 保持 NULL）→ 信件仍在垃圾桶可見，不會從全站消失
+    const trashed = await req("/api/mail/1", {}, token);
+    expect(trashed.status).toBe(200);
+    expect((await json<{ folder: string }>(trashed)).folder).toBe("trash");
   });
 
   it("inbox 游標分頁（limit=1 → nextCursor）", async () => {

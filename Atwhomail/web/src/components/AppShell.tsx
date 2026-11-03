@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import {
   archiveMail,
+  batchMail,
   deleteMail,
   downloadAttachment,
   fetchMailHtml,
@@ -11,6 +12,7 @@ import {
   listAddresses,
   moveMail,
   setRead,
+  type MailBatchAction,
 } from "../api/endpoints";
 import type {
   AttachmentMeta,
@@ -24,6 +26,7 @@ import type {
 } from "../api/types";
 import { useCounts } from "../hooks/useCounts";
 import { useMailList } from "../hooks/useMailList";
+import { useMailSelection } from "../hooks/useMailSelection";
 import { displaySender, formatFullDate, parseAddress } from "../lib/format";
 import { showsAdminConsole, type LoginMode } from "../lib/hostMode";
 import { joinRecipients, quoteText, withPrefix } from "../lib/recipients";
@@ -33,6 +36,7 @@ import { ComposeWindow, type Draft, type DraftMode } from "./ComposeWindow";
 import { FolderSidebar, type AppPage } from "./FolderSidebar";
 import { Header } from "./Header";
 import { InviteManager } from "./InviteManager";
+import { MailSelectionToolbar } from "./MailSelectionToolbar";
 import { MessageList } from "./MessageList";
 import { ReadingPane } from "./ReadingPane";
 import { Toast } from "./Toast";
@@ -101,6 +105,15 @@ export function AppShell({
     refreshKey: listRefreshKey,
   });
   const counts = useCounts(countsRefreshKey);
+  /**
+   * 複選（docs/19 §3）。`scopeKey` 一變（資料夾／地址／搜尋）即清空選取，
+   * 避免把上一份清單的 id 帶到新清單做批次動作。
+   */
+  const { selectedIds, select, selectAll, clear: clearSelection } = useMailSelection(
+    items,
+    `${listFolder}|${addressFilter ?? ""}|${query}`
+  );
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const showToast = useCallback((message: string, kind: "info" | "error" = "info") => {
     setToast({ message, kind });
@@ -295,6 +308,55 @@ export function AppShell({
     },
     [detail, patchItem, showToast]
   );
+
+  // ── 複選／批次（docs/19 D19-2）──
+  /** 列表點擊：shift／ctrl 只改選取；一般點擊同時開信 */
+  const handleRowSelect = useCallback(
+    (id: number, event: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
+      const open = select(id, event);
+      if (open) void selectMail(id);
+    },
+    [select, selectMail]
+  );
+
+  const handleBatch = useCallback(
+    async (action: MailBatchAction) => {
+      const ids = [...selectedIds];
+      if (ids.length === 0) return;
+      setBatchBusy(true);
+      try {
+        await batchMail(action, ids);
+        if (action === "read") {
+          for (const id of ids) patchItem(id, { read: true });
+          showToast(`已將 ${ids.length} 封標為已讀`);
+        } else {
+          for (const id of ids) removeItem(id);
+          if (selectedId !== null && ids.includes(selectedId)) closeReading();
+          showToast(
+            action === "trash"
+              ? `已將 ${ids.length} 封移至垃圾桶`
+              : action === "restore"
+                ? `已還原 ${ids.length} 封`
+                : `已永久刪除 ${ids.length} 封`
+          );
+        }
+        setCountsRefreshKey((k) => k + 1);
+        clearSelection();
+      } catch (e) {
+        // 後端整批未執行（例如任一 id 越權 → 404）→ 保留選取讓使用者修正
+        showToast(e instanceof ApiError ? e.message : "批次操作失敗", "error");
+      } finally {
+        setBatchBusy(false);
+      }
+    },
+    [selectedIds, patchItem, removeItem, selectedId, closeReading, showToast, clearSelection]
+  );
+
+  const handleBatchPurge = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    if (!window.confirm(`永久刪除 ${selectedIds.size} 封信？此動作無法復原。`)) return;
+    void handleBatch("purge");
+  }, [selectedIds, handleBatch]);
 
   const handleDownload = useCallback(
     async (att: AttachmentMeta) => {
@@ -534,17 +596,28 @@ export function AppShell({
                 </button>
               </div>
             )}
+            <MailSelectionToolbar
+              count={selectedIds.size}
+              folder={listFolder}
+              busy={batchBusy}
+              onTrash={() => void handleBatch("trash")}
+              onRestore={() => void handleBatch("restore")}
+              onPurge={handleBatchPurge}
+              onMarkRead={() => void handleBatch("read")}
+              onClear={clearSelection}
+            />
             <MessageList
               items={items}
               loading={loading}
               loadingMore={loadingMore}
               error={error}
               nextCursor={nextCursor}
-              selectedId={selectedId}
+              selectedIds={selectedIds}
               showFolderChip={searchActive}
               query={query}
               onLoadMore={loadMore}
-              onSelect={(id) => void selectMail(id)}
+              onSelect={handleRowSelect}
+              onSelectAll={selectAll}
             />
           </section>
 

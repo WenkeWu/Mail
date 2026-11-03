@@ -397,6 +397,60 @@ select {
   font-size: 12.5px;
 }
 
+/* ───────────── 複選工具列（docs/19 D19-2）───────────── */
+.selection-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--purple-soft);
+}
+
+.selection-toolbar .selection-count {
+  margin-right: auto;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--purple-dark);
+}
+
+.selection-toolbar button {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.selection-toolbar button:hover:not(:disabled) {
+  border-color: var(--purple);
+  color: var(--purple);
+}
+
+.selection-toolbar button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.selection-toolbar button.danger {
+  color: var(--danger);
+  border-color: #f0c4c4;
+}
+
+.selection-toolbar button.link {
+  border: none;
+  background: none;
+  color: var(--muted);
+  text-decoration: underline;
+}
+
+.mail-listbox:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: -2px;
+}
+
 .message-list {
   flex: 1;
   overflow-y: auto;

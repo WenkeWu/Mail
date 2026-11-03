@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { KeyboardEvent, MouseEvent } from "react";
 import type { MailListItem } from "../api/types";
 import { MessageListItem } from "./MessageListItem";
 import { IconInbox, IconSearch } from "./icons";
@@ -9,12 +10,15 @@ interface Props {
   loadingMore: boolean;
   error: string | null;
   nextCursor: string | null;
-  selectedId: number | null;
+  /** 複選的 id（docs/19 §3） */
+  selectedIds: Set<number>;
   /** 搜尋模式（folder=all）→ 顯示資料夾標籤、空狀態文案不同 */
   showFolderChip: boolean;
   query: string;
   onLoadMore: () => void;
-  onSelect: (id: number) => void;
+  onSelect: (id: number, event: MouseEvent<HTMLButtonElement>) => void;
+  /** Ctrl／Cmd+A（清單聚焦時）→ 全選 */
+  onSelectAll: () => void;
 }
 
 export function MessageList({
@@ -23,11 +27,12 @@ export function MessageList({
   loadingMore,
   error,
   nextCursor,
-  selectedId,
+  selectedIds,
   showFolderChip,
   query,
   onLoadMore,
   onSelect,
+  onSelectAll,
 }: Props) {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
@@ -70,14 +75,30 @@ export function MessageList({
     );
   }
 
+  /** Ctrl／Cmd+A：只在焦點位於清單內時觸發（事件由 option／listbox 冒泡上來） */
+  const handleKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
+    if ((event.ctrlKey || event.metaKey) && (event.key === "a" || event.key === "A")) {
+      event.preventDefault();
+      onSelectAll();
+    }
+  };
+
   return (
     <div className="message-list">
-      <ul>
+      {/* listbox ＋ option：aria-multiselectable／aria-selected 供輔助技術讀取；tabIndex 讓清單可聚焦 */}
+      <ul
+        role="listbox"
+        aria-multiselectable="true"
+        aria-label="信件清單"
+        tabIndex={0}
+        className="mail-listbox"
+        onKeyDown={handleKeyDown}
+      >
         {items.map((item) => (
           <MessageListItem
             key={item.id}
             item={item}
-            selected={item.id === selectedId}
+            selected={selectedIds.has(item.id)}
             showFolder={showFolderChip}
             onSelect={onSelect}
           />

@@ -88,7 +88,41 @@ export const setRead = (id: number, read: boolean) =>
 export const archiveMail = (id: number) => request<{ id: number }>(`/api/mail/${id}/archive`, { method: "PATCH" });
 export const moveMail = (id: number, folder: string) =>
   request<{ id: number; folder: string }>(`/api/mail/${id}/folder`, { method: "PATCH", json: { folder } });
+
+/**
+ * **軟刪除**（移至垃圾桶；docs/19 D19-1）。
+ * 後端只設 `folder='trash'`，`deleted_at` 保持 NULL → 垃圾桶可見、可還原。
+ * ⚠️ 要永久刪除請用 `hardDeleteMail`。
+ */
 export const deleteMail = (id: number) => request<void>(`/api/mail/${id}`, { method: "DELETE" });
+
+/** **永久刪除**單封信（R2 物件＋附件列＋信件列；不可復原，docs/19 D19-1） */
+export const hardDeleteMail = (id: number) =>
+  request<{ ok: boolean; id: number; messages: number; attachments: number; r2_objects: number }>(
+    `/api/mail/${id}?mode=hard`,
+    { method: "DELETE" }
+  );
+
+/** 從垃圾桶還原到收件匣（僅 `folder='trash'`；docs/19 D19-1） */
+export const restoreMail = (id: number) =>
+  request<{ ok: boolean; id: number; folder: string }>(`/api/mail/${id}/restore`, { method: "POST" });
+
+/** 清空自己的垃圾桶（永久刪除；一次上限 500 封 — 超過 → 400 `TRASH_TOO_LARGE`） */
+export const emptyTrash = () =>
+  request<{ count: number; r2_objects: number }>("/api/mail/trash/empty", { method: "POST" });
+
+export type MailBatchAction = "trash" | "restore" | "read" | "purge";
+
+/**
+ * 批次動作（docs/19 D19-2）；ids 上限 200。
+ * ⚠️ 後端會逐一驗證 scope：**任一 id 不合格 → 404，整批不執行**。
+ * `purge` 走永久刪除邏輯（R2 → attachments → messages）。
+ */
+export const batchMail = (action: MailBatchAction, ids: number[]) =>
+  request<{ ok: boolean; action: MailBatchAction; count: number }>("/api/mail/batch", {
+    method: "POST",
+    json: { action, ids },
+  });
 
 // ── 寄信 / 附件 ──
 export const sendMail = (payload: SendPayload) =>

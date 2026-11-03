@@ -1,4 +1,5 @@
 import { memo } from "react";
+import type { MouseEvent } from "react";
 import type { MailListItem } from "../api/types";
 import { avatarHue, avatarText, displaySender, relativeTime } from "../lib/format";
 import { CATEGORY_LABEL, CATEGORY_TITLE, mailCategory } from "../lib/mailCategory";
@@ -10,7 +11,7 @@ interface Props {
   selected: boolean;
   /** folder=all（搜尋）時顯示資料夾標籤 */
   showFolder: boolean;
-  onSelect: (id: number) => void;
+  onSelect: (id: number, event: MouseEvent<HTMLButtonElement>) => void;
 }
 
 export const MessageListItem = memo(function MessageListItem({ item, selected, showFolder, onSelect }: Props) {
@@ -22,8 +23,11 @@ export const MessageListItem = memo(function MessageListItem({ item, selected, s
     <li>
       <button
         type="button"
+        // listbox 的 option：aria-selected 讓輔助技術知道複選狀態（docs/19 §3）
+        role="option"
+        aria-selected={selected}
         className={`mail-row ${unread ? "unread" : ""} ${selected ? "selected" : ""}`}
-        onClick={() => onSelect(item.id)}
+        onClick={(event) => onSelect(item.id, event)}
       >
         <span className="avatar" style={{ background: `hsl(${hue} 58% 46%)` }}>
           {avatarText(item.from)}

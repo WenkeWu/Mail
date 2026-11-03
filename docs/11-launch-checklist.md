@@ -395,6 +395,29 @@
             migration 0008 為純新增，可保留不用。⚠️ 本版**未實作** docs/18 §10 的 feature flag（見 §5-15）。
       - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
 
+- [ ] **16. 信箱刪除語意修正＋複選批次（docs/19 D19；2026-11-03 程式完成，未部署）**
+      - [ ] **資料前提（已完成，部署前確認）**：2026-11-03 已把 33 筆
+            `folder='trash' AND deleted_at IS NOT NULL` 的歷史資料 `deleted_at` 設回 NULL
+            （production 已一次性修復；本次**程式**修正後不會再產生這種列）。
+            部署前可抽驗：`SELECT COUNT(*) FROM messages WHERE folder='trash' AND deleted_at IS NOT NULL;` 應為 **0**。
+      - [ ] **部署 API 與前端**（無 migration）。⚠️ **前端必須重新部署**：
+            `MailList`／`AppShell` 新增複選與批次工具列；只部署 API 會看不到新功能。
+      - [ ] **D19-1 驗收（刪除語意）**：
+            ① 在收件匣刪一封信 → 垃圾桶**看得到**、可讀取；DB 斷言 `folder='trash' AND deleted_at IS NULL`。
+            ② 「還原」→ 回收件匣；非垃圾桶的信呼叫 restore → `400 NOT_IN_TRASH`。
+            ③ 「永久刪除」→ 信件列、附件列與 R2 物件消失；稽核 `mail_purged` 只有 `{id, r2_objects}`（N9）。
+            ④ 清空垃圾桶 → `{count, r2_objects}`；只清自己 scope；>500 封 → `400 TRASH_TOO_LARGE`。
+      - [ ] **D19-2 驗收（複選批次）**：
+            ① Ctrl／Cmd 點擊切換、Shift 點擊範圍連選、清單聚焦時 Ctrl/Cmd+A 全選。
+            ② 工具列「已選 N 封」依資料夾顯示：垃圾桶＝還原／永久刪除；其他＝移至垃圾桶／標為已讀。
+            ③ 切換資料夾／地址後選取歸零；列有 `aria-selected` 且可鍵盤操作。
+            ④ 批次含他人／不存在 id → **404 且整批未執行**（抽查未被搬移的信）；稽核 `mail_batch` 只有 `{action, count}`。
+      - [ ] **N9 抽查**：`registration_audit` 的 `mail_purged`／`mail_restored`／`trash_emptied`／
+            `mail_batch` detail **不得**含主旨、寄件者、收件者或內文。
+      - [ ] **回退**：API 刪除語意回到舊行為並不好（舊行為是 bug）；若需回退前端，重新部署上一版即可，
+            後端新端點（restore／hard／batch／empty）保留不影響舊前端。
+      - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -416,7 +439,7 @@
 | `GET /api/email-addresses?deleted=1` | owner 或 rescue | **已軟刪除**（垃圾桶）的地址清單（階段 7／D11-5）：`deleted_at`／`messages`，供網頁「已刪除的地址」區塊；未帶參數＝既有清單（僅未刪除的列） |
 | `DELETE /api/email-addresses/:id?mode=soft\|hard` | owner 或 rescue（**自身名下**） | address 刪除（階段 7／D11）：`soft`（預設，信件與 R2 保留）／`hard`（信件／附件／R2 一併清除＋**釋放名稱**）；一律寫稽核 `address_deleted`。**D11-5**：對**已軟刪除**的列 `hard` → `200`（`previously_deleted: true`）、`soft` → `404`（不重複標記、非 500）。**D16**：`hard` 先清 `form_responses`／`form_instances`（`form_templates` 保留）；`soft` 把該地址的 `open` 實例轉 `revoked`（其餘資料不動）|
 | `PATCH /api/email-addresses/:id/status` | owner 或 rescue | 停用／啟用**訪客**地址（階段 3／D5；解 404 缺口）；**立即生效**且**連收信都停止**（階段 5／D8-4） |
-| `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9）。`/api/mail/send`：全內部 active 收件人→**本地直送**（不呼叫 EMAIL.send） |
+| `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9）。`/api/mail/send`：全內部 active 收件人→**本地直送**（不呼叫 EMAIL.send）。**D19**：`DELETE /api/mail/:id` 為軟刪除（只設 `folder='trash'`，`deleted_at` 保持 NULL）；`?mode=hard`／`POST /api/mail/trash/empty` 永久刪除（R2→attachments→messages，R2 失敗→500 且 DB 不變）；`POST /api/mail/:id/restore` 還原；`POST /api/mail/batch` 批次 trash／restore／read／purge（任一 id 越權→404 整批不執行；上限 200） |
 | `POST /api/forms/send` | owner 或 mailbox（from 需在 scope 內） | **互動式表單**：收件人全內部 active（否則 422 `FORM_RECIPIENT_NOT_INTERNAL`）、schema 白名單、每人一筆實例、**絕不呼叫 EMAIL.send** |
 | `GET /api/forms/:id` | 收件人本人（mailbox 同地址 **或 owner JWT 且地址屬於自己**；D18-1；rescue／訪客地址→404） | 表單 schema；四道鎖任一失敗→**404**（不洩漏存在性）；稽核 `form_viewed` 含 `via` |
 | `POST /api/forms/:id/responses` | 收件人本人（同上；D18-1） | 送出回覆（payload 依 schema 驗證；重複→409 `FORM_ALREADY_SUBMITTED`）；稽核 `form_submitted` 含 `via`、不含 payload |
