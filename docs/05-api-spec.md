@@ -823,6 +823,31 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
 - 切換資料夾／地址（或搜尋）→ 清空選取；列表為 `role="listbox"`、每列 `role="option"` 並帶
   `aria-selected`，可鍵盤操作。
 
+### 2.20 D19-3：前端補做「清空垃圾桶」與單封操作（2026-11-03）
+
+> 後端端點已於 D19-1 完成；本節只補前端入口與行為（`web/src`），**無 API 變更**。
+
+**清空垃圾桶（`folder='trash'`）**
+
+- 垃圾桶檢視時，批次工具列**即使未選取**也顯示「清空垃圾桶」；其他資料夾／跨資料夾搜尋不顯示。
+- 點擊 → 二次確認，文案為「將永久刪除 N 封（含附件與原始檔），無法復原」。
+  `N` 取自 `GET /api/mail/counts` 的 `folders.trash.total`（session scope，與端點刪除範圍一致）；
+  counts 尚未載入時退回目前清單長度。垃圾桶為空時按鈕停用。
+- 確認 → `POST /api/mail/trash/empty`；成功後以 toast 顯示 `{count, r2_objects}` 摘要，
+  並重新載入目前清單與資料夾計數（若 ReadingPane 開著垃圾桶內的信件則一併關閉、選取清空）。
+- 取消 → **不得呼叫 API**。失敗 → 顯示錯誤訊息，**不清空**目前清單與畫面。
+
+**ReadingPane 單封操作**
+
+- 非垃圾桶：「刪除」（垃圾桶圖示，`aria-label="刪除"`）→ `DELETE /api/mail/:id`（軟刪除）→
+  關閉 ReadingPane、從清單移除、更新左側資料夾計數。
+- 垃圾桶：顯示「還原」與「永久刪除」文字按鈕。
+  - 還原 → `POST /api/mail/:id/restore` → 關閉 ReadingPane、更新清單與計數（信件回 inbox）。
+  - 永久刪除 → 二次確認（「將永久刪除『主旨』（含附件與原始檔），無法復原」）→
+    `DELETE /api/mail/:id?mode=hard` → 關閉 ReadingPane、更新清單與計數。
+- 任一動作失敗 → 顯示錯誤訊息且**不清空畫面**（ReadingPane 與清單保留）。
+- 測試：`web/test/mailTrash.dom.spec.tsx`（T75–T78）。
+
 ## 3. 通用原則
 
 | 原則 | 說明 |

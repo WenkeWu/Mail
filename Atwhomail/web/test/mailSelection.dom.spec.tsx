@@ -63,6 +63,7 @@ function Harness({
         onTrash={onTrash}
         onRestore={() => {}}
         onPurge={onPurge}
+        onEmptyTrash={() => {}}
         onMarkRead={() => {}}
         onClear={clear}
       />
@@ -203,6 +204,7 @@ describe("批次工具列：依資料夾顯示可用動作", () => {
         onTrash={onTrash}
         onRestore={() => {}}
         onPurge={() => {}}
+        onEmptyTrash={() => {}}
         onMarkRead={onMarkRead}
         onClear={() => {}}
       />
@@ -226,6 +228,7 @@ describe("批次工具列：依資料夾顯示可用動作", () => {
         onTrash={() => {}}
         onRestore={onRestore}
         onPurge={onPurge}
+        onEmptyTrash={() => {}}
         onMarkRead={() => {}}
         onClear={() => {}}
       />
@@ -245,6 +248,7 @@ describe("批次工具列：依資料夾顯示可用動作", () => {
         onTrash={() => {}}
         onRestore={() => {}}
         onPurge={() => {}}
+        onEmptyTrash={() => {}}
         onMarkRead={() => {}}
         onClear={() => {}}
       />

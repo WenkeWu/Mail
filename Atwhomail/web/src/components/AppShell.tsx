@@ -5,12 +5,15 @@ import {
   batchMail,
   deleteMail,
   downloadAttachment,
+  emptyTrash,
   fetchMailHtml,
   getMail,
   getMailText,
   getMe,
+  hardDeleteMail,
   listAddresses,
   moveMail,
+  restoreMail,
   setRead,
   type MailBatchAction,
 } from "../api/endpoints";
@@ -114,6 +117,13 @@ export function AppShell({
     `${listFolder}|${addressFilter ?? ""}|${query}`
   );
   const [batchBusy, setBatchBusy] = useState(false);
+  const [emptyTrashBusy, setEmptyTrashBusy] = useState(false);
+
+  /**
+   * 垃圾桶總封數（session scope）。用於「清空垃圾桶」的二次確認文案；
+   * `GET /api/mail/counts` 尚未載入時，退回目前清單長度（至少不是 0）。
+   */
+  const trashCount = counts?.folders?.trash?.total ?? (listFolder === "trash" ? items.length : 0);
 
   const showToast = useCallback((message: string, kind: "info" | "error" = "info") => {
     setToast({ message, kind });
@@ -253,9 +263,11 @@ export function AppShell({
     (id: number) => {
       removeItem(id);
       if (selectedId === id) closeReading();
+      // 單封動作後同步清掉選取，避免工具列停留在已不存在的 id（批次動作另由 handleBatch 清除）
+      clearSelection();
       setCountsRefreshKey((k) => k + 1);
     },
-    [removeItem, selectedId, closeReading]
+    [removeItem, selectedId, closeReading, clearSelection]
   );
 
   const handleArchive = useCallback(async () => {
@@ -293,6 +305,59 @@ export function AppShell({
       showToast(e instanceof ApiError ? e.message : "刪除失敗", "error");
     }
   }, [detail, afterRemoved, showToast]);
+
+  /** docs/19 D19-3：單封還原（僅垃圾桶；成功後關閉 ReadingPane、更新清單與計數） */
+  const handleRestore = useCallback(async () => {
+    if (!detail) return;
+    try {
+      await restoreMail(detail.id);
+      afterRemoved(detail.id);
+      showToast("已還原至收件匣");
+    } catch (e) {
+      // 失敗時保留目前畫面（不清空、不關閉）
+      showToast(e instanceof ApiError ? e.message : "還原失敗", "error");
+    }
+  }, [detail, afterRemoved, showToast]);
+
+  /** docs/19 D19-3：單封永久刪除（二次確認 → hard delete；不可復原） */
+  const handleHardDelete = useCallback(async () => {
+    if (!detail) return;
+    const label = detail.subject || "(無主旨)";
+    if (!window.confirm(`將永久刪除「${label}」（含附件與原始檔），無法復原`)) return;
+    try {
+      await hardDeleteMail(detail.id);
+      afterRemoved(detail.id);
+      showToast("已永久刪除");
+    } catch (e) {
+      // 失敗時保留目前畫面（不清空、不關閉）
+      showToast(e instanceof ApiError ? e.message : "永久刪除失敗", "error");
+    }
+  }, [detail, afterRemoved, showToast]);
+
+  /**
+   * docs/19 D19-3：清空垃圾桶。
+   * 二次確認的 N 取自 `counts.folders.trash.total`（session scope，與端點刪除範圍一致）；
+   * 成功後顯示 `{count, r2_objects}` 摘要，並重新載入清單與資料夾計數。
+   */
+  const handleEmptyTrash = useCallback(async () => {
+    if (emptyTrashBusy) return;
+    const count = trashCount;
+    if (!window.confirm(`將永久刪除 ${count} 封（含附件與原始檔），無法復原`)) return;
+    setEmptyTrashBusy(true);
+    try {
+      const res = await emptyTrash();
+      if (detail?.folder === "trash") closeReading();
+      clearSelection();
+      setListRefreshKey((k) => k + 1);
+      setCountsRefreshKey((k) => k + 1);
+      showToast(`已清空垃圾桶：永久刪除 ${res.count} 封、${res.r2_objects} 個附件／原始檔物件`);
+    } catch (e) {
+      // 失敗時保留清單與畫面，只顯示錯誤
+      showToast(e instanceof ApiError ? e.message : "清空垃圾桶失敗", "error");
+    } finally {
+      setEmptyTrashBusy(false);
+    }
+  }, [emptyTrashBusy, trashCount, detail, closeReading, clearSelection, showToast]);
 
   const handleToggleRead = useCallback(
     async (read: boolean) => {
@@ -599,10 +664,12 @@ export function AppShell({
             <MailSelectionToolbar
               count={selectedIds.size}
               folder={listFolder}
-              busy={batchBusy}
+              trashCount={trashCount}
+              busy={batchBusy || emptyTrashBusy}
               onTrash={() => void handleBatch("trash")}
               onRestore={() => void handleBatch("restore")}
               onPurge={handleBatchPurge}
+              onEmptyTrash={() => void handleEmptyTrash()}
               onMarkRead={() => void handleBatch("read")}
               onClear={clearSelection}
             />
@@ -634,6 +701,8 @@ export function AppShell({
             onArchive={() => void handleArchive()}
             onMove={(f) => void handleMove(f)}
             onDelete={() => void handleDelete()}
+            onRestore={() => void handleRestore()}
+            onHardDelete={() => void handleHardDelete()}
             onDownloadAttachment={(att) => void handleDownload(att)}
           />
         </>

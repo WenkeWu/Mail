@@ -401,7 +401,8 @@
             （production 已一次性修復；本次**程式**修正後不會再產生這種列）。
             部署前可抽驗：`SELECT COUNT(*) FROM messages WHERE folder='trash' AND deleted_at IS NOT NULL;` 應為 **0**。
       - [ ] **部署 API 與前端**（無 migration）。⚠️ **前端必須重新部署**：
-            `MailList`／`AppShell` 新增複選與批次工具列；只部署 API 會看不到新功能。
+            `MailList`／`AppShell` 新增複選與批次工具列，D19-3 另新增「清空垃圾桶」與 ReadingPane
+            單封「還原／永久刪除」；只部署 API 會看不到新功能。
       - [ ] **D19-1 驗收（刪除語意）**：
             ① 在收件匣刪一封信 → 垃圾桶**看得到**、可讀取；DB 斷言 `folder='trash' AND deleted_at IS NULL`。
             ② 「還原」→ 回收件匣；非垃圾桶的信呼叫 restore → `400 NOT_IN_TRASH`。
@@ -412,6 +413,15 @@
             ② 工具列「已選 N 封」依資料夾顯示：垃圾桶＝還原／永久刪除；其他＝移至垃圾桶／標為已讀。
             ③ 切換資料夾／地址後選取歸零；列有 `aria-selected` 且可鍵盤操作。
             ④ 批次含他人／不存在 id → **404 且整批未執行**（抽查未被搬移的信）；稽核 `mail_batch` 只有 `{action, count}`。
+      - [ ] **D19-3 驗收（前端補做，2026-11-03）**：
+            ① 垃圾桶檢視顯示「清空垃圾桶」；非垃圾桶（含跨資料夾搜尋）不顯示。點擊需二次確認
+               「將永久刪除 N 封（含附件與原始檔），無法復原」；**取消不呼叫 API**。
+            ② 確認後呼叫 `POST /api/mail/trash/empty`，顯示 `{count, r2_objects}` 摘要，
+               並重新載入清單與資料夾計數。
+            ③ ReadingPane：非垃圾桶「刪除」→ 軟刪除並關閉；垃圾桶「還原」→ 回 inbox；
+               「永久刪除」→ 二次確認後 `?mode=hard` 並關閉。
+            ④ 所有動作完成後左側資料夾計數同步更新；失敗顯示錯誤且**不清空畫面**。
+            ⑤ T75–T78 通過（`web/test/mailTrash.dom.spec.tsx`）。
       - [ ] **N9 抽查**：`registration_audit` 的 `mail_purged`／`mail_restored`／`trash_emptied`／
             `mail_batch` detail **不得**含主旨、寄件者、收件者或內文。
       - [ ] **回退**：API 刪除語意回到舊行為並不好（舊行為是 bug）；若需回退前端，重新部署上一版即可，

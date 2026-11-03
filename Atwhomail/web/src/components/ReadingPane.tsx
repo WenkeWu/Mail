@@ -43,6 +43,10 @@ interface Props {
   onArchive: () => void;
   onMove: (folder: "inbox" | "spam" | "trash") => void;
   onDelete: () => void;
+  /** 垃圾桶內：還原到收件匣（docs/19 D19-3） */
+  onRestore: () => void;
+  /** 垃圾桶內：永久刪除（二次確認由 AppShell 負責；docs/19 D19-3） */
+  onHardDelete: () => void;
   onDownloadAttachment: (att: AttachmentMeta) => void;
 }
 
@@ -66,6 +70,8 @@ export function ReadingPane({
   onArchive,
   onMove,
   onDelete,
+  onRestore,
+  onHardDelete,
   onDownloadAttachment,
 }: Props) {
   // docs/18 P2：互動式表單。收件人 GET 成功才渲染；任何失敗 → 靜態文字（不報錯、不洩漏）。
@@ -168,23 +174,43 @@ export function ReadingPane({
           >
             <IconMailOpen size={18} />
           </button>
-          {detail.folder === "trash" || detail.folder === "spam" ? (
-            <button type="button" className="icon-btn" onClick={() => onMove("inbox")} title="移至收件匣">
-              <IconInbox size={18} />
-            </button>
+          {detail.folder === "trash" ? (
+            /* docs/19 D19-3：垃圾桶內的單封操作（還原／永久刪除） */
+            <>
+              <button type="button" className="btn-secondary reading-action" onClick={onRestore}>
+                還原
+              </button>
+              <button type="button" className="btn-danger reading-action" onClick={onHardDelete}>
+                永久刪除
+              </button>
+            </>
           ) : (
-            <button type="button" className="icon-btn" onClick={onArchive} title="封存">
-              <IconArchive size={18} />
-            </button>
+            <>
+              {detail.folder === "spam" ? (
+                <button type="button" className="icon-btn" onClick={() => onMove("inbox")} title="移至收件匣">
+                  <IconInbox size={18} />
+                </button>
+              ) : (
+                <button type="button" className="icon-btn" onClick={onArchive} title="封存">
+                  <IconArchive size={18} />
+                </button>
+              )}
+              {detail.folder !== "spam" && (
+                <button type="button" className="icon-btn" onClick={() => onMove("spam")} title="標為垃圾郵件">
+                  <IconSpam size={18} />
+                </button>
+              )}
+              <button
+                type="button"
+                className="icon-btn danger"
+                onClick={onDelete}
+                title="刪除（移至垃圾桶）"
+                aria-label="刪除"
+              >
+                <IconTrash size={18} />
+              </button>
+            </>
           )}
-          {detail.folder !== "spam" && (
-            <button type="button" className="icon-btn" onClick={() => onMove("spam")} title="標為垃圾郵件">
-              <IconSpam size={18} />
-            </button>
-          )}
-          <button type="button" className="icon-btn danger" onClick={onDelete} title="刪除（移至垃圾桶）">
-            <IconTrash size={18} />
-          </button>
         </div>
       </div>
 

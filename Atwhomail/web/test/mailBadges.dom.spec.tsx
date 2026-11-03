@@ -50,6 +50,8 @@ function renderPane(d: MailDetail) {
       onArchive={() => {}}
       onMove={() => {}}
       onDelete={() => {}}
+      onRestore={() => {}}
+      onHardDelete={() => {}}
       onDownloadAttachment={() => {}}
     />
   );

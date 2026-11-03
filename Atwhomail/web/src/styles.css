@@ -693,6 +693,13 @@ select {
   margin-left: auto;
 }
 
+/* docs/19 D19-3：垃圾桶內的單封操作（文字按鈕，縮小以配合工具列） */
+.reading-toolbar .reading-action {
+  padding: 5px 12px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
 /* 桌機不需要返回鍵（僅行動版覆寫為顯示）；權重需高於後方的 .icon-btn */
 .reading-toolbar .back-btn {
   display: none;

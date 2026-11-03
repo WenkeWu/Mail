@@ -63,6 +63,8 @@ function renderPane(d: MailDetail, bodyText = "STATIC FALLBACK") {
       onArchive={() => {}}
       onMove={() => {}}
       onDelete={() => {}}
+      onRestore={() => {}}
+      onHardDelete={() => {}}
       onDownloadAttachment={() => {}}
     />
   );
