@@ -814,6 +814,32 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
   // 稽核：mail_batch（detail 只有 { action, count }，N9）
 ```
 
+**D19-5：D1 綁定參數上限與 id 分塊（2026-11-04）**
+
+> 現象：垃圾桶 131 封時「清空垃圾桶」→ 500 `DELETE_FAILED`；`wrangler tail` 顯示
+> `D1_ERROR: too many SQL variables`。根因：**D1 每條查詢最多 100 個綁定參數**，
+> `id IN (?,?,…)` 一次綁 131 個即超限（docs/19 §7）。
+
+- **`SQL_CHUNK = 90`**：所有 `id IN (…)` 查詢（SELECT keys／DELETE／UPDATE／scope 驗證）
+  一律以 **90 個 id 為一塊**（保留 10 個參數的安全餘裕）。
+- **`hardDeleteMessages(env, ids)`**：逐塊 ① SELECT raw／html keys ② SELECT 附件 keys
+  ③ `bucket.delete(keys)`（嚴格；失敗即中止該塊）④ 同一個 D1 batch 刪 `attachments` → `messages`。
+  - 回傳值為**所有塊的加總** `{messages, attachments, r2_objects}`；稽核由呼叫端寫入（N9）。
+  - R2 失敗 → **該塊 D1 不動**；已完成的塊**不回滾**（塊與塊之間各自交易）。
+  - 失敗時記錄 `chunkIndex`／`count`／已刪數量的錯誤 log。
+- **`POST /api/mail/trash/empty`**：以 **id 游標＋分塊**（每塊 ≤90）撈取，迴圈直到撈不到；
+  最多收 500 封，出現第 501 封 → 400 `TRASH_TOO_LARGE`（檢查在刪除前，**一封都不刪**）。
+  回應 `{count, r2_objects}` 為全部塊的加總。
+- **`POST /api/mail/batch`**：`purge` 走同一分塊硬刪；`trash`／`restore`／`read` 的
+  `UPDATE … WHERE id IN (…)` 與 `scopedMessageIds` 權限查詢也分塊（≤90）。
+  `ids` 的對外上限維持 **200**。
+- **部分完成回報**：分塊硬刪中途失敗 → **500 `DELETE_FAILED`**，訊息含
+  「部分完成：已刪除 N 封，其餘未變更；可重試」，回應另帶
+  `deleted: { messages, attachments, r2_objects }`（失敗前已完成塊的加總；未刪任何信時為 0）。
+  完整成功才寫稽核（`trash_emptied`／`mail_batch`，仍只有數量，N9）。
+- 錯誤碼不變：`DELETE_FAILED`（500）、`TRASH_TOO_LARGE`（400）；
+  `deleted` 為新增的**選填**回應欄位（僅失敗時出現，既有呼叫端不受影響）。
+
 **前端（`web/src`）**
 
 - 選取狀態以 `Set<number>` 管理；點擊：`shiftKey` → 範圍連選、`ctrlKey`／`metaKey` → 切換單封、

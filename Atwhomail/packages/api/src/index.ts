@@ -95,6 +95,11 @@ const FOLDERS = ["inbox", "sent", "archive", "trash", "spam"];
 const BATCH_ACTIONS = ["trash", "restore", "read", "purge"] as const;
 type BatchAction = (typeof BATCH_ACTIONS)[number];
 const BATCH_MAX_IDS = 200;
+/**
+ * D19-5：D1 每條查詢最多 **100 個綁定參數**（超過 → `too many SQL variables`）。
+ * 所有 `id IN (?,?,…)` 一律以此為塊大小，保留 10 個參數的安全餘裕。
+ */
+const SQL_CHUNK = 90;
 /** D19-1：清空垃圾桶單次上限（超過 → 400，要求分批） */
 const TRASH_EMPTY_MAX = 500;
 const now = () => Date.now();
@@ -2002,20 +2007,32 @@ async function scopedMessage(env: AuthEnv["Bindings"], scope: Scope, id: number,
     .first();
 }
 
+/** D19-5：把 id 陣列切成每塊 ≤ `size` 個（預設 `SQL_CHUNK`），避免 D1 綁定參數超限。 */
+function chunkIds(ids: number[], size = SQL_CHUNK): number[][] {
+  const chunks: number[][] = [];
+  for (let i = 0; i < ids.length; i += size) chunks.push(ids.slice(i, i + size));
+  return chunks;
+}
+
 /**
  * D19-2：`scopedMessage` 的批次版（同一組 scope 條件）。
  * 回傳**可見**的 id 集合；呼叫端比對 `size === ids.length`，任一不合格即整批 404。
+ * D19-5：id 分塊查詢（≤ `SQL_CHUNK`），200 個 id 也不會超過 D1 的 100 參數上限。
  */
 async function scopedMessageIds(env: AuthEnv["Bindings"], scope: Scope, ids: number[]): Promise<Set<number>> {
-  if (ids.length === 0) return new Set();
+  const visible = new Set<number>();
+  if (ids.length === 0) return visible;
   const sw = scopeWhere(scope);
-  const placeholders = ids.map(() => "?").join(",");
-  const { results } = await env.DB.prepare(
-    `SELECT m.id FROM messages m WHERE m.id IN (${placeholders}) AND m.deleted_at IS NULL AND ${sw.sql}`
-  )
-    .bind(...ids, ...sw.binds)
-    .all<{ id: number }>();
-  return new Set(results.map((r) => Number(r.id)));
+  for (const chunk of chunkIds(ids)) {
+    const placeholders = chunk.map(() => "?").join(",");
+    const { results } = await env.DB.prepare(
+      `SELECT m.id FROM messages m WHERE m.id IN (${placeholders}) AND m.deleted_at IS NULL AND ${sw.sql}`
+    )
+      .bind(...chunk, ...sw.binds)
+      .all<{ id: number }>();
+    for (const r of results) visible.add(Number(r.id));
+  }
+  return visible;
 }
 
 /** D19-1：hard delete 要清的 R2 key（raw／html／附件；空值略過、去重） */
@@ -2034,40 +2051,84 @@ function purgeKeys(
   return [...keys];
 }
 
+type HardDeleteResult = { messages: number; attachments: number; r2_objects: number };
+
+/**
+ * D19-5：`hardDeleteMessages` 中途失敗。
+ * `deleted` 是**失敗前已完成塊**的加總（已完成的塊不回滾）→ 呼叫端據此回報「部分完成」。
+ */
+class HardDeletePartialError extends Error {
+  readonly deleted: HardDeleteResult;
+  constructor(cause: unknown, deleted: HardDeleteResult) {
+    super(`hard delete failed: ${String(cause)}`);
+    this.name = "HardDeletePartialError";
+    this.deleted = deleted;
+  }
+}
+
+const EMPTY_DELETE_RESULT: HardDeleteResult = { messages: 0, attachments: 0, r2_objects: 0 };
+
+/** 失敗的 hard delete 已刪除多少（非 `HardDeletePartialError` → 皆為 0）。 */
+function partialHardDelete(e: unknown): HardDeleteResult {
+  return e instanceof HardDeletePartialError ? e.deleted : { ...EMPTY_DELETE_RESULT };
+}
+
+/** 部分完成時的錯誤訊息（N9：只有數量，不含信件內容）。 */
+function hardDeleteFailureMessage(prefix: string, deleted: HardDeleteResult): string {
+  return deleted.messages > 0
+    ? `${prefix}（部分完成：已刪除 ${deleted.messages} 封，其餘未變更；可重試）`
+    : `${prefix}（資料庫未變更）`;
+}
+
 /**
  * D19-1：永久刪除一批信件（呼叫端**必須先**完成 scope 檢查）。
  *
- * 順序固定：① 取 key ② 刪 R2（嚴格；失敗即 throw，D1 完全不動）
+ * 順序固定（**每塊各自交易**，D19-5）：① 取 key ② 刪 R2（嚴格；失敗即 throw，該塊 D1 完全不動）
  * ③ 同一個 D1 batch 刪 `attachments` → `messages`（失敗整批回滾）。
- * 回傳實際刪除數量；稽核由呼叫端寫入（只記 id／數量，N9）。
+ * id 以 `SQL_CHUNK` 分塊處理：每條 SQL 的綁定參數 ≤ 90（D1 上限 100）。
+ * 回傳**所有塊的加總**；若中途失敗，已完成的塊不回滾，並以 `HardDeletePartialError` 拋出。
+ * 稽核由呼叫端寫入（只記數量，N9）。
  */
-async function hardDeleteMessages(
-  env: AuthEnv["Bindings"],
-  ids: number[]
-): Promise<{ messages: number; attachments: number; r2_objects: number }> {
-  if (ids.length === 0) return { messages: 0, attachments: 0, r2_objects: 0 };
-  const placeholders = ids.map(() => "?").join(",");
-  const { results: msgRows } = await env.DB.prepare(
-    `SELECT id, raw_r2_key, html_r2_key FROM messages WHERE id IN (${placeholders})`
-  )
-    .bind(...ids)
-    .all<{ id: number; raw_r2_key: string | null; html_r2_key: string | null }>();
-  const { results: attRows } = await env.DB.prepare(
-    `SELECT message_id, r2_key FROM attachments WHERE message_id IN (${placeholders})`
-  )
-    .bind(...ids)
-    .all<{ message_id: number; r2_key: string | null }>();
+async function hardDeleteMessages(env: AuthEnv["Bindings"], ids: number[]): Promise<HardDeleteResult> {
+  const deleted: HardDeleteResult = { ...EMPTY_DELETE_RESULT };
+  if (ids.length === 0) return deleted;
 
-  const r2_objects = await purgeR2Objects(env.MAIL, purgeKeys(msgRows, attRows));
-  const [attResult, msgResult] = await env.DB.batch([
-    env.DB.prepare(`DELETE FROM attachments WHERE message_id IN (${placeholders})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM messages WHERE id IN (${placeholders})`).bind(...ids),
-  ]);
-  return {
-    messages: Number(msgResult?.meta.changes ?? 0),
-    attachments: Number(attResult?.meta.changes ?? 0),
-    r2_objects,
-  };
+  const chunks = chunkIds(ids);
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    const chunk = chunks[chunkIndex]!;
+    try {
+      const placeholders = chunk.map(() => "?").join(",");
+      const { results: msgRows } = await env.DB.prepare(
+        `SELECT id, raw_r2_key, html_r2_key FROM messages WHERE id IN (${placeholders})`
+      )
+        .bind(...chunk)
+        .all<{ id: number; raw_r2_key: string | null; html_r2_key: string | null }>();
+      const { results: attRows } = await env.DB.prepare(
+        `SELECT message_id, r2_key FROM attachments WHERE message_id IN (${placeholders})`
+      )
+        .bind(...chunk)
+        .all<{ message_id: number; r2_key: string | null }>();
+
+      // R2 嚴格刪除：失敗即中止這一塊（D1 尚未動），已完成的塊維持已刪除。
+      const r2_objects = await purgeR2Objects(env.MAIL, purgeKeys(msgRows, attRows));
+      const [attResult, msgResult] = await env.DB.batch([
+        env.DB.prepare(`DELETE FROM attachments WHERE message_id IN (${placeholders})`).bind(...chunk),
+        env.DB.prepare(`DELETE FROM messages WHERE id IN (${placeholders})`).bind(...chunk),
+      ]);
+      deleted.messages += Number(msgResult?.meta.changes ?? 0);
+      deleted.attachments += Number(attResult?.meta.changes ?? 0);
+      deleted.r2_objects += r2_objects;
+    } catch (e) {
+      console.error("[atwhomail-api] hard delete chunk failed", {
+        chunkIndex,
+        count: chunk.length,
+        deleted: { ...deleted },
+        error: String(e),
+      });
+      throw new HardDeletePartialError(e, { ...deleted });
+    }
+  }
+  return deleted;
 }
 
 /** 稽核主體（owner → userId；mailbox → addressId；不含任何信件內容，N9） */
@@ -2150,35 +2211,62 @@ app.delete("/api/mail/:id", requireSession, async (c) => {
  * POST /api/mail/trash/empty — 清空垃圾桶（docs/19 §2）。
  * 對 session scope 內 `folder='trash' AND deleted_at IS NULL` 全部永久刪除；
  * 一次上限 500 封（超過 → 400，要求分批），回傳 `{count, r2_objects}`。
+ *
+ * D19-5：id 以 **id 游標＋分塊**撈取（每塊 ≤ `SQL_CHUNK`），迴圈直到撈不到；
+ * 撈滿 500 後若還有下一封 → `TRASH_TOO_LARGE`，且**一封都不刪**（與原本 LIMIT 501 語意相同）。
  * ⚠️ 必須註冊在 `/api/mail/:id/*` 之前（literal 優先）。
  */
 app.post("/api/mail/trash/empty", requireSession, async (c) => {
   const scope = c.get("scope");
   const sw = scopeWhere(scope);
-  // LIMIT 501：剛好 500 可清；第 501 封出現即代表超限（避免先 COUNT 再查的兩次掃描）
-  const { results } = await c.env.DB.prepare(
-    `SELECT m.id FROM messages m
-     WHERE ${sw.sql} AND m.deleted_at IS NULL AND m.folder = 'trash'
-     ORDER BY m.id LIMIT ${TRASH_EMPTY_MAX + 1}`
-  )
-    .bind(...sw.binds)
-    .all<{ id: number }>();
-  const ids = results.map((r) => Number(r.id));
+
+  const ids: number[] = [];
+  let cursor = 0;
+  // 最多收到 500 封；再多收一塊（90）即可判斷「超過上限」，查詢本身參數僅 2 個。
+  while (ids.length <= TRASH_EMPTY_MAX) {
+    const { results } = await c.env.DB.prepare(
+      `SELECT m.id FROM messages m
+       WHERE ${sw.sql} AND m.deleted_at IS NULL AND m.folder = 'trash' AND m.id > ?
+       ORDER BY m.id LIMIT ${SQL_CHUNK}`
+    )
+      .bind(...sw.binds, cursor)
+      .all<{ id: number }>();
+    if (results.length === 0) break;
+    for (const r of results) ids.push(Number(r.id));
+    cursor = Number(results[results.length - 1]!.id);
+    if (results.length < SQL_CHUNK) break;
+  }
   if (ids.length > TRASH_EMPTY_MAX) {
     return err(c, "TRASH_TOO_LARGE", `垃圾桶超過 ${TRASH_EMPTY_MAX} 封，請分批永久刪除`, 400);
   }
   if (ids.length === 0) return c.json({ count: 0, r2_objects: 0 });
 
-  let deleted: { messages: number; attachments: number; r2_objects: number };
+  let deleted: HardDeleteResult;
   try {
     deleted = await hardDeleteMessages(c.env, ids);
   } catch (e) {
-    console.error("[atwhomail-api] empty trash failed", { count: ids.length, error: String(e) });
-    return err(c, "DELETE_FAILED", "清空垃圾桶失敗（資料庫未變更）", 500);
+    const partial = partialHardDelete(e);
+    console.error("[atwhomail-api] empty trash failed", {
+      count: ids.length,
+      deleted: partial,
+      error: String(e),
+    });
+    // D19-5：已完成的塊不回滾 → 明確回報部分完成（N9：只有數量）
+    return c.json(
+      {
+        error: { code: "DELETE_FAILED", message: hardDeleteFailureMessage("清空垃圾桶失敗", partial) },
+        deleted: partial,
+      },
+      500
+    );
   }
   // N9：只記數量
-  auditAsync(c, { ...auditScope(scope), event: "trash_emptied", detail: { count: ids.length, r2_objects: deleted.r2_objects } });
-  return c.json({ count: ids.length, r2_objects: deleted.r2_objects });
+  auditAsync(c, {
+    ...auditScope(scope),
+    event: "trash_emptied",
+    detail: { count: deleted.messages, r2_objects: deleted.r2_objects },
+  });
+  return c.json({ count: deleted.messages, r2_objects: deleted.r2_objects });
 });
 
 /**
@@ -2209,33 +2297,53 @@ app.post("/api/mail/batch", requireSession, async (c) => {
   if (visible.size !== ids.length) return err(c, "MAIL_NOT_FOUND", "mail not found", 404);
 
   const ts = now();
-  const placeholders = ids.map((_, i) => `?${i + 2}`).join(",");
   try {
-    if (action === "trash") {
-      await c.env.DB.prepare(
-        `UPDATE messages SET folder = 'trash', updated_at = ?1 WHERE id IN (${placeholders}) AND deleted_at IS NULL`
-      )
-        .bind(ts, ...ids)
-        .run();
-    } else if (action === "restore") {
-      await c.env.DB.prepare(
-        `UPDATE messages SET folder = 'inbox', updated_at = ?1
-         WHERE id IN (${placeholders}) AND folder = 'trash' AND deleted_at IS NULL`
-      )
-        .bind(ts, ...ids)
-        .run();
-    } else if (action === "read") {
-      await c.env.DB.prepare(
-        `UPDATE messages SET read_at = COALESCE(read_at, ?1), updated_at = ?1 WHERE id IN (${placeholders})`
-      )
-        .bind(ts, ...ids)
-        .run();
-    } else {
-      // purge：走 D19-1 的 hard delete 邏輯（R2 嚴格刪除 → attachments → messages）
+    if (action === "purge") {
+      // purge：走 D19-1 的 hard delete 邏輯（R2 嚴格刪除 → attachments → messages；內部分塊）
       await hardDeleteMessages(c.env, ids);
+    } else {
+      // D19-5：UPDATE 也必須分塊（≤ SQL_CHUNK），否則 101–200 個 id 會踩 D1 的 100 參數上限。
+      for (const chunk of chunkIds(ids)) {
+        const placeholders = chunk.map((_, i) => `?${i + 2}`).join(",");
+        if (action === "trash") {
+          await c.env.DB.prepare(
+            `UPDATE messages SET folder = 'trash', updated_at = ?1 WHERE id IN (${placeholders}) AND deleted_at IS NULL`
+          )
+            .bind(ts, ...chunk)
+            .run();
+        } else if (action === "restore") {
+          await c.env.DB.prepare(
+            `UPDATE messages SET folder = 'inbox', updated_at = ?1
+             WHERE id IN (${placeholders}) AND folder = 'trash' AND deleted_at IS NULL`
+          )
+            .bind(ts, ...chunk)
+            .run();
+        } else {
+          await c.env.DB.prepare(
+            `UPDATE messages SET read_at = COALESCE(read_at, ?1), updated_at = ?1 WHERE id IN (${placeholders})`
+          )
+            .bind(ts, ...chunk)
+            .run();
+        }
+      }
     }
   } catch (e) {
-    console.error("[atwhomail-api] mail batch failed", { action, count: ids.length, error: String(e) });
+    const partial = action === "purge" ? partialHardDelete(e) : null;
+    console.error("[atwhomail-api] mail batch failed", {
+      action,
+      count: ids.length,
+      ...(partial ? { deleted: partial } : {}),
+      error: String(e),
+    });
+    if (partial) {
+      return c.json(
+        {
+          error: { code: "DELETE_FAILED", message: hardDeleteFailureMessage("批次永久刪除失敗", partial) },
+          deleted: partial,
+        },
+        500
+      );
+    }
     return err(c, "DELETE_FAILED", "批次動作失敗（未執行）", 500);
   }
 
