@@ -13,7 +13,10 @@
 |---|---|---|---|
 | Auth | POST | `/api/auth/login` | Owner（username + 密碼）登入 |
 | Auth | POST | `/api/auth/mailbox-login` | 信箱帳號（email address + 密碼）登入 |
-| Auth | POST | `/api/auth/register` | **訪客註冊（公開，需邀請碼）** → mailbox session |
+| Auth | POST | `/api/auth/register` | **訪客註冊（公開）** → mailbox session；行為依 `REGISTRATION_MODE`（`invite` 預設＝邀請碼／`email_verify`＝改走下方兩端點／`closed`＝關閉，docs/21 D21） |
+| Auth | GET | `/api/auth/registration-mode` | **目前註冊模式**（公開；`{mode}`，僅影響前端表單顯示，docs/21 D21） |
+| Auth | POST | `/api/auth/register-request` | **寄送 6 位數 Email 驗證碼**（公開；僅 `email_verify` 模式，docs/21 D21） |
+| Auth | POST | `/api/auth/register-verify` | **驗碼＋建立訪客帳號＋回 mailbox session**（公開；僅 `email_verify` 模式，docs/21 D21） |
 | Auth | PATCH | `/api/auth/owner-password/self` | **owner 本人變更自己的密碼**（session ＋ 舊密碼；docs/16 D7） |
 | Auth | PATCH | `/api/email-addresses/:id/password` | 重設地址密碼（owner 或本人） |
 | Invite | POST | `/api/invites` | 產生邀請碼（owner / x-admin-token） |
@@ -927,6 +930,86 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
 - Ctrl／Cmd+A 全選、一般列點擊開信、Ctrl／Shift 列點擊等 D19-2 行為不變。
 
 - 測試：`web/test/mailCheckbox.dom.spec.tsx`（T79–T83）。
+
+### 2.22 D21：Email 驗證碼註冊（取消邀請碼，2026-11-04）
+
+> 設計：`docs/21`。目標：使用者自助「填真實 Email → 收 6 位數驗證碼 → 註冊」，不再需要 owner 先產生邀請碼。
+> 邀請碼機制**完全保留**：`REGISTRATION_MODE=invite`（預設）時行為與本節之前完全相同。
+
+**環境變數（Worker vars；非機密）**
+
+| 名稱 | 值 | 說明 |
+|---|---|---|
+| `REGISTRATION_MODE` | `invite`（預設，未設定亦同）／`email_verify`／`closed` | 新舊註冊端點的行為開關。非法值一律視為 `invite` |
+| `REGISTRATION_DISABLED`（既有） | `true`／其他 | 舊版 kill switch 保留相容；`true` 時新舊流程與 `registration-mode` 一律視為 `closed` |
+
+**`POST /api/auth/register`（既有，公開）— 依模式分流**
+
+| `REGISTRATION_MODE` | 行為 |
+|---|---|
+| `invite`（預設） | **既有邀請碼流程完全不變**（限流 → `REGISTRATION_DISABLED` → 驗邀請碼 → …） |
+| `email_verify` | `403 REGISTRATION_EMAIL_VERIFY_REQUIRED`（請改用驗證碼端點） |
+| `closed` | `403 REGISTRATION_CLOSED` |
+
+**`GET /api/auth/registration-mode`（公開）**
+
+```http
+→ 200 { "mode": "invite" | "email_verify" | "closed" }
+```
+只用於前端表單顯示（未取到／舊後端 → 回退 `invite`）；權限與行為仍由後端強制。
+
+**`POST /api/auth/register-request`（公開；僅 `email_verify` 模式）**
+
+```http
+{ "email": "me@example.com", "local_part": "friend01" }
+→ 200 { "sent": true, "expiresIn": 900 }
+```
+- 檢查順序：模式 → **IP 限流** → Email 格式 → ID 格式／保留字／既有地址／既有 username → **Email 寄送限制** → 存雜湊 → 寄信。
+- 寄件者固定 `noreply@atwho.org`；信件內容**只有 6 位數與 15 分鐘有效說明**，不含 Email、ID 或任何個資。
+- 驗證碼：6 位數（`crypto.getRandomValues`）；DB 只存 `SHA-256(code + JWT_SECRET)`；15 分鐘有效；一次性。
+- 重寄會讓同一 Email 的**舊碼立即作廢**（舊碼 `consumed_at` 寫入）。
+- 錯誤：`EMAIL_INVALID`(400)、`INVALID_LOCAL_PART`(400)、`ID_RESERVED`(409)、`ID_TAKEN`(409)、`CODE_COOLDOWN`(429)、`CODE_DAILY_LIMIT`(429)、`RATE_LIMITED`(429)、`REGISTRATION_CLOSED`(403)、`REGISTRATION_INVITE_ONLY`(403)、`EMAIL_SEND_FAILED`(502)。
+
+**`POST /api/auth/register-verify`（公開；僅 `email_verify` 模式）**
+
+```http
+{ "email": "me@example.com", "local_part": "friend01", "code": "123456", "password": "…" }
+→ 200 { "token": "<JWT scope=mailbox>", "session": "mailbox",
+        "address": { "id": 12, "email": "friend01@atwho.org" } }   // 與 mailbox-login 相同格式
+```
+- 驗碼順序：過期（15 分）→ 已使用（一次性）→ 錯誤次數（5 次上限）→ 雜湊比對。
+- **錯誤 5 次即作廢**：第 5 次起回 `CODE_LOCKED`（429），之後即使輸入正確碼也無效。
+- 驗碼通過**才**檢查 ID 是否仍可用；ID 在 request 後被搶走 → 409 且**不消耗**驗證碼。
+- 成功後以單一 D1 `batch`（交易）建立 `users(role='visitor')` ＋ `email_addresses(status='active')`；
+  `created_at=now` → 既有 **24 小時暖機期／5 封** 自動生效；`daily_send_quota=20`。
+- 錯誤：`EMAIL_INVALID`(400)、`INVALID_LOCAL_PART`(400)、`CODE_INVALID`(400)、`CODE_EXPIRED`(400)、`CODE_LOCKED`(429)、`ID_RESERVED`(409)、`ID_TAKEN`(409)、`WEAK_PASSWORD`(422)、`REGISTRATION_CLOSED`(403)、`REGISTRATION_INVITE_ONLY`(403)、`REGISTER_FAILED`(500)。
+
+**速率限制（沿用 `auth_attempts`，固定視窗 UTC）**
+
+| 對象 | 限制 | key |
+|---|---|---|
+| IP（僅 `register-request`） | **5 次／小時、20 次／日** → `429 RATE_LIMITED` | `register:<ip>`（`updated_at` 跨小時即重置）、`register:<ip>:d:<day>` |
+| Email | **60 秒內只能寄 1 封** → `429 CODE_COOLDOWN`；**每日 5 封** → `429 CODE_DAILY_LIMIT` | `register:<email>`（`locked_until`＝下次可寄時間）、`register:<email>:d:<day>` |
+| 驗證碼 | 錯誤 5 次 → `429 CODE_LOCKED` | `email_verifications.attempts` |
+
+**稽核（`registration_audit`）**
+
+| event | detail |
+|---|---|
+| `register_requested` | `{ local_part }` |
+| `register_verified` | `{ local_part }`（另含 `user_id`／`address_id`／`ip`／`user_agent`） |
+| `register_rejected` | `{ reason, local_part }` |
+
+⚠️ detail **不得**含 Email、驗證碼、密碼或 token（docs/21 §5）。
+
+**Migration**：`migrations/0009_email_verifications.sql`（只新增 `email_verifications` 表與索引；**部署前須先套用**，見 docs/11 §2-17）。
+
+**未包含（依 docs/20）**：DNS 二級網域撞名檢查（`ID_MATCHES_DOMAIN`／建議名稱）——`docs/20` 仍為「設計待審」，
+需另建 `domain_checks`／`id_blocklist`；本次僅實作格式／保留字／既有地址／既有 username。
+
+**前端**：`LoginPage` 於 `email_verify` 模式顯示 Email＋想要的 ID（`@atwho.org` 後綴）＋密碼＋確認密碼；
+「寄送驗證碼」後顯示 6 位數欄位與 60 秒重寄倒數；成功後以回傳 token 自動登入。
+`invite` 模式仍顯示既有邀請碼欄位（向後相容）；`closed` 顯示「目前未開放註冊。」
 
 ## 3. 通用原則
 

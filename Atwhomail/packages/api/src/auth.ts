@@ -43,6 +43,16 @@ export interface Env {
    * ⚠️ 未設定／空字串 → 進入**過渡放行**模式（僅警告），見 verifyAccessJwt 與 docs/16 §5（回退閥門）。
    */
   ACCESS_MAIL_AUD?: string;
+  /**
+   * 註冊模式（D21，docs/21 §4）：`invite`（預設，既有邀請碼流程）｜`email_verify`｜`closed`。
+   * 未設定／非法值 → 一律視為 `invite`（部署後由 owner 切換；回退只需改回此行）。
+   */
+  REGISTRATION_MODE?: string;
+  /**
+   * 舊版全站註冊開關（docs/05 §2.7）：`true` = 關閉註冊。
+   * D21 起保留相容（既有 invite 流程行為不變）；新流程／前端設定端點一併視為 `closed`。
+   */
+  REGISTRATION_DISABLED?: string;
 }
 
 export type Scope =

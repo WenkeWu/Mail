@@ -12,6 +12,7 @@ import type {
   MailDetail,
   MailListResponse,
   MeResponse,
+  RegistrationMode,
   SendPayload,
   SendResult,
   VisitorUser,
@@ -44,6 +45,30 @@ export function register(payload: {
     { method: "POST", json: payload }
   );
 }
+
+// ── D21：Email 驗證碼註冊（docs/21）──
+
+/** 目前註冊模式（公開端點；僅影響表單顯示） */
+export const getRegistrationMode = () => request<{ mode: RegistrationMode }>("/api/auth/registration-mode");
+
+/** 寄送 6 位數驗證碼（模式必須為 email_verify，否則後端回 403） */
+export const registerRequest = (payload: { email: string; local_part: string }) =>
+  request<{ sent: true; expiresIn: number }>("/api/auth/register-request", {
+    method: "POST",
+    json: payload,
+  });
+
+/** 驗證碼通過後建立帳號並回 mailbox token（與 mailbox-login 相同格式） */
+export const registerVerify = (payload: {
+  email: string;
+  local_part: string;
+  code: string;
+  password: string;
+}) =>
+  request<{ token: string; session: "mailbox"; address: { id: number; email: string } }>(
+    "/api/auth/register-verify",
+    { method: "POST", json: payload }
+  );
 
 /** 目前 session 的身分與寄信配額（Phase 1） */
 export const getMe = () => request<MeResponse>("/api/me");

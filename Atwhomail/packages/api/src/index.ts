@@ -473,6 +473,256 @@ function auditAsync(c: Context<AuthEnv>, entry: AuditEntry): void {
   }
 }
 
+// ══════════════════════ D21：Email 驗證碼註冊（docs/21）══════════════════════
+
+const REGISTRATION_MODE_VALUES = ["invite", "email_verify", "closed"] as const;
+type RegistrationMode = (typeof REGISTRATION_MODE_VALUES)[number];
+
+/** `REGISTRATION_MODE`（Worker var；預設 invite＝既有邀請碼流程）。非法值視為 invite（向後相容）。 */
+function registrationMode(env: Env): RegistrationMode {
+  const raw = (env.REGISTRATION_MODE ?? "").trim().toLowerCase();
+  return (REGISTRATION_MODE_VALUES as readonly string[]).includes(raw) ? (raw as RegistrationMode) : "invite";
+}
+
+/** 舊版全站註冊開關（保留相容；設 true 時新舊流程一併關閉） */
+function legacyRegistrationDisabled(env: Env): boolean {
+  return (env.REGISTRATION_DISABLED ?? "").trim().toLowerCase() === "true";
+}
+
+/** 驗證碼有效期 15 分鐘（docs/21 §5） */
+const EMAIL_CODE_TTL_MS = 15 * 60 * 1000;
+/** 同一驗證碼最多錯誤 5 次（第 5 次即作廢，docs/21 §5） */
+const EMAIL_CODE_MAX_ATTEMPTS = 5;
+/** 同一 Email 60 秒內只能寄一次（docs/21 §5） */
+const EMAIL_CODE_RESEND_COOLDOWN_MS = 60 * 1000;
+/** 同一 IP 每小時／每日的「註冊嘗試」上限（docs/21 §2） */
+const REGISTER_IP_HOURLY_LIMIT = 5;
+const REGISTER_IP_DAILY_LIMIT = 20;
+/** 同一 Email 每日驗證碼寄送上限（docs/21 §2） */
+const REGISTER_EMAIL_DAILY_LIMIT = 5;
+
+/**
+ * 保留字（docs/21 §4 要求「格式／保留字／既有地址」；清單取自 docs/20 §2）。
+ *
+ * ⚠️ **D20 的 DNS 二級網域撞名檢查（`ID_MATCHES_DOMAIN`）不在本次範圍**：
+ *    docs/20 仍為「設計待審」，且需要 `domain_checks`／`id_blocklist` 等尚未建立的前置資料。
+ *    本檔已把 ID 判定集中在 `localPartAvailability()`，D20 核准後可直接在此接上。
+ */
+const RESERVED_LOCAL_PARTS = new Set([
+  "admin",
+  "administrator",
+  "postmaster",
+  "abuse",
+  "root",
+  "noreply",
+  "no-reply",
+  "mailer-daemon",
+  "hostmaster",
+  "webmaster",
+  "support",
+  "sysadmin",
+  "security",
+  "billing",
+  "info",
+  "sales",
+  "contact",
+  "help",
+  "www",
+  "mail",
+  "email",
+  "owner",
+  "alerts",
+  "app",
+  "itag",
+  "tlsrpt",
+]);
+
+/** 基本 Email 格式（僅供收件；不做 DNS／寄達驗證） */
+const EMAIL_ADDRESS_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Email 正規化：trim ＋ 小寫（docs/21 §3）；格式不符 → null */
+function normalizeEmailAddress(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const email = raw.trim().toLowerCase();
+  if (email.length < 3 || email.length > 254) return null;
+  return EMAIL_ADDRESS_RE.test(email) ? email : null;
+}
+
+/** 6 位數驗證碼：crypto.getRandomValues ＋ 拒絕取樣（避免 modulo bias） */
+function generateEmailCode(): string {
+  const buf = new Uint32Array(1);
+  const limit = Math.floor(0x1_0000_0000 / 1_000_000) * 1_000_000;
+  let value = limit;
+  while (value >= limit) {
+    crypto.getRandomValues(buf);
+    value = buf[0]!;
+  }
+  return String(value % 1_000_000).padStart(6, "0");
+}
+
+/** DB 只存 SHA-256(code + JWT_SECRET)（docs/21 §5；不存明碼） */
+async function hashEmailCode(code: string, jwtSecret: string | undefined): Promise<string> {
+  return sha256Hex(new TextEncoder().encode(`${code}${jwtSecret ?? ""}`));
+}
+
+/** 常數時間比較（避免以回應時間猜碼） */
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** 固定視窗 key（UTC）：IP 每小時用主 key（隨小時重置），每日加上日期後綴 */
+function registrationDayKey(ip: string | null, ts: number): string {
+  return `register:${ip ?? "unknown"}:d:${Math.floor(ts / 86_400_000)}`;
+}
+
+/**
+ * IP 每小時限流：**key 就是 `register:<ip>`**（docs/21 §5）。
+ * `updated_at` 落在不同小時 → 視為新視窗，`fail_count` 從 1 重新起算；
+ * 同一小時內 `fail_count` 已達上限 → 不更新（changes=0）。
+ */
+async function claimIpHourlyCounter(db: D1Database, ip: string | null, ts: number): Promise<boolean> {
+  const hourStart = Math.floor(ts / 3_600_000) * 3_600_000;
+  const res = await db
+    .prepare(
+      `INSERT INTO auth_attempts (key, fail_count, locked_until, updated_at)
+       VALUES (?1, 1, 0, ?2)
+       ON CONFLICT(key) DO UPDATE SET
+         fail_count = CASE WHEN auth_attempts.updated_at < ?3 THEN 1 ELSE auth_attempts.fail_count + 1 END,
+         updated_at = ?2
+       WHERE auth_attempts.updated_at < ?3 OR auth_attempts.fail_count < ?4`
+    )
+    .bind(`register:${ip ?? "unknown"}`, ts, hourStart, REGISTER_IP_HOURLY_LIMIT)
+    .run();
+  return res.meta.changes === 1;
+}
+
+/**
+ * 原子計數：只有 `fail_count < limit` 才 +1（併發下不會超額）。
+ * 以 `ON CONFLICT … DO UPDATE … WHERE` 實作「檢查＋扣次」單一步驟。
+ */
+async function claimRegistrationCounter(db: D1Database, key: string, limit: number, ts: number): Promise<boolean> {
+  const res = await db
+    .prepare(
+      `INSERT INTO auth_attempts (key, fail_count, locked_until, updated_at)
+       VALUES (?1, 1, 0, ?2)
+       ON CONFLICT(key) DO UPDATE SET fail_count = fail_count + 1, updated_at = ?2
+       WHERE auth_attempts.fail_count < ?3`
+    )
+    .bind(key, ts, limit)
+    .run();
+  return res.meta.changes === 1;
+}
+
+/**
+ * Email 冷卻（60 秒）：原子搶佔，成功＝現在可以寄。
+ * `locked_until` 在此列代表「下次可寄時間」（不是登入鎖定）。
+ */
+async function claimEmailResendSlot(
+  db: D1Database,
+  email: string,
+  ts: number
+): Promise<{ ok: true } | { ok: false; retryAfterMs: number }> {
+  const key = `register:${email}`;
+  const res = await db
+    .prepare(
+      `INSERT INTO auth_attempts (key, fail_count, locked_until, updated_at)
+       VALUES (?1, 1, ?2, ?3)
+       ON CONFLICT(key) DO UPDATE SET fail_count = fail_count + 1, locked_until = ?2, updated_at = ?3
+       WHERE auth_attempts.locked_until <= ?3`
+    )
+    .bind(key, ts + EMAIL_CODE_RESEND_COOLDOWN_MS, ts)
+    .run();
+  if (res.meta.changes === 1) return { ok: true };
+  const row = await db
+    .prepare("SELECT locked_until FROM auth_attempts WHERE key = ?1")
+    .bind(key)
+    .first<{ locked_until: number }>();
+  return { ok: false, retryAfterMs: Math.max(0, Number(row?.locked_until ?? 0) - ts) };
+}
+
+/** 寄送失敗／未寄出 → 釋放 60 秒冷卻（避免使用者沒收到信卻要空等） */
+async function releaseEmailResendSlot(db: D1Database, email: string): Promise<void> {
+  await db
+    .prepare("UPDATE auth_attempts SET locked_until = 0, updated_at = ?1 WHERE key = ?2")
+    .bind(now(), `register:${email}`)
+    .run()
+    .catch(() => undefined);
+}
+
+/** 同一 Email 每日 5 封（原子計數） */
+async function claimEmailDailySlot(db: D1Database, email: string, ts: number): Promise<boolean> {
+  return claimRegistrationCounter(
+    db,
+    `register:${email}:d:${Math.floor(ts / 86_400_000)}`,
+    REGISTER_EMAIL_DAILY_LIMIT,
+    ts
+  );
+}
+
+/** 退還 Email 每日計數（寄送失敗時） */
+async function releaseEmailDailySlot(db: D1Database, email: string, ts: number): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE auth_attempts
+       SET fail_count = CASE WHEN fail_count > 0 THEN fail_count - 1 ELSE 0 END, updated_at = ?1
+       WHERE key = ?2`
+    )
+    .bind(now(), `register:${email}:d:${Math.floor(ts / 86_400_000)}`)
+    .run()
+    .catch(() => undefined);
+}
+
+/** ID 是否可用：保留字／既有地址（含軟刪除）／既有使用者名稱 */
+async function localPartAvailability(
+  db: D1Database,
+  localPart: string
+): Promise<"available" | "reserved" | "taken"> {
+  if (RESERVED_LOCAL_PARTS.has(localPart)) return "reserved";
+  const email = `${localPart}@${DOMAIN}`;
+  const addr = await db.prepare("SELECT id FROM email_addresses WHERE email = ?1").bind(email).first<{ id: number }>();
+  if (addr) return "taken";
+  const user = await db.prepare("SELECT id FROM users WHERE username = ?1").bind(localPart).first<{ id: number }>();
+  return user ? "taken" : "available";
+}
+
+/** 驗證碼信：寄件者 noreply@atwho.org；內容只有 6 位數＋15 分鐘說明（不含任何個資） */
+async function sendRegistrationEmail(env: Env, to: string, code: string): Promise<void> {
+  const text =
+    `您的 AtWhoMail 註冊驗證碼是：\n\n${code}\n\n` +
+    `此驗證碼 15 分鐘內有效，請勿轉交給他人。若您沒有申請註冊，請忽略本信。`;
+  const html =
+    `<p>您的 AtWhoMail 註冊驗證碼是：</p>` +
+    `<p style="font-size:24px;letter-spacing:4px"><strong>${code}</strong></p>` +
+    `<p>此驗證碼 15 分鐘內有效，請勿轉交給他人。若您沒有申請註冊，請忽略本信。</p>`;
+  await env.EMAIL.send({
+    from: "noreply@atwho.org",
+    to: [to],
+    subject: "AtWhoMail 註冊驗證碼",
+    text,
+    html,
+  });
+}
+
+/**
+ * 寫 `register_rejected` 稽核並回錯誤。
+ * ⚠️ detail **只放 reason 與 local_part**（不含 Email、密碼、驗證碼；docs/21 §5）。
+ */
+function auditRegistrationRejected(
+  c: Context<AuthEnv>,
+  opts: { code: string; status: number; reason: string; localPart: string | null; message: string }
+): Response {
+  auditAsync(c, {
+    event: "register_rejected",
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { reason: opts.reason, local_part: opts.localPart },
+  });
+  return err(c, opts.code, opts.message, opts.status);
+}
+
 /** 寄信配額回補（寄送失敗或後續檢查被拒時，避免誤扣） */
 function refundQuota(db: D1Database, addressId: number): Promise<void> {
   return db
@@ -830,8 +1080,16 @@ app.post("/api/auth/register", async (c) => {
   const ipKey = `ip:${ip ?? "unknown"}`;
   const userAgent = c.req.header("user-agent") ?? null;
   const accessEmail = c.req.header(ACCESS_EMAIL_HEADER)?.trim().toLowerCase() ?? null;
-  // REGISTRATION_DISABLED 為選配 var（預設未設 = 開放）；本檔不新增 wrangler var（P2/P7）
-  const env = c.env as Env & { REGISTRATION_DISABLED?: string };
+  const env = c.env;
+
+  // D21（docs/21 §4）：REGISTRATION_MODE 分流。預設 invite → 以下既有邀請碼流程**完全不變**。
+  const mode = registrationMode(env);
+  if (mode === "closed") {
+    return err(c, "REGISTRATION_CLOSED", "目前未開放註冊", 403);
+  }
+  if (mode === "email_verify") {
+    return err(c, "REGISTRATION_EMAIL_VERIFY_REQUIRED", "請改用 Email 驗證碼完成註冊", 403);
+  }
 
   // 步驟 1：限流（沿用 auth_attempts，key = ip:<ip>）
   const lockedUntil = await checkLocked(db, ipKey);
@@ -960,6 +1218,341 @@ app.post("/api/auth/register", async (c) => {
       .bind(now(), invite.id)
       .run();
     console.error("[atwhomail-api] register failed", { invite: invite.id, error: String(e) });
+    return err(c, "REGISTER_FAILED", "註冊失敗，請稍後再試", 500);
+  }
+});
+
+// ══════════════════════ D21：Email 驗證碼註冊（公開，docs/21）══════════════════════
+
+/**
+ * GET /api/auth/registration-mode — 公開（docs/21 §6）。
+ *
+ * 前端用它決定註冊表單要顯示「邀請碼」還是「Email 驗證碼」。
+ * ⚠️ 只影響 UI；真正的模式判定仍在各註冊端點由後端強制（前端不可信）。
+ * 舊版 `REGISTRATION_DISABLED=true` 一律回 `closed`（與既有 kill switch 相容）。
+ */
+app.get("/api/auth/registration-mode", (c) => {
+  const mode = registrationMode(c.env);
+  const effective: RegistrationMode =
+    mode === "closed" || legacyRegistrationDisabled(c.env) ? "closed" : mode;
+  return c.json({ mode: effective });
+});
+
+/**
+ * POST /api/auth/register-request — 寄送 6 位數 Email 驗證碼（docs/21 §4／§5）。
+ *
+ * 流程：模式檢查 → IP 限流（5/小時、20/日）→ Email／ID 驗證（格式／保留字／既有地址）
+ *      → Email 寄送限制（60 秒冷卻、每日 5 封）→ 產生並儲存雜湊 → 寄信 → 稽核。
+ *
+ * 回應 `200 { sent: true, expiresIn: 900 }`。
+ * ⚠️ Email **只收到 6 位數＋15 分鐘說明**，不含任何個資（docs/21 §5）。
+ */
+app.post("/api/auth/register-request", async (c) => {
+  const db = c.env.DB;
+  const ip = clientIp(c);
+  const userAgent = c.req.header("user-agent") ?? null;
+  const ts = now();
+
+  // 1) 模式：closed 立即關閉；invite 模式不得走此端點（否則等於繞過邀請碼）
+  const mode = registrationMode(c.env);
+  if (mode === "closed" || legacyRegistrationDisabled(c.env)) {
+    return err(c, "REGISTRATION_CLOSED", "目前未開放 Email 驗證碼註冊", 403);
+  }
+  if (mode !== "email_verify") {
+    return err(c, "REGISTRATION_INVITE_ONLY", "目前為邀請碼註冊模式，請使用邀請碼", 403);
+  }
+
+  // 2) IP 限流（先計數再處理內容：惡意／格式錯誤的請求同樣受限）
+  if (!(await claimIpHourlyCounter(db, ip, ts))) {
+    return auditRegistrationRejected(c, {
+      code: "RATE_LIMITED",
+      status: 429,
+      reason: "RATE_LIMITED",
+      localPart: null,
+      message: `註冊嘗試次數過多（每小時上限 ${REGISTER_IP_HOURLY_LIMIT} 次），請稍後再試`,
+    });
+  }
+  if (!(await claimRegistrationCounter(db, registrationDayKey(ip, ts), REGISTER_IP_DAILY_LIMIT, ts))) {
+    return auditRegistrationRejected(c, {
+      code: "RATE_LIMITED",
+      status: 429,
+      reason: "RATE_LIMITED",
+      localPart: null,
+      message: `註冊嘗試次數過多（每日上限 ${REGISTER_IP_DAILY_LIMIT} 次），請明天再試`,
+    });
+  }
+
+  const body = await c.req.json<{ email?: unknown; local_part?: unknown }>().catch(() => null);
+  const email = normalizeEmailAddress(body?.email);
+  const localPart = typeof body?.local_part === "string" ? body.local_part.trim().toLowerCase() : "";
+
+  if (!email) {
+    return auditRegistrationRejected(c, {
+      code: "EMAIL_INVALID",
+      status: 400,
+      reason: "EMAIL_INVALID",
+      localPart: localPart || null,
+      message: "Email 格式不正確",
+    });
+  }
+  if (!validLocalPart(localPart)) {
+    return auditRegistrationRejected(c, {
+      code: "INVALID_LOCAL_PART",
+      status: 400,
+      reason: "INVALID_LOCAL_PART",
+      localPart: localPart || null,
+      message: "ID 需為 1–64 字元（a-z0-9._-），不能以 . 或 - 開頭或結尾",
+    });
+  }
+
+  const availability = await localPartAvailability(db, localPart);
+  if (availability === "reserved") {
+    return auditRegistrationRejected(c, {
+      code: "ID_RESERVED",
+      status: 409,
+      reason: "ID_RESERVED",
+      localPart,
+      message: "此 ID 為系統保留",
+    });
+  }
+  if (availability === "taken") {
+    return auditRegistrationRejected(c, {
+      code: "ID_TAKEN",
+      status: 409,
+      reason: "ID_TAKEN",
+      localPart,
+      message: "這個 ID 已被使用",
+    });
+  }
+
+  // 3) Email 寄送限制：每日 5 封（先扣；冷卻失敗時退還）＋ 60 秒冷卻
+  if (!(await claimEmailDailySlot(db, email, ts))) {
+    return auditRegistrationRejected(c, {
+      code: "CODE_DAILY_LIMIT",
+      status: 429,
+      reason: "CODE_DAILY_LIMIT",
+      localPart,
+      message: `此 Email 今日驗證碼寄送次數已達上限（${REGISTER_EMAIL_DAILY_LIMIT} 封），請明天再試`,
+    });
+  }
+  const slot = await claimEmailResendSlot(db, email, ts);
+  if (!slot.ok) {
+    await releaseEmailDailySlot(db, email, ts);
+    const seconds = Math.max(1, Math.ceil(slot.retryAfterMs / 1000));
+    return auditRegistrationRejected(c, {
+      code: "CODE_COOLDOWN",
+      status: 429,
+      reason: "CODE_COOLDOWN",
+      localPart,
+      message: `請 ${seconds} 秒後再重新寄送驗證碼`,
+    });
+  }
+
+  if (!c.env.JWT_SECRET) {
+    await releaseEmailResendSlot(db, email);
+    await releaseEmailDailySlot(db, email, ts);
+    return err(c, "SERVER_MISCONFIGURED", "伺服器設定錯誤", 500);
+  }
+
+  // 4) 產生驗證碼 → 舊碼作廢（重寄後舊碼不可用）→ 存入雜湊
+  const code = generateEmailCode();
+  const codeHash = await hashEmailCode(code, c.env.JWT_SECRET);
+  const expiresAt = ts + EMAIL_CODE_TTL_MS;
+  try {
+    await db.batch([
+      db
+        .prepare(
+          `UPDATE email_verifications SET consumed_at = ?1
+           WHERE email = ?2 AND purpose = 'register' AND consumed_at IS NULL`
+        )
+        .bind(ts, email),
+      db
+        .prepare(
+          `INSERT INTO email_verifications (email, code_hash, purpose, attempts, created_at, expires_at, consumed_at, ip)
+           VALUES (?1, ?2, 'register', 0, ?3, ?4, NULL, ?5)`
+        )
+        .bind(email, codeHash, ts, expiresAt, ip),
+    ]);
+  } catch (e) {
+    console.error("[atwhomail-api] register-request store failed", { error: String(e) });
+    await releaseEmailResendSlot(db, email);
+    await releaseEmailDailySlot(db, email, ts);
+    return err(c, "REGISTER_FAILED", "註冊暫存失敗，請稍後再試", 500);
+  }
+
+  // 5) 寄送（失敗 → 釋放冷卻與每日計數，讓使用者可立即重試）
+  try {
+    await sendRegistrationEmail(c.env, email, code);
+  } catch (e) {
+    console.error("[atwhomail-api] verification email send failed", { error: String(e) });
+    await releaseEmailResendSlot(db, email);
+    await releaseEmailDailySlot(db, email, ts);
+    return err(c, "EMAIL_SEND_FAILED", "驗證碼寄送失敗，請稍後再試", 502);
+  }
+
+  auditAsync(c, {
+    event: "register_requested",
+    ip,
+    userAgent,
+    detail: { local_part: localPart },
+  });
+  return c.json({ sent: true, expiresIn: EMAIL_CODE_TTL_MS / 1000 });
+});
+
+/**
+ * POST /api/auth/register-verify — 驗證碼通過後建立帳號並回 mailbox token（docs/21 §4／§5）。
+ *
+ * 安全順序（刻意如此）：
+ *   1. 先驗碼（過期／已用／5 次上限）→ 錯誤碼不洩漏 ID 是否存在
+ *   2. 再檢查 ID 是否仍可用（request 後可能被搶走；此時**不消耗**驗證碼）
+ *   3. 原子標記 `consumed_at`（一次性；併發也只會成功一次）
+ *   4. `users` ＋ `email_addresses` 以單一 `batch`（交易）建立；失敗即回滾並恢復驗證碼
+ */
+app.post("/api/auth/register-verify", async (c) => {
+  const db = c.env.DB;
+  const ip = clientIp(c);
+  const userAgent = c.req.header("user-agent") ?? null;
+  const ts = now();
+
+  const mode = registrationMode(c.env);
+  if (mode === "closed" || legacyRegistrationDisabled(c.env)) {
+    return err(c, "REGISTRATION_CLOSED", "目前未開放 Email 驗證碼註冊", 403);
+  }
+  if (mode !== "email_verify") {
+    return err(c, "REGISTRATION_INVITE_ONLY", "目前為邀請碼註冊模式，請使用邀請碼", 403);
+  }
+
+  const body = await c.req
+    .json<{ email?: unknown; local_part?: unknown; code?: unknown; password?: unknown }>()
+    .catch(() => null);
+  const email = normalizeEmailAddress(body?.email);
+  const localPart = typeof body?.local_part === "string" ? body.local_part.trim().toLowerCase() : "";
+  const rejection = (code: string, message: string, status: number, reason: string): Response =>
+    auditRegistrationRejected(c, { code, message, status, reason, localPart: localPart || null });
+
+  if (!email) return rejection("EMAIL_INVALID", "Email 格式不正確", 400, "EMAIL_INVALID");
+  if (!validLocalPart(localPart)) {
+    return rejection(
+      "INVALID_LOCAL_PART",
+      "ID 需為 1–64 字元（a-z0-9._-），不能以 . 或 - 開頭或結尾",
+      400,
+      "INVALID_LOCAL_PART"
+    );
+  }
+  if (typeof body?.code !== "string" || !/^\d{6}$/.test(body.code.trim())) {
+    return rejection("CODE_INVALID", "驗證碼錯誤或已失效，請重新取得", 400, "CODE_INVALID");
+  }
+  const code = body.code.trim();
+  if (typeof body?.password !== "string") {
+    return rejection("WEAK_PASSWORD", "密碼格式錯誤", 422, "WEAK_PASSWORD");
+  }
+  const pwErr = validateRegistrationPassword(body.password);
+  if (pwErr) return rejection("WEAK_PASSWORD", pwErr, 422, "WEAK_PASSWORD");
+
+  // 1) 驗碼：同一 Email 只認最新一筆（重寄會讓舊碼 consumed_at 非空）
+  const row = await db
+    .prepare(
+      `SELECT id, code_hash, attempts, expires_at, consumed_at
+       FROM email_verifications
+       WHERE email = ?1 AND purpose = 'register'
+       ORDER BY id DESC LIMIT 1`
+    )
+    .bind(email)
+    .first<{ id: number; code_hash: string; attempts: number; expires_at: number; consumed_at: number | null }>();
+
+  if (!row) return rejection("CODE_INVALID", "驗證碼錯誤或已失效，請重新取得", 400, "CODE_INVALID");
+  if (row.consumed_at !== null) {
+    return rejection("CODE_INVALID", "驗證碼已使用，請重新取得", 400, "CODE_INVALID");
+  }
+  if (Number(row.expires_at) <= ts) {
+    return rejection("CODE_EXPIRED", "驗證碼已過期（15 分鐘），請重新取得", 400, "CODE_EXPIRED");
+  }
+  if (Number(row.attempts) >= EMAIL_CODE_MAX_ATTEMPTS) {
+    return rejection("CODE_LOCKED", "驗證碼錯誤次數過多，請重新取得驗證碼", 429, "CODE_LOCKED");
+  }
+
+  if (!c.env.JWT_SECRET) return err(c, "SERVER_MISCONFIGURED", "伺服器設定錯誤", 500);
+  const submittedHash = await hashEmailCode(code, c.env.JWT_SECRET);
+  if (!constantTimeEqual(submittedHash, row.code_hash)) {
+    await db
+      .prepare("UPDATE email_verifications SET attempts = attempts + 1 WHERE id = ?1 AND consumed_at IS NULL")
+      .bind(row.id)
+      .run();
+    const after = await db
+      .prepare("SELECT attempts FROM email_verifications WHERE id = ?1")
+      .bind(row.id)
+      .first<{ attempts: number }>();
+    const attempts = Number(after?.attempts ?? Number(row.attempts) + 1);
+    if (attempts >= EMAIL_CODE_MAX_ATTEMPTS) {
+      return rejection("CODE_LOCKED", "驗證碼錯誤次數過多，請重新取得驗證碼", 429, "CODE_LOCKED");
+    }
+    return rejection("CODE_INVALID", `驗證碼錯誤，還可再試 ${EMAIL_CODE_MAX_ATTEMPTS - attempts} 次`, 400, "CODE_INVALID");
+  }
+
+  // 2) 驗碼通過後才檢查 ID（錯誤碼不洩漏 ID 狀態；ID 被搶走時不消耗驗證碼）
+  const availability = await localPartAvailability(db, localPart);
+  if (availability === "reserved") return rejection("ID_RESERVED", "此 ID 為系統保留", 409, "ID_RESERVED");
+  if (availability === "taken") return rejection("ID_TAKEN", "這個 ID 已被使用", 409, "ID_TAKEN");
+
+  // 3) 一次性：原子標記（併發請求只有一個能成功）
+  const consume = await db
+    .prepare(
+      `UPDATE email_verifications SET consumed_at = ?1
+       WHERE id = ?2 AND consumed_at IS NULL AND attempts < ?3 AND expires_at > ?1`
+    )
+    .bind(ts, row.id, EMAIL_CODE_MAX_ATTEMPTS)
+    .run();
+  if (consume.meta.changes !== 1) {
+    return rejection("CODE_INVALID", "驗證碼已失效，請重新取得", 400, "CODE_INVALID");
+  }
+
+  // 4) 建立 users(role=visitor) ＋ email_addresses（status='active'；created_at=now → 暖機 24h 自動生效）
+  const mailboxEmail = `${localPart}@${DOMAIN}`;
+  const pwHash = await hashPassword(body.password);
+  try {
+    const results = await db.batch([
+      db
+        .prepare(
+          `INSERT INTO users (username, display_name, password_hash, status, role, access_email, created_at, updated_at)
+           VALUES (?1, NULL, ?2, 'active', 'visitor', NULL, ?3, ?3)`
+        )
+        .bind(localPart, pwHash, ts),
+      db
+        .prepare(
+          `INSERT INTO email_addresses
+             (user_id, local_part, domain, email, password_hash, password_changed_at, status,
+              can_send, daily_send_quota, sent_today, created_at, updated_at)
+           SELECT id, ?2, ?3, ?4, ?5, ?6, 'active', 1, ?7, 0, ?6, ?6
+           FROM users WHERE username = ?1`
+        )
+        .bind(localPart, localPart, DOMAIN, mailboxEmail, pwHash, ts, QUOTA.DEFAULT_VISITOR_DAILY_QUOTA),
+    ]);
+    const userId = Number(results[0]?.meta.last_row_id ?? 0);
+    const addressId = Number(results[1]?.meta.last_row_id ?? 0);
+    const token = await signMailboxToken(c.env, addressId, mailboxEmail, ts);
+
+    auditAsync(c, {
+      event: "register_verified",
+      userId: userId || null,
+      addressId: addressId || null,
+      ip,
+      userAgent,
+      detail: { local_part: localPart },
+    });
+    // 與 mailbox-login 相同格式；成功後前端直接進入信箱
+    return c.json({ token, session: "mailbox", address: { id: addressId, email: mailboxEmail } }, 200);
+  } catch (e) {
+    // batch 已回滾；恢復驗證碼可用（若是 ID 競態可換 ID 重試）
+    await db
+      .prepare("UPDATE email_verifications SET consumed_at = NULL WHERE id = ?1")
+      .bind(row.id)
+      .run()
+      .catch(() => undefined);
+    const message = String(e);
+    if (/UNIQUE constraint failed|SQLITE_CONSTRAINT/i.test(message)) {
+      return rejection("ID_TAKEN", "這個 ID 已被使用", 409, "ID_TAKEN");
+    }
+    console.error("[atwhomail-api] register-verify failed", { error: message });
     return err(c, "REGISTER_FAILED", "註冊失敗，請稍後再試", 500);
   }
 });

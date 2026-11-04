@@ -41,7 +41,15 @@
     // ⚠️ 回退方式：把 ACCESS_MAIL_AUD 移除或設為空字串 → 程式僅記錄 warning 並放行（過渡模式）。
     // ⚠️ 這兩者非機密（AUD 非密鑰），可放在 vars；不得把任何 secret 寫進本檔。
     "ACCESS_TEAM_DOMAIN": "steep-queen-06be.cloudflareaccess.com",
-    "ACCESS_MAIL_AUD": "48c19f72b4892912c5176b3f88ce1fdae27ff6461eb85ef52b928e688567d077"
+    "ACCESS_MAIL_AUD": "48c19f72b4892912c5176b3f88ce1fdae27ff6461eb85ef52b928e688567d077",
+
+    // D21（docs/21 §4）：註冊模式。
+    //   invite        既有邀請碼流程（預設；行為與 D21 之前完全相同）
+    //   email_verify  Email 6 位數驗證碼註冊（docs/21）
+    //   closed        一律關閉註冊（新舊流程皆 403 REGISTRATION_CLOSED）
+    // 切換後重新部署 API；前端會讀取 GET /api/auth/registration-mode 自動切換表單（無需重新 build）。
+    // ⚠️ 非機密，可放 vars。
+    "REGISTRATION_MODE": "invite"
   }
   // Phase 11 加入：vars / secrets（JWT_SECRET 等，用 .dev.vars 與 wrangler secret put）
 }

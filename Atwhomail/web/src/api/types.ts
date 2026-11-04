@@ -122,6 +122,9 @@ export interface DeletedAddressInfo {
   messages: number;
 }
 
+/** D21：註冊模式（`GET /api/auth/registration-mode`；僅影響表單顯示，權限仍由後端判定） */
+export type RegistrationMode = "invite" | "email_verify" | "closed";
+
 /** 登入 session（Model C：owner 或單一信箱） */
 export type Session =
   | { kind: "owner"; token: string; userId: number; username: string }

@@ -437,6 +437,46 @@
             後端新端點（restore／hard／batch／empty）保留不影響舊前端。
       - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
 
+- [ ] **17. Email 驗證碼註冊（docs/21 D21；2026-11-04 程式完成，未部署）**
+      - [ ] **先套用 migration `0009_email_verifications.sql`**（只新增 `email_verifications` 表與索引；
+            無 ALTER，既有資料不受影響）：
+            ```powershell
+            cd D:\Mail\Atwhomail
+            pnpm --filter @atwhomail/api exec wrangler d1 migrations apply mail-d1 --remote
+            ```
+            ⚠️ 部署順序：**migration 先於 API**（`/api/auth/register-request|verify` 需要新表）。
+            套用後抽驗：`SELECT name FROM sqlite_master WHERE type='table' AND name='email_verifications';` → 1 列。
+      - [ ] **部署 API 與前端**。API 需含新端點；前端需重新 build／deploy 才有新註冊表單
+            （舊前端仍可用：`REGISTRATION_MODE=invite` 時行為不變）。
+      - [ ] **切換 `REGISTRATION_MODE`（Worker var，非機密）**：
+            1. 預設值為 `invite`（`packages/api/wrangler.jsonc` 的 `vars`）→ 與 D21 之前完全相同：
+               前端顯示邀請碼欄位、舊 `POST /api/auth/register` 可用、新端點一律 403。
+            2. 切到 Email 驗證碼：把 `REGISTRATION_MODE` 改為 **`email_verify`** → `pnpm --filter @atwhomail/api run deploy`。
+               前端**不需要重新 build**：登入頁會呼叫 `GET /api/auth/registration-mode` 自動切換表單
+               （若該請求失敗／舊後端 → 回退 invite，不會壞頁）。
+            3. 緊急關閉：改為 **`closed`** 並部署（或沿用舊 kill switch `REGISTRATION_DISABLED=true`）→
+               `register`／`register-request`／`register-verify` 皆 `403 REGISTRATION_CLOSED`。
+            4. **回退到邀請制**：改回 **`invite`**（或移除該 var）並部署；邀請碼資料與程式完全保留，
+               既有未使用邀請碼立即恢復可用。
+      - [ ] **驗收（Email 驗證碼模式）**：
+            ① `curl GET /api/auth/registration-mode` → `{"mode":"email_verify"}`。
+            ② 前端註冊分頁：Email＋想要的 ID（`@atwho.org`）＋密碼＋確認密碼 →「寄送驗證碼」→
+               出現 6 位數欄位與 60 秒重寄倒數；成功後自動登入。
+            ③ 收到信：寄件者 `noreply@atwho.org`、內容只有 6 位數與 15 分鐘說明、不含 ID／Email。
+            ④ DB：`email_verifications.code_hash` 為 64 字元 SHA-256（**無明碼**）、`expires_at-created_at=900000`。
+            ⑤ 錯碼 5 次 → `CODE_LOCKED`；過期 → `CODE_EXPIRED`；60 秒內重寄 → `CODE_COOLDOWN`；
+               同一碼第二次 → `CODE_INVALID`；ID 重複 → `409 ID_TAKEN`；保留字 → `409 ID_RESERVED`。
+            ⑥ 成功後：`users.role='visitor'`、`email_addresses.status='active'`、`daily_send_quota=20`、
+               `created_at` 為當下（**24 小時暖機 5 封**自動生效）；回傳 token 可讀 `/api/me`／`/api/mail/*`。
+            ⑦ 限流：同 IP `register-request` 第 6 次／小時 → `429 RATE_LIMITED`；同 Email 第 6 封／日 →
+               `429 CODE_DAILY_LIMIT`。
+            ⑧ 稽核：`register_requested`／`register_verified`／`register_rejected` 的 detail **只含**
+               `local_part`（必要時加 `reason`），**不得**含 Email／驗證碼／密碼／token。
+      - [ ] **已知限制**：`docs/20` 的 DNS 二級網域撞名檢查（`ID_MATCHES_DOMAIN`／建議名稱）**尚未實作**
+            （docs/20 仍為設計待審）→ 本次僅擋格式／保留字／既有地址／既有 username。
+            機器人防護目前只有速率限制（Turnstile 為 docs/21 §8 的下一階段）。
+      - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -445,7 +485,10 @@
 | `POST /api/auth/login` | 公開 **＋需 Cloudflare Access JWT**（`ACCESS_MAIL_AUD` 設定後生效；5 次失敗鎖 15 分） | 管理員 session（階段 2／D2） |
 | `POST /api/auth/mailbox-login` | 公開（5 次失敗鎖 15 分） | 信箱 session（**不受 Access 影響**）；錯誤碼：401 `INVALID_CREDENTIALS`／403 `ADDRESS_DISABLED`／403 `ACCOUNT_SUSPENDED`（**先驗密碼再判狀態**，階段 5／D8） |
 | `PATCH /api/auth/owner-password/self` | owner session ＋ 舊密碼 | owner 自助改密碼（階段 2／D7） |
-| `POST /api/auth/register` | **公開（需邀請碼）** | 訪客註冊（Phase 1）→ mailbox session |
+| `POST /api/auth/register` | **公開**（行為依 `REGISTRATION_MODE`；預設 `invite` 需邀請碼） | 訪客註冊（Phase 1）→ mailbox session。**D21**：`email_verify` → 403 `REGISTRATION_EMAIL_VERIFY_REQUIRED`（改走下方兩端點）；`closed` → 403 `REGISTRATION_CLOSED` |
+| `GET /api/auth/registration-mode` | 公開 | **D21**：目前註冊模式 `{mode}`（僅供前端表單顯示；權限仍由後端強制） |
+| `POST /api/auth/register-request` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：寄 6 位數驗證碼到指定 Email（寄件者 `noreply@atwho.org`；DB 只存 SHA-256；15 分鐘）。限流：IP 5/時、20/日；Email 60 秒/封、5/日 |
+| `POST /api/auth/register-verify` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：驗碼（一次性／5 次上限）→ 建立 visitor＋address（暖機 24h）→ 回 mailbox token。ID 重複 `409 ID_TAKEN`、保留字 `409 ID_RESERVED` |
 | `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（**預設只回遮罩碼**；`?reveal=1` 額外回全碼並寫稽核）／撤銷 |
 | `GET /api/me` | owner 或 mailbox | 身分與寄信配額（供前端顯示） |
 | **（session 檢查）** | owner 或 mailbox | `401 TOKEN_STALE`：**查不到列**（帳號／地址已被刪除，階段 6／D10）或密碼已變更；rescue 不受影響（N5） |

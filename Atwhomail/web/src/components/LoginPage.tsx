@@ -1,7 +1,14 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
-import { mailboxLogin, ownerLogin, register } from "../api/endpoints";
-import type { Session } from "../api/types";
+import {
+  getRegistrationMode,
+  mailboxLogin,
+  ownerLogin,
+  register,
+  registerRequest,
+  registerVerify,
+} from "../api/endpoints";
+import type { RegistrationMode, Session } from "../api/types";
 import type { LoginMode } from "../lib/hostMode";
 import { IconMail } from "./icons";
 
@@ -31,6 +38,19 @@ const REGISTER_HINTS: Record<string, string> = {
   WEAK_PASSWORD: "密碼至少 10 個字元，且不能是純數字。",
   REGISTRATION_DISABLED: "站方目前暫停開放註冊。",
   RATE_LIMITED: "嘗試次數過多，請稍後再試（連續失敗 5 次會鎖定 15 分鐘）。",
+  // D21（docs/21 §6）
+  EMAIL_INVALID: "請輸入有效的 Email 地址。",
+  ID_TAKEN: "這個 ID 已被使用，請換一個。",
+  ID_RESERVED: "此 ID 為系統保留，請換一個。",
+  CODE_INVALID: "驗證碼錯誤或已失效，請確認後再試。",
+  CODE_EXPIRED: "驗證碼已過期（15 分鐘），請重新寄送。",
+  CODE_LOCKED: "驗證碼錯誤次數過多，請重新寄送驗證碼。",
+  CODE_COOLDOWN: "請稍候再重新寄送驗證碼。",
+  CODE_DAILY_LIMIT: "此 Email 今日寄送次數已達上限（5 封），請明天再試。",
+  REGISTRATION_CLOSED: "站方目前暫停開放註冊。",
+  REGISTRATION_INVITE_ONLY: "目前為邀請碼註冊模式，請使用邀請碼。",
+  REGISTRATION_EMAIL_VERIFY_REQUIRED: "請改用 Email 驗證碼完成註冊。",
+  EMAIL_SEND_FAILED: "驗證碼寄送失敗，請稍後再試。",
 };
 
 type Tab = "mailbox" | "owner" | "register";
@@ -41,7 +61,16 @@ const TAB_LABEL: Record<Tab, string> = {
   register: "註冊",
 };
 
-/** 登入頁：Model C 的兩種身分（信箱／管理員）＋ Phase 1 的訪客註冊（邀請碼） */
+/** 組出「server 訊息（提示）」；沒有提示就只顯示 server 訊息 */
+function registerErrorText(err: unknown): string {
+  if (err instanceof ApiError) {
+    const hint = REGISTER_HINTS[err.code];
+    return hint ? `${err.message}（${hint}）` : err.message;
+  }
+  return "註冊失敗，請稍後再試";
+}
+
+/** 登入頁：Model C 的兩種身分（信箱／管理員）＋ 訪客註冊（D21：Email 驗證碼／邀請碼） */
 export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }: Props) {
   /**
    * 分頁清單依模式決定（docs/16 D1；僅顯示面）：
@@ -69,30 +98,107 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
   });
   const [username, setUsername] = useState("owner");
   const [password, setPassword] = useState("");
-  // 註冊欄位
+  // 註冊欄位（邀請碼模式）
   const [inviteCode, setInviteCode] = useState("");
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  // 註冊欄位（D21 Email 驗證碼模式）
+  const [regMode, setRegMode] = useState<RegistrationMode | null>(null);
+  const [regEmail, setRegEmail] = useState("");
+  const [regLocalPart, setRegLocalPart] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [resendIn, setResendIn] = useState(0);
+  const [sendingCode, setSendingCode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // D21：註冊模式由後端決定（`REGISTRATION_MODE`；前端無法從建置期得知）。
+  // 取不到／舊後端 → 回退 invite，維持既有行為。
+  useEffect(() => {
+    if (!showRegister || mode === "admin") return;
+    let alive = true;
+    getRegistrationMode()
+      .then((r) => {
+        if (alive) setRegMode(r.mode);
+      })
+      .catch(() => {
+        if (alive) setRegMode("invite");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [showRegister, mode]);
+
+  // 重寄倒數（60 秒）
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendIn((n) => (n <= 1 ? 0 : n - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendIn]);
 
   const switchTab = (next: Tab) => {
     setTab(next);
     setError(null);
   };
 
+  /** 寄送 6 位數驗證碼（D21；成功後顯示驗證碼欄位並啟動 60 秒倒數） */
+  const sendCode = async (): Promise<void> => {
+    if (sendingCode || busy) return;
+    setError(null);
+    const mail = regEmail.trim().toLowerCase();
+    const name = regLocalPart.trim().toLowerCase();
+    if (!mail || !name) {
+      setError("請填寫 Email 與想要的 ID");
+      return;
+    }
+    setSendingCode(true);
+    try {
+      await registerRequest({ email: mail, local_part: name });
+      setCodeSent(true);
+      setVerificationCode("");
+      setResendIn(60);
+    } catch (err) {
+      setError(registerErrorText(err));
+    } finally {
+      setSendingCode(false);
+    }
+  };
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (busy) return;
-    setBusy(true);
+    if (busy || sendingCode) return;
     setError(null);
+
+    if (tab === "register" && regMode === "email_verify" && !codeSent) {
+      await sendCode();
+      return;
+    }
+    if (tab === "register" && (regMode === null || regMode === "closed")) return;
+
+    setBusy(true);
     try {
       if (tab === "register") {
         if (newPassword !== confirmPassword) {
           setError("兩次輸入的密碼不一致");
           return;
         }
+        if (regMode === "email_verify") {
+          const mail = regEmail.trim().toLowerCase();
+          const name = regLocalPart.trim().toLowerCase();
+          const code = verificationCode.trim();
+          if (!mail || !name || !/^\d{6}$/.test(code) || !newPassword) {
+            setError("請填寫 Email、ID、6 位數驗證碼與密碼");
+            return;
+          }
+          const res = await registerVerify({ email: mail, local_part: name, code, password: newPassword });
+          onLogin({ kind: "mailbox", token: res.token, addressId: res.address.id, email: res.address.email });
+          return;
+        }
+        // 邀請碼模式（既有行為，完全不變）
         const code = inviteCode.trim();
         const name = newUsername.trim().toLowerCase();
         if (!code || !name || !newPassword) {
@@ -127,6 +233,22 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
     }
   };
 
+  /** 主要送出按鈕文案；`null` = 此狀態不顯示（載入中／已關閉／等待寄碼） */
+  const submitLabel: string | null =
+    tab === "register"
+      ? regMode === "email_verify"
+        ? codeSent
+          ? busy
+            ? "註冊中…"
+            : "完成註冊並登入"
+          : null
+        : regMode === null || regMode === "closed"
+          ? null
+          : "註冊並登入"
+      : busy
+        ? "登入中…"
+        : "登入";
+
   return (
     <div className="login-page">
       <div className="login-card">
@@ -159,55 +281,167 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
 
         <form onSubmit={submit} className="login-form">
           {tab === "register" ? (
-            <>
-              <label>
-                邀請碼
-                <input
-                  type="text"
-                  value={inviteCode}
-                  onChange={(e) => setInviteCode(e.target.value)}
-                  placeholder="向邀請你的人索取"
-                  autoComplete="off"
-                  required
-                  autoFocus
-                />
-              </label>
-              <label>
-                使用者名稱（同時為你的信箱地址）
-                <div className="suffix-input">
+            regMode === null ? (
+              <p className="login-hint">正在載入註冊設定…</p>
+            ) : regMode === "closed" ? (
+              <p className="login-hint">目前未開放註冊。</p>
+            ) : regMode === "email_verify" ? (
+              <>
+                <label>
+                  Email（收取驗證碼）
                   <input
-                    type="text"
-                    value={newUsername}
-                    onChange={(e) => setNewUsername(e.target.value)}
-                    placeholder="例如 friend01"
-                    autoComplete="username"
+                    type="email"
+                    value={regEmail}
+                    onChange={(e) => setRegEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    autoComplete="email"
+                    disabled={codeSent}
+                    required={!codeSent}
+                    autoFocus
+                  />
+                </label>
+                <label>
+                  想要的 ID
+                  <div className="suffix-input">
+                    <input
+                      type="text"
+                      value={regLocalPart}
+                      onChange={(e) => setRegLocalPart(e.target.value)}
+                      placeholder="例如 friend01"
+                      autoComplete="username"
+                      disabled={codeSent}
+                      required={!codeSent}
+                    />
+                    <span>@atwho.org</span>
+                  </div>
+                </label>
+                <label>
+                  密碼
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="至少 10 個字元、非純數字"
+                    autoComplete="new-password"
                     required
                   />
-                  <span>@atwho.org</span>
-                </div>
-              </label>
-              <label>
-                密碼
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="至少 10 個字元、非純數字"
-                  autoComplete="new-password"
-                  required
-                />
-              </label>
-              <label>
-                確認密碼
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  autoComplete="new-password"
-                  required
-                />
-              </label>
-            </>
+                </label>
+                <label>
+                  確認密碼
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    autoComplete="new-password"
+                    required
+                  />
+                </label>
+
+                {codeSent && (
+                  <>
+                    <label>
+                      驗證碼（6 位數）
+                      <input
+                        type="text"
+                        className="code-input"
+                        value={verificationCode}
+                        onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                        placeholder="000000"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={6}
+                        required
+                      />
+                    </label>
+                    <p className="login-hint">驗證碼已寄至 {regEmail.trim()}，15 分鐘內有效。</p>
+                    <div className="register-actions">
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => void sendCode()}
+                        disabled={resendIn > 0 || sendingCode || busy}
+                      >
+                        {sendingCode ? "寄送中…" : resendIn > 0 ? `重新寄送（${resendIn}s）` : "重新寄送驗證碼"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-link"
+                        onClick={() => {
+                          setCodeSent(false);
+                          setVerificationCode("");
+                          setResendIn(0);
+                          setError(null);
+                        }}
+                        disabled={busy}
+                      >
+                        修改 Email／ID
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {!codeSent && (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => void sendCode()}
+                    disabled={sendingCode || busy}
+                  >
+                    {sendingCode ? "寄送中…" : "寄送驗證碼"}
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <label>
+                  邀請碼
+                  <input
+                    type="text"
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value)}
+                    placeholder="向邀請你的人索取"
+                    autoComplete="off"
+                    required
+                    autoFocus
+                  />
+                </label>
+                <label>
+                  使用者名稱（同時為你的信箱地址）
+                  <div className="suffix-input">
+                    <input
+                      type="text"
+                      value={newUsername}
+                      onChange={(e) => setNewUsername(e.target.value)}
+                      placeholder="例如 friend01"
+                      autoComplete="username"
+                      required
+                    />
+                    <span>@atwho.org</span>
+                  </div>
+                </label>
+                <label>
+                  密碼
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="至少 10 個字元、非純數字"
+                    autoComplete="new-password"
+                    required
+                  />
+                </label>
+                <label>
+                  確認密碼
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    autoComplete="new-password"
+                    required
+                  />
+                </label>
+              </>
+            )
           ) : tab === "mailbox" ? (
             <>
               <label>
@@ -261,9 +495,11 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
 
           {error && <p className="login-error">{error}</p>}
 
-          <button type="submit" className="btn-primary" disabled={busy}>
-            {busy ? (tab === "register" ? "註冊中…" : "登入中…") : tab === "register" ? "註冊並登入" : "登入"}
-          </button>
+          {submitLabel && (
+            <button type="submit" className="btn-primary" disabled={busy}>
+              {submitLabel}
+            </button>
+          )}
         </form>
 
         <p className="login-hint">
@@ -271,7 +507,11 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
             ? "信箱登入僅能看到此地址的信件（可用範圍：收信匣、寄件備份、封存、垃圾郵件、垃圾桶）。"
             : tab === "owner"
               ? "管理員（owner）可管理所有虛擬地址，並以聚合視角查看全部信箱。"
-              : "註冊需要邀請碼。註冊後會建立你自己的信箱地址（寄信受每日配額限制）。"}
+              : regMode === "email_verify"
+                ? "填寫 Email 收取 6 位數驗證碼；驗證成功後會建立你的信箱地址（寄信受每日配額限制）。"
+                : regMode === "closed"
+                  ? "站方目前暫停開放註冊。"
+                  : "註冊需要邀請碼。註冊後會建立你自己的信箱地址（寄信受每日配額限制）。"}
         </p>
       </div>
     </div>
