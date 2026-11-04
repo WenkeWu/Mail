@@ -49,7 +49,7 @@
     //   closed        一律關閉註冊（新舊流程皆 403 REGISTRATION_CLOSED）
     // 切換後重新部署 API；前端會讀取 GET /api/auth/registration-mode 自動切換表單（無需重新 build）。
     // ⚠️ 非機密，可放 vars。
-    "REGISTRATION_MODE": "invite"
+    "REGISTRATION_MODE": "email_verify"
   }
   // Phase 11 加入：vars / secrets（JWT_SECRET 等，用 .dev.vars 與 wrangler secret put）
 }
