@@ -158,3 +158,36 @@ app.delete("/api/mail/:id", requireSession, async (c) => {
 - T85：`batch purge` 在 **150 個 id** 時成功
 - T86：分塊過程中某一塊的 R2 失敗 → 該塊 DB 不動、回傳錯誤
 - T87：`trash/empty` 在 500 封上限邊界（500 可清、501 回 `TRASH_TOO_LARGE`）
+
+---
+
+## 8. D19-6（Bug 修正）：永久刪除撞到 form FK → 整批失敗
+
+**現象**：D19-5 分塊修正後，清空垃圾桶仍 500（1.89s）
+
+**實據**（`wrangler tail`）
+```
+hard delete chunk failed { chunkIndex: 0, count: 41,
+  error: 'Error: D1_ERROR: FOREIGN KEY constraint failed: SQLITE_CONSTRAINT_FOREIGNKEY' }
+```
+
+**根因**
+- `form_instances.message_id → messages(id)`（FK，migration 0008）
+- `form_responses.instance_id → form_instances(id)`
+- `hardDeleteMessages()` 只刪 `attachments` → `messages`，**沒有先刪 form 子表**
+- 垃圾桶裡只要有 **1 封互動式表單的信**（本例 open 狀態），該塊就整批 FK 失敗
+- D16 已在「刪使用者／刪地址」補過這個順序，但**永久刪信的路徑沒補**（同類缺陷，需一併修）
+
+**修正**（每個 chunk 的同一個 D1 batch 內，順序由子到父）
+1. `DELETE FROM form_responses WHERE instance_id IN (SELECT id FROM form_instances WHERE message_id IN (:ids))`
+2. `DELETE FROM form_instances WHERE message_id IN (:ids)`
+3. `DELETE FROM attachments WHERE message_id IN (:ids)`
+4. `DELETE FROM messages WHERE id IN (:ids)`
+- 維持「R2 先刪、失敗即不動 DB」的既有語意（R2 的 key 收集不變）
+- 稽核：完整成功時 `trash_emptied`／`mail_purged` 追加 `form_instances` 數量（只記數量，N9）
+
+**測試 T88–T91**
+- T88：永久刪除「有 open form_instance」的信 → 成功，`form_instances`／`form_responses` 一併消失，無 FK 錯誤
+- T89：永久刪除「有 form_response（已提交）」的信 → 成功
+- T90：`trash/empty` 在混合 100+ 封（含表單信）時成功
+- T91：FK 子表刪除失敗 → 該塊整批回滾（batch 原子性），回 500 且 DB 未變
