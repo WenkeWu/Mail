@@ -2,6 +2,7 @@
 
 > 建立：2026-11-04｜狀態：**評估（待 owner 決策）**
 > 需求（owner）：想要 SimpleLogin 的機制 —— 對外只暴露別名，**對方能回信**，**真實信箱永不出現在標頭**
+> **範圍限制（owner 2026-11-04 決定）**：**只有寄往 `atwho.org` 以外才需要匿名**；**同域 `@atwho.org` 之間不需要匿名**（內部信件直接用真實地址回覆）
 
 ## 1. 現況實查（不是猜測）
 
@@ -39,10 +40,15 @@
 - 原始 `From` **保留**（對方是誰 ✅，仍顯示 SPF/DKIM/DMARC 徽章但不授權 —— N5 ✅）
 - 別名停用 → 收信端回 `550 5.1.1`（避免 backscatter；與 SimpleLogin 一致 ✅）
 
-### 3.2 反向別名（Phase 2）—— 回信不洩漏真實地址
+### 3.2 反向別名（Phase 2）—— **僅外部寄件者**才需要
+
+| 情境 | 回信 From | 需要反向別名？ |
+|---|---|---|
+| **外部**寄件者 → 別名 → 你 | 別名 | ✅ 需要 |
+| **內部** `@atwho.org` 寄件者 → 你 | 你的真實地址 ✅ | ❌ **不需要**（同域無匿名需求 ✅）|
 
 ```
-① 別名信投遞時 → 取得/建立 reverse_alias(alias_id, sender_email)
+① 別名信投遞時（**僅當寄件者不是 @atwho.org**）→ 取得/建立 reverse_alias(alias_id, sender_email)
    → token = 32 bytes random → ra-<token>@atwho.org
 ② 使用者按「回覆」→ 客戶端寄到 ra-<token>@atwho.org
 ③ /api/mail/send 偵測收件人是反向別名：

@@ -4,6 +4,67 @@
 
 > **2026-09 查證更新**：Cloudflare 已於 2026 年推出整合的 **Email Service**（收信 = Email Routing，寄信 = Email Sending）。本文架構不變，但寄信（§九）、成本（§十六）、規模（§十七）已按官方現況修正。實作寄信時以 Workers `send_email` binding 為主路徑。
 
+---
+
+## 零、實作現況與文件地圖（2026-11-04 補寫）
+
+> 原 PRD/SRS 撰寫於 2026-09。實作過程中的**決策變更與新增功能**集中記錄在本節，避免與 §一–§二十 原文衝突（原文保留作歷史依據）。
+
+### 0.1 已上線功能總覽
+
+| 階段 | 內容 | 時間 | 文件 |
+|---|---|---|---|
+| Phase 1–16 | 原 MVP：收發信、地址 CRUD、附件、備份、還原、測試 | 2026-09~10 | 本檔 §一–§二十 |
+| D1–D5 | 管理主控台骨架、`hostMode` 入口分流、Access 閘門 | 2026-10 | docs/16 |
+| D6–D11 | 管理權限 L1/L2/L3、訪客配額／停權、地址軟／硬刪除 | 2026-10 | docs/16 |
+| D11-5 | 已刪除地址區塊、硬刪除釋放名稱 | 2026-10-15 | docs/16 |
+| D12–D15 | 維運強化：備份還原演練、MTA-STS `enforce`、jsdom 測試、機密掃描 | 2026-10 | docs/16、docs/17 |
+| **P1/P2** | **互動式表單**（僅內部、四道鎖、RJSF 渲染、轉寄降級）| 2026-10-22 | docs/18 |
+| D16 | 刪使用者／地址需先刪 `form_responses`→`form_instances`（FK）| 2026-10-22 | docs/18 §14 |
+| D17 | 備份涵蓋 **13 張表**、watchdog 去抖、重試退避 4 次 | 2026-10-31 | docs/17 §7 |
+| D18 | 表單 owner 可填、RJSF lazy-load（首屏 682→305 kB）| 2026-10-31 | docs/18 §15 |
+| D19-1~6 | 刪除語意修正（軟刪除**不設** `deleted_at`）、複選批次、清空垃圾桶、單封還原／永久刪除、每列 checkbox、D1 參數分塊（90）、永久刪除前先刪 form 子表 | 2026-11-03~04 | docs/19 |
+| **D21** | **註冊改 Email 驗證碼**（取消邀請碼；`REGISTRATION_MODE=invite/email_verify/closed`）| 2026-11-04 | docs/21 |
+| **D22** | **可分享註冊／邀請連結**（`?register=1`、`?invite=CODE`、管理端複製按鈕）| 2026-11-04 | docs/22 |
+| D23 | Turnstile 防機器人（**待 owner 提供金鑰**）| 待做 | docs/23 |
+| D24 | 別名 ＋ 反向別名（**評估完成，待實作**；**僅對外匿名**）| 待做 | docs/24 |
+| D20 | 註冊 ID 撞二級網域偵測 ＋ 建議名稱（**設計待審**）| 待做 | docs/20 |
+
+### 0.2 與原文不同的決策（原文照留，以本節為準）
+
+| 項目 | 原文寫法 | 目前實況 |
+|---|---|---|
+| 註冊方式 | 邀請碼制 | **Email 驗證碼**（D21）；`REGISTRATION_MODE` 可一行切回 `invite` |
+| 入口 | 單一入口 | **mail.atwho.org**（Cloudflare Access，owner-only）＋ **app.atwho.org**（公開訪客）|
+| 管理員登入 | 帳號密碼 | 需 **Cloudflare Access JWT**（`/api/auth/login` 強制驗證）|
+| 帳號模型 | Model C | ✅ 已實作（地址可獨立登入）；另加 `users.role = owner / visitor` |
+| 寄信配額 | 未訂 | 每日 **20**／每小時 **10**／暖機 24h **5 封**；`warmup_exempt` 可豁免 |
+| 信件刪除 | 未訂 | `folder='trash'`＝**軟刪除（可還原）**；`deleted_at`＝**永久刪除（全站隱藏）** |
+| 郵件分類 | 未訂 | `origin`(external/internal)＋`kind`(normal/interactive_form)＋`delivery_scope`＋`suspicious_form_claim` |
+| MTA-STS | 未提 | **enforce**（自建 worker）；TLS-RPT 收件人 `tlsrpt@atwho.org` |
+| DMARC | 未提 | `p=none`（**建議改 `p=quarantine`**，需 owner 於 Dashboard 操作）|
+| 備份 | 5 表 | **13 表**（D17）＋ watchdog 去抖 ＋ 重試退避 |
+| 別名 | 僅 schema 建議 | **表已存在、功能未實作**；設計見 §五 與 docs/24（**僅對外匿名**）|
+
+### 0.3 文件地圖
+
+| 文件 | 內容 |
+|---|---|
+| `mail_PRD_SRS.md`（本檔）| 原始架構（§一–§二十）＋本節現況 |
+| `docs/05-api-spec.md` | API 規格（持續更新）|
+| `docs/11-launch-checklist.md` | 上線檢查清單與端點矩陣 |
+| `docs/16-admin-hardening-and-console.md` | 管理權限 D1–D15、N1–N10 |
+| `docs/17-backup-and-restore.md` | 備份與還原（D17）|
+| `docs/18-interactive-form-mail-design.md` | 互動式表單（P1/P2、D16、D18）|
+| `docs/19-mail-ux-fixes.md` | 信箱 UX（D19-1~D19-6）|
+| `docs/20-id-vs-domain-check.md` | 註冊 ID 撞網域偵測（設計待審）|
+| `docs/21-registration-email-verification.md` | 註冊改 Email 驗證碼（D21）|
+| `docs/22-registration-links.md` | 可分享註冊／邀請連結（D22）|
+| `docs/23-turnstile-bot-protection.md` | Turnstile 防機器人（D23）|
+| `docs/24-alias-reverse-alias-eval.md` | 別名／反向別名評估與設計（D24）|
+
+---
+
 ## 一、核心目標
 
 我已經有自己的 Domain Name，DNS 由 Cloudflare 管理。
@@ -189,36 +250,78 @@ deleted
 
 ---
 
-## 五、Alias
+## 五、Alias（別名）與反向別名（Reverse Alias）
 
-需要設計 email_aliases。
+> **2026-11-04 更新**：實作設計與風險評估見 `docs/24-alias-reverse-alias-eval.md`。
+> **核心規則（owner 決定 2026-11-04）**：**只有寄往 `atwho.org` 以外才需要匿名**；**同域（`@atwho.org` ↔ `@atwho.org`）不需要匿名**。
+> 現況：`email_aliases` 表**已存在（0001 migration）但無任何功能**（`email-handler` 未實作、無 CRUD API／UI、無反向別名）。
 
-例如：
+### 5.1 收信：別名 → 目標地址
 
-[john@mydomain.com](mailto:john@mydomain.com)
-→ [johnny@mydomain.com](mailto:johnny@mydomain.com)
+```
+外部寄件者 → xyz123@atwho.org（別名）
+  → Cloudflare MX → email-handler
+  → recipient 查 email_addresses？
+       是 → 一般投遞（既有流程）
+       否 → 查 email_aliases（alias_address = recipient AND status='active'）
+              有 → resolve target_email_address_id → 本地直送（不轉寄外部 SMTP）
+              無 → 550 5.1.1（信箱不存在）
+```
 
-Schema 建議：
+* 別名**停用**時來信回 `550 5.1.1`（避免 backscatter，與 SimpleLogin 一致）
+* **禁止 alias → alias**（`target_email_address_id` 只能指向 `email_addresses`），避免 loop
+* 新增 `messages.envelope_to`：記錄「原本寄給哪個別名」，UI 顯示徽章（可判斷來源別名）
+* 原始 `From` 保留；SPF/DKIM/DMARC 僅**顯示**不授權（同 §十一）
 
-email_aliases
+### 5.2 回信：反向別名（**僅外部寄件者**）
 
-* id
-* alias_address
-* target_email_address_id
-* status
-* created_at
-* updated_at
+| 情境 | 回信 From | 需要反向別名？ |
+|---|---|---|
+| **外部**寄件者 → 別名 → 你 | 別名 | ✅ 需要 |
+| **內部** `@atwho.org` 寄件者 → 你的地址／別名 | 你的真實地址 | ❌ **不需要**（同域，無匿名需求） |
 
-Worker 收到 email 時：
+```
+① 外部信投遞到別名時：
+   reverse_aliases(alias_id, sender_email) → token = 32 bytes random → ra-<token>@atwho.org
+   寫入 messages.reply_to = ra-<token>@atwho.org
+② 使用者按「回覆」→ 客戶端寄到 ra-<token>@atwho.org
+③ POST /api/mail/send 偵測收件人為反向別名：
+     From      = 別名（xyz123@atwho.org）
+     To        = 原始寄件者
+     Reply-To  = ra-<token>@atwho.org（對方再回仍走別名）
+④ EMAIL.send()（Cloudflare 對 atwho.org 簽 DKIM ✅）
+```
 
-recipient
-→ 查 email_addresses
-→ 若不存在則查 alias
-→ resolve target
-→ 找到 owner user_id
-→ deliver
+**內部信件**：直接以真實地址回覆，**不產生反向別名**（省一個查詢、也避免不必要的改寫）
 
-要避免 alias loop。
+### 5.3 Schema
+
+```sql
+-- 已存在（0001）
+email_aliases(id, alias_address UNIQUE, target_email_address_id, status, created_at, updated_at)
+
+-- 新增（待實作）
+CREATE TABLE reverse_aliases (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  alias_id     INTEGER NOT NULL REFERENCES email_aliases(id),
+  sender_email TEXT NOT NULL,
+  token        TEXT NOT NULL UNIQUE,      -- 32 bytes hex
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER,
+  UNIQUE(alias_id, sender_email)
+);
+
+-- messages 新增欄位
+ALTER TABLE messages ADD COLUMN envelope_to TEXT;  -- 別名
+ALTER TABLE messages ADD COLUMN reply_to    TEXT;  -- 反向別名（僅外部）
+```
+
+### 5.4 限制與配套
+
+* 別名數量 ≤ **50／帳號**
+* 以別名寄信**計入目標地址**的每日（20）／每小時（10）／暖機（24h 5 封）配額
+* 反向別名 token **不可枚舉**（256-bit）；每個 (別名, 寄件者) 只有一個 token
+* 別名被騷擾 → **單獨停用該別名**，不影響真實地址
 
 ---
 
@@ -403,11 +506,27 @@ POST /api/mail/send
 
 ### Alias
 
-POST /api/email-aliases
+**現況（2026-11-04）**：以下端點**尚未實作**（`email_aliases` 表已存在，但無任何 API）。實作規格見 §五 與 `docs/24`。
 
-PATCH /api/email-aliases/:id
+規劃端點（D24 Phase 1／2）：
 
-DELETE /api/email-aliases/:id
+```
+GET    /api/email-aliases                 # 列出（owner：全部；mailbox：自己地址的別名）
+POST   /api/email-aliases                 # {alias_local_part?, target_address_id, note?} → 建立
+PATCH  /api/email-aliases/:id             # {status: active|disabled, note?}
+DELETE /api/email-aliases/:id             # 軟刪除（保留稽核）
+GET    /api/email-aliases/:id/senders     # 反向別名清單（哪些寄件者來過）
+```
+
+**寄信改寫**（Phase 2，僅外部寄件者）：
+
+```
+POST /api/mail/send  to=ra-<token>@atwho.org
+  → 查 reverse_aliases → From 改寫為別名、To 改為原始寄件者、Reply-To 保持 ra-<token>
+  → 配額計入別名的 target 地址
+```
+
+> ⚠️ 內部（`@atwho.org` ↔ `@atwho.org`）**不需要**匿名，直接以真實地址回覆即可（§五 5.2）。
 
 ---
 
@@ -764,6 +883,32 @@ Restore procedure
 
 Phase 16
 Testing
+
+### 十九之二、MVP 之後的擴充階段（2026-10 ~ 至今，**已完成／進行中**）
+
+Phase 17
+管理主控台與權限（D1–D15）：owner/visitor 角色、L1/L2/L3 分層、Cloudflare Access 閘門、訪客配額與停權、地址軟／硬刪除
+
+Phase 18
+互動式表單（P1/P2、D16、D18）：僅內部傳送、四道鎖（DB 為信任錨點）、RJSF lazy-load、轉寄降級為靜態
+
+Phase 19
+備份強化（D17）：鏡像擴充至 13 張表、watchdog 去抖、重試退避
+
+Phase 20
+信箱 UX（D19-1~6）：刪除語意修正（軟刪除 vs 永久刪除）、複選與批次、清空垃圾桶、每列 checkbox、D1 參數分塊
+
+Phase 21
+註冊機制（D21／D22）：邀請碼 → Email 驗證碼、可分享註冊連結
+
+Phase 22（待做）
+D23 Turnstile 防機器人（需 owner 於 Dashboard 建 widget）
+
+Phase 23（待做）
+D24 別名／反向別名（**僅對外匿名**；內部不匿名）
+
+Phase 24（待審）
+D20 註冊 ID 撞二級網域偵測 ＋ 可用名稱建議
 
 每完成一個 Phase：
 
