@@ -477,6 +477,26 @@
             機器人防護目前只有速率限制（Turnstile 為 docs/21 §8 的下一階段）。
       - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
 
+- [ ] **18. 可分享的註冊／邀請連結（docs/22 D22；2026-11-04 程式完成，未部署）**
+      - **純前端**：只改 `web/`（`LoginPage`、`InviteManager`），**無 API 變更、無 migration**。
+      - [ ] **部署**：只需重新 build／deploy 前端 `atwhomail-web`（必須在 `web/` 目錄執行）；
+            API Worker 不需重新部署。
+      - [ ] **驗收（app.atwho.org）**：
+            ① 開 `https://app.atwho.org/?register=1` → 自動停在「註冊」分頁；`email_verify` 模式 Email 欄取得焦點。
+            ② 開 `https://app.atwho.org/?invite=<code>` → 自動停在「註冊」分頁且邀請碼已預填（`invite` 模式）。
+            ③ 上述兩種網址在載入後 **query 已消失**（`history.replaceState`；重新整理不會再帶參數）。
+            ④ `REGISTRATION_MODE=closed` 時帶 `?register=1` → 只顯示「目前未開放註冊。」，沒有註冊表單。
+            ⑤ 無效／已撤銷邀請碼仍顯示註冊頁；送出時由後端回 `INVITE_INVALID`（前端顯示原因）。
+      - [ ] **驗收（mail.atwho.org 邀請碼管理頁）**：
+            ① 每個邀請碼列有「複製邀請連結」→ 剪貼簿為 `https://app.atwho.org/?invite=<code>`，
+               toast「已複製連結」（取全碼會寫稽核 `invite_revealed`）。
+            ② 建立新邀請碼後，對話框顯示邀請連結＋一鍵複製。
+            ③ `email_verify` 模式顯示「一般註冊連結」卡片（`https://app.atwho.org/?register=1`）＋一鍵複製；
+               `invite` 模式不顯示此卡片。
+      - ⚠️ **安全**：連結參數只影響顯示與預填，不得影響任何權限判定（N3）；註冊模式與邀請碼有效性
+            仍由後端判定。
+      - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -486,7 +506,7 @@
 | `POST /api/auth/mailbox-login` | 公開（5 次失敗鎖 15 分） | 信箱 session（**不受 Access 影響**）；錯誤碼：401 `INVALID_CREDENTIALS`／403 `ADDRESS_DISABLED`／403 `ACCOUNT_SUSPENDED`（**先驗密碼再判狀態**，階段 5／D8） |
 | `PATCH /api/auth/owner-password/self` | owner session ＋ 舊密碼 | owner 自助改密碼（階段 2／D7） |
 | `POST /api/auth/register` | **公開**（行為依 `REGISTRATION_MODE`；預設 `invite` 需邀請碼） | 訪客註冊（Phase 1）→ mailbox session。**D21**：`email_verify` → 403 `REGISTRATION_EMAIL_VERIFY_REQUIRED`（改走下方兩端點）；`closed` → 403 `REGISTRATION_CLOSED` |
-| `GET /api/auth/registration-mode` | 公開 | **D21**：目前註冊模式 `{mode}`（僅供前端表單顯示；權限仍由後端強制） |
+| `GET /api/auth/registration-mode` | 公開 | **D21**：目前註冊模式 `{mode}`（僅供前端表單顯示；權限仍由後端強制）。**D22**：管理端於 `email_verify` 時據此顯示「一般註冊連結」卡片 |
 | `POST /api/auth/register-request` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：寄 6 位數驗證碼到指定 Email（寄件者 `noreply@atwho.org`；DB 只存 SHA-256；15 分鐘）。限流：IP 5/時、20/日；Email 60 秒/封、5/日 |
 | `POST /api/auth/register-verify` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：驗碼（一次性／5 次上限）→ 建立 visitor＋address（暖機 24h）→ 回 mailbox token。ID 重複 `409 ID_TAKEN`、保留字 `409 ID_RESERVED` |
 | `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（**預設只回遮罩碼**；`?reveal=1` 額外回全碼並寫稽核）／撤銷 |

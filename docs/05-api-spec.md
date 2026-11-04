@@ -1011,6 +1011,32 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
 「寄送驗證碼」後顯示 6 位數欄位與 60 秒重寄倒數；成功後以回傳 token 自動登入。
 `invite` 模式仍顯示既有邀請碼欄位（向後相容）；`closed` 顯示「目前未開放註冊。」
 
+### 2.23 D22：可分享的註冊／邀請連結（純前端，2026-11-04）
+
+> 設計：`docs/22`。**無 API 變更、無 migration**；只改 `web/`（登入頁與邀請碼管理頁）。
+
+**對外連結格式（`app.atwho.org`）**
+
+| 連結 | 行為 |
+|---|---|
+| `https://app.atwho.org/?register=1` | 自動切到「註冊」分頁；`email_verify` 模式聚焦 Email 欄 |
+| `https://app.atwho.org/?invite=<code>` | 自動切到「註冊」分頁；`invite` 模式預填邀請碼（`email_verify` 模式忽略此值） |
+| `https://app.atwho.org/?invite=<code>&register=1` | 兩者並存，同上 |
+| `https://app.atwho.org/`（不帶參數） | 行為不變（預設登入頁） |
+
+- 參數**只影響前端顯示與預填**：註冊模式仍由 `GET /api/auth/registration-mode` 決定、邀請碼有效性仍由
+  `POST /api/auth/register` 驗證（無效 → `INVITE_INVALID`）——**不得**以 URL 參數判定任何權限（N3）。
+- 前端處理後以 `history.replaceState` 移除 `register`／`invite` 參數（保留其他 query、path、hash），
+  避免含邀請碼的網址被複製轉傳。
+- `REGISTRATION_MODE=closed` 時即使帶 `?register=1`，也只顯示「目前未開放註冊。」提示，不渲染註冊表單。
+- 管理端（`mail.atwho.org` 邀請碼管理頁）：
+  - 每個邀請碼列提供「複製邀請連結」→ `https://app.atwho.org/?invite=<code>`（需先 `?reveal=1` 取全碼，
+    因此同樣寫入稽核 `invite_revealed`）。
+  - 建立新邀請碼後以對話框顯示邀請連結＋一鍵複製（不再自動複製全碼）。
+  - `email_verify` 模式顯示「一般註冊連結」卡片（`https://app.atwho.org/?register=1`）＋一鍵複製。
+  - 複製成功 toast 一律為「已複製連結」。
+- 部署：僅需重新 build／deploy 前端（`atwhomail-web`）；API Worker 不需重新部署。
+
 ## 3. 通用原則
 
 | 原則 | 說明 |

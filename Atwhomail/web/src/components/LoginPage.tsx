@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import {
   getRegistrationMode,
@@ -10,6 +10,7 @@ import {
 } from "../api/endpoints";
 import type { RegistrationMode, Session } from "../api/types";
 import type { LoginMode } from "../lib/hostMode";
+import { clearRegistrationParams, parseRegistrationQuery } from "../lib/registrationLinks";
 import { IconMail } from "./icons";
 
 interface Props {
@@ -88,7 +89,17 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
         : showRegister
           ? ["mailbox", "register", "owner"]
           : ["mailbox", "owner"];
-  const [tab, setTab] = useState<Tab>(mode === "admin" ? "owner" : "mailbox");
+  /**
+   * D22（docs/22）：可分享的註冊／邀請連結。
+   * `?register=1`／`?invite=<code>` 只影響「顯示哪個分頁」與「預填邀請碼」，
+   * 不影響任何權限判定（N3）；註冊模式與邀請碼有效性仍由後端決定。
+   * 參數只在第一次 render 讀取一次，處理後立刻清除（見下方 effect）。
+   */
+  const acceptsRegistrationLink = showRegister && mode !== "admin";
+  const [initialQuery] = useState(() => parseRegistrationQuery(window.location.search));
+  const [tab, setTab] = useState<Tab>(() =>
+    mode === "admin" ? "owner" : acceptsRegistrationLink && initialQuery.openRegister ? "register" : "mailbox"
+  );
   const [email, setEmail] = useState(() => {
     try {
       return localStorage.getItem(LAST_EMAIL_KEY) ?? "";
@@ -98,8 +109,8 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
   });
   const [username, setUsername] = useState("owner");
   const [password, setPassword] = useState("");
-  // 註冊欄位（邀請碼模式）
-  const [inviteCode, setInviteCode] = useState("");
+  // 註冊欄位（邀請碼模式）；D22：`?invite=<code>` 會在首次 render 預填
+  const [inviteCode, setInviteCode] = useState(() => initialQuery.inviteCode ?? "");
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -113,6 +124,8 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
   const [sendingCode, setSendingCode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** D22：`?register=1` 開啟時，等 Email 欄位真正掛載後明確取得焦點 */
+  const emailInputRef = useRef<HTMLInputElement | null>(null);
 
   // D21：註冊模式由後端決定（`REGISTRATION_MODE`；前端無法從建置期得知）。
   // 取不到／舊後端 → 回退 invite，維持既有行為。
@@ -130,6 +143,20 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
       alive = false;
     };
   }, [showRegister, mode]);
+
+  // D22：連結參數只消費一次；處理完以 replaceState 清掉 register／invite
+  //（避免使用者複製到含邀請碼的網址繼續轉傳）。非註冊入口（mail.）不動作。
+  useEffect(() => {
+    if (!acceptsRegistrationLink) return;
+    clearRegistrationParams(window.history, window.location);
+  }, [acceptsRegistrationLink]);
+
+  // D22：`?register=1` → 註冊分頁的 Email 欄取得焦點（等註冊模式載入、欄位掛載後）
+  useEffect(() => {
+    if (!acceptsRegistrationLink || !initialQuery.openRegister) return;
+    if (tab !== "register" || regMode !== "email_verify") return;
+    emailInputRef.current?.focus();
+  }, [acceptsRegistrationLink, initialQuery.openRegister, tab, regMode]);
 
   // 重寄倒數（60 秒）
   useEffect(() => {
@@ -290,6 +317,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                 <label>
                   Email（收取驗證碼）
                   <input
+                    ref={emailInputRef}
                     type="email"
                     value={regEmail}
                     onChange={(e) => setRegEmail(e.target.value)}

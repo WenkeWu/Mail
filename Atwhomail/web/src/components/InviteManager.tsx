@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
-import { createInvite, listInvites, revokeInvite } from "../api/endpoints";
-import type { Invite } from "../api/types";
+import { createInvite, getRegistrationMode, listInvites, revokeInvite } from "../api/endpoints";
+import type { Invite, RegistrationMode } from "../api/types";
 import { INVITE_STATE_LABEL, formatExpiry, inviteState } from "../lib/invites";
+import { REGISTER_LINK, inviteLink } from "../lib/registrationLinks";
 import { IconBack, IconPlus } from "./icons";
 import { Modal } from "./Modal";
 
@@ -33,6 +34,10 @@ export function InviteManager({ onBack, onToast }: Props) {
   /** 已透過 reveal 取得的全碼（僅存在記憶體，不落地） */
   const [revealed, setRevealed] = useState<Record<number, string>>({});
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  // D22（docs/22）：註冊模式（只影響是否顯示「一般註冊連結」卡片）與新碼對話框
+  const [regMode, setRegMode] = useState<RegistrationMode | null>(null);
+  const [createdInvite, setCreatedInvite] = useState<{ id: number; code: string } | null>(null);
+  const [copiedLinkId, setCopiedLinkId] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -47,6 +52,22 @@ export function InviteManager({ onBack, onToast }: Props) {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // D22：`email_verify` 模式才顯示「一般註冊連結」卡片。
+  // 取不到（舊後端／網路錯誤）就不顯示；不影響邀請碼功能。
+  useEffect(() => {
+    let alive = true;
+    getRegistrationMode()
+      .then((r) => {
+        if (alive) setRegMode(r.mode);
+      })
+      .catch(() => {
+        /* 僅顯示用；失敗時不顯示卡片 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const submitCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -71,8 +92,9 @@ export function InviteManager({ onBack, onToast }: Props) {
         expires_in_hours: hours,
         ...(note.trim() ? { note: note.trim() } : {}),
       });
-      onToast("已建立邀請碼（已複製到剪貼簿）");
-      void copyToClipboard(res.code, res.id);
+      // D22：建立後以對話框顯示「邀請連結」＋一鍵複製（不再自動複製全碼）
+      setCreatedInvite({ id: res.id, code: res.code });
+      onToast("已建立邀請碼");
       setNote("");
       await reload();
     } catch (err) {
@@ -94,6 +116,20 @@ export function InviteManager({ onBack, onToast }: Props) {
     }
   };
 
+  /** 取得全碼：已 reveal 過就直接用，否則呼叫 `GET /api/invites?reveal=1`（後端寫稽核） */
+  const revealCode = async (row: Invite): Promise<string | null> => {
+    const known = revealed[row.id];
+    if (known) return known;
+    const res = await listInvites(true);
+    const full = res.invites.find((i) => i.id === row.id)?.code;
+    if (!full) {
+      onToast("找不到邀請碼（可能已被撤銷）", "error");
+      return null;
+    }
+    setRevealed((prev) => ({ ...prev, [row.id]: full }));
+    return full;
+  };
+
   /** 複製：先以 reveal 取得全碼（後端寫稽核），再寫入剪貼簿 */
   const handleCopy = async (row: Invite) => {
     try {
@@ -103,15 +139,37 @@ export function InviteManager({ onBack, onToast }: Props) {
         onToast(ok ? "已複製邀請碼" : "無法存取剪貼簿，請手動複製列表中的邀請碼", ok ? "info" : "error");
         return;
       }
-      const res = await listInvites(true);
-      const full = res.invites.find((i) => i.id === row.id)?.code;
-      if (!full) {
-        onToast("找不到邀請碼（可能已被撤銷）", "error");
-        return;
-      }
-      setRevealed((prev) => ({ ...prev, [row.id]: full }));
+      const full = await revealCode(row);
+      if (!full) return;
       const ok = await copyToClipboard(full, row.id);
       onToast(ok ? "已複製邀請碼" : "已顯示邀請碼，請手動複製", ok ? "info" : "error");
+    } catch (e) {
+      onToast(e instanceof ApiError ? e.message : "取得邀請碼失敗", "error");
+    }
+  };
+
+  /** 複製連結（D22；成功 toast 固定為「已複製連結」） */
+  const copyLink = async (url: string, id?: number): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(url);
+      if (id !== undefined) {
+        setCopiedLinkId(id);
+        window.setTimeout(() => setCopiedLinkId((cur) => (cur === id ? null : cur)), 2500);
+      }
+      onToast("已複製連結");
+      return true;
+    } catch {
+      onToast("無法存取剪貼簿，請手動複製連結", "error");
+      return false;
+    }
+  };
+
+  /** 複製邀請連結：連結需要全碼，因此與「複製」共用 reveal 流程（稽核一致） */
+  const handleCopyLink = async (row: Invite) => {
+    try {
+      const full = await revealCode(row);
+      if (!full) return;
+      await copyLink(inviteLink(full), row.id);
     } catch (e) {
       onToast(e instanceof ApiError ? e.message : "取得邀請碼失敗", "error");
     }
@@ -183,6 +241,27 @@ export function InviteManager({ onBack, onToast }: Props) {
         </p>
       </form>
 
+      {regMode === "email_verify" && (
+        <section className="create-address register-link-card" aria-label="一般註冊連結">
+          <h2>一般註冊連結</h2>
+          <p className="muted small">
+            目前為 Email 驗證碼註冊模式，對方不需要邀請碼。把連結傳出去，對方打開後會直接進到註冊頁。
+          </p>
+          <div className="link-row">
+            <input
+              type="text"
+              readOnly
+              value={REGISTER_LINK}
+              aria-label="一般註冊連結"
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button type="button" className="btn-primary" onClick={() => void copyLink(REGISTER_LINK)}>
+              複製連結
+            </button>
+          </div>
+        </section>
+      )}
+
       <div className="address-table-wrap">
         {invites === null ? (
           <div className="list-state">
@@ -225,6 +304,14 @@ export function InviteManager({ onBack, onToast }: Props) {
                       </button>
                       <button
                         type="button"
+                        onClick={() => void handleCopyLink(row)}
+                        disabled={state === "revoked"}
+                        title="複製可直接開啟註冊頁並預填此邀請碼的連結"
+                      >
+                        {copiedLinkId === row.id ? "已複製連結" : "複製邀請連結"}
+                      </button>
+                      <button
+                        type="button"
                         className="danger"
                         onClick={() => setRevokeTarget(row)}
                         disabled={!REVOCABLE.has(state) || state === "revoked"}
@@ -242,6 +329,34 @@ export function InviteManager({ onBack, onToast }: Props) {
       <p className="muted small">
         撤銷為 soft（保留紀錄，狀態改為「已撤銷」）；已撤銷的邀請碼無法再用於註冊，也無法復原。
       </p>
+
+      {createdInvite && (
+        <Modal title="已建立邀請碼" onClose={() => setCreatedInvite(null)}>
+          <p>把這個連結傳給對方，對方打開後會直接進到註冊頁並預填邀請碼：</p>
+          <input
+            type="text"
+            readOnly
+            value={inviteLink(createdInvite.code)}
+            aria-label="邀請連結"
+            onFocus={(e) => e.currentTarget.select()}
+          />
+          <p className="muted small">
+            邀請碼：<span className="mono">{createdInvite.code}</span>
+          </p>
+          <div className="modal-actions">
+            <button type="button" className="btn-secondary" onClick={() => setCreatedInvite(null)}>
+              關閉
+            </button>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => void copyLink(inviteLink(createdInvite.code))}
+            >
+              複製邀請連結
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {revokeTarget && (
         <Modal title="撤銷邀請碼" onClose={() => setRevokeTarget(null)}>

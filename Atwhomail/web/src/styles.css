@@ -1504,6 +1504,24 @@ select {
   min-width: 180px;
 }
 
+/* docs/22 D22：一般註冊連結／邀請連結的「網址＋一鍵複製」列 */
+.link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.link-row input {
+  flex: 1;
+  min-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+}
+
 .address-table-wrap {
   background: #fff;
   border: 1px solid var(--border);
