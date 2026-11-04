@@ -124,3 +124,37 @@ app.delete("/api/mail/:id", requireSession, async (c) => {
 - T81 表頭全選 → 全部勾選；再點 → 全部取消
 - T82 部分選取時表頭為 indeterminate
 - T83 切換資料夾後選取清空、checkbox 全部未勾
+
+---
+
+## 7. D19-5（Bug 修正）：大量 id 觸發 D1 `too many SQL variables`
+
+**現象**：垃圾桶 131 封時按「清空垃圾桶」→ `HTTP 500 DELETE_FAILED`（1.03 秒）
+
+**實據**（`wrangler tail` 即時日誌）
+```
+[atwhomail-api] empty trash failed { count: 131,
+  error: 'Error: D1_ERROR: too many SQL variables at offset 262: SQLITE_ERROR' }
+```
+
+**根因**
+- Cloudflare D1 限制：**每條查詢最多 100 個綁定參數**（docs 實查）
+- `hardDeleteMessages()` 以 `ids.map(() => "?")` 產生 `id IN (?,?,…)`，131 個 id → 131 個參數
+  → `attachments`／`messages` 的 DELETE（2×131）與 SELECT 全部超限 → throw → 500
+- ⚠️ 同一問題也影響 `POST /api/mail/batch` 的 `purge`（上限 200 id）與任何 >100 id 的操作
+
+**修正**
+1. `hardDeleteMessages()`：把 id **分塊（chunk ≤ 90）**處理
+   - 每塊：SELECT keys → `bucket.delete(keys)`（單次呼叫，≤1000 keys）→ D1 batch 刪 attachments/messages
+   - 回傳值改為所有塊的加總；塊與塊之間**各自交易**（部分失敗時回報已刪數量並拋錯，前端顯示「部分完成」）
+   - R2 刪除失敗 → 該塊不動 DB（維持現有嚴格語意）
+2. `POST /api/mail/trash/empty`：**先分塊查 id**（每塊 ≤ 90 撈取＋刪除，迴圈直到撈不到），避免 500 上限與 `LIMIT 501` 一次爆量
+   - 回應 `{count, r2_objects}` 為全部加總
+3. `POST /api/mail/batch`：`purge` 走同樣的分塊；`BATCH_MAX_IDS` 維持 200，但 UPDATE 類動作也要分塊（≤90）避免同類錯誤
+4. 稽核維持只記數量（N9）
+
+**測試 T84–T87**
+- T84：`trash/empty` 在 **131 封**（>100）時成功，回傳 count=131，DB 與 R2 皆清空
+- T85：`batch purge` 在 **150 個 id** 時成功
+- T86：分塊過程中某一塊的 R2 失敗 → 該塊 DB 不動、回傳錯誤
+- T87：`trash/empty` 在 500 封上限邊界（500 可清、501 回 `TRASH_TOO_LARGE`）
