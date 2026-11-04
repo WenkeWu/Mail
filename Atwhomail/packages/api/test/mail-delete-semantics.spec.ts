@@ -280,7 +280,7 @@ describe("T66：hard delete → R2 物件＋列消失、稽核 mail_purged（N9�
     expect(await count("SELECT COUNT(*) AS n FROM attachments WHERE message_id = 1")).toBe(0);
 
     const audit = await lastAudit("mail_purged");
-    expect(auditDetail(audit)).toEqual({ id: 1, r2_objects: 3 });
+    expect(auditDetail(audit)).toEqual({ id: 1, r2_objects: 3, form_instances: 0 });
     expect(audit?.address_id).toBe(1);
     // N9：稽核不得含主旨／寄件者／內文
     expect(audit?.detail ?? "").not.toContain("secret subject");
@@ -358,7 +358,7 @@ describe("T67：trash/empty 只清 session scope", () => {
     expect(await exists("mail/2026/11/m2.eml")).toBe(true);
 
     const audit = await lastAudit("trash_emptied");
-    expect(auditDetail(audit)).toEqual({ count: 1, r2_objects: 2 });
+    expect(auditDetail(audit)).toEqual({ count: 1, r2_objects: 2, form_instances: 0 });
     expect(audit?.address_id).toBe(1);
   });
 

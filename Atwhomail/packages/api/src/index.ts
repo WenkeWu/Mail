@@ -2051,7 +2051,7 @@ function purgeKeys(
   return [...keys];
 }
 
-type HardDeleteResult = { messages: number; attachments: number; r2_objects: number };
+type HardDeleteResult = { messages: number; attachments: number; form_instances: number; r2_objects: number };
 
 /**
  * D19-5：`hardDeleteMessages` 中途失敗。
@@ -2066,7 +2066,7 @@ class HardDeletePartialError extends Error {
   }
 }
 
-const EMPTY_DELETE_RESULT: HardDeleteResult = { messages: 0, attachments: 0, r2_objects: 0 };
+const EMPTY_DELETE_RESULT: HardDeleteResult = { messages: 0, attachments: 0, form_instances: 0, r2_objects: 0 };
 
 /** 失敗的 hard delete 已刪除多少（非 `HardDeletePartialError` → 皆為 0）。 */
 function partialHardDelete(e: unknown): HardDeleteResult {
@@ -2084,7 +2084,9 @@ function hardDeleteFailureMessage(prefix: string, deleted: HardDeleteResult): st
  * D19-1：永久刪除一批信件（呼叫端**必須先**完成 scope 檢查）。
  *
  * 順序固定（**每塊各自交易**，D19-5）：① 取 key ② 刪 R2（嚴格；失敗即 throw，該塊 D1 完全不動）
- * ③ 同一個 D1 batch 刪 `attachments` → `messages`（失敗整批回滾）。
+ * ③ 同一個 D1 batch 依 FK 由子到父刪 `form_responses` → `form_instances` → `attachments` → `messages`
+ *    （D19-6：`form_instances.message_id` 參照 `messages(id)`、`form_responses.instance_id` 參照
+ *    `form_instances(id)`；漏刪子表會讓整塊 batch 以 `FOREIGN KEY constraint failed` 回滾）。
  * id 以 `SQL_CHUNK` 分塊處理：每條 SQL 的綁定參數 ≤ 90（D1 上限 100）。
  * 回傳**所有塊的加總**；若中途失敗，已完成的塊不回滾，並以 `HardDeletePartialError` 拋出。
  * 稽核由呼叫端寫入（只記數量，N9）。
@@ -2111,12 +2113,20 @@ async function hardDeleteMessages(env: AuthEnv["Bindings"], ids: number[]): Prom
 
       // R2 嚴格刪除：失敗即中止這一塊（D1 尚未動），已完成的塊維持已刪除。
       const r2_objects = await purgeR2Objects(env.MAIL, purgeKeys(msgRows, attRows));
-      const [attResult, msgResult] = await env.DB.batch([
+      // D19-6：同一個 batch（＝單一交易）內先刪 form 子表（回覆 → 實例），再 attachments／messages。
+      const results = await env.DB.batch([
+        env.DB.prepare(
+          `DELETE FROM form_responses
+            WHERE instance_id IN (SELECT id FROM form_instances WHERE message_id IN (${placeholders}))`
+        ).bind(...chunk),
+        env.DB.prepare(`DELETE FROM form_instances WHERE message_id IN (${placeholders})`).bind(...chunk),
         env.DB.prepare(`DELETE FROM attachments WHERE message_id IN (${placeholders})`).bind(...chunk),
         env.DB.prepare(`DELETE FROM messages WHERE id IN (${placeholders})`).bind(...chunk),
       ]);
-      deleted.messages += Number(msgResult?.meta.changes ?? 0);
-      deleted.attachments += Number(attResult?.meta.changes ?? 0);
+      // results 依 batch 順序：0=form_responses（不計數）、1=form_instances、2=attachments、3=messages
+      deleted.form_instances += Number(results[1]?.meta.changes ?? 0);
+      deleted.attachments += Number(results[2]?.meta.changes ?? 0);
+      deleted.messages += Number(results[3]?.meta.changes ?? 0);
       deleted.r2_objects += r2_objects;
     } catch (e) {
       console.error("[atwhomail-api] hard delete chunk failed", {
@@ -2178,7 +2188,8 @@ app.patch("/api/mail/:id/folder", requireSession, async (c) => {
  *
  * - 預設（`mode=soft`）：**軟刪除** → 只設 `folder='trash'`、`updated_at=now`；
  *   ⚠️ **不得設定 `deleted_at`**（全站查詢都帶 `deleted_at IS NULL`，設了會讓信件從所有資料夾消失）。
- * - `mode=hard`：**永久刪除** → R2（raw／html／附件）→ attachments → messages；稽核 `mail_purged`。
+ * - `mode=hard`：**永久刪除** → R2（raw／html／附件）→ 同一 batch：`form_responses` → `form_instances`
+ *   → `attachments` → `messages`；稽核 `mail_purged`（D19-6）。
  */
 app.delete("/api/mail/:id", requireSession, async (c) => {
   const scope = c.get("scope");
@@ -2195,15 +2206,19 @@ app.delete("/api/mail/:id", requireSession, async (c) => {
     return new Response(null, { status: 204 });
   }
 
-  let deleted: { messages: number; attachments: number; r2_objects: number };
+  let deleted: HardDeleteResult;
   try {
     deleted = await hardDeleteMessages(c.env, [id]);
   } catch (e) {
     console.error("[atwhomail-api] mail hard delete failed", { id, error: String(e) });
     return err(c, "DELETE_FAILED", "永久刪除失敗（資料庫未變更）", 500);
   }
-  // N9：只記 id 與 R2 物件數，不含主旨／寄件者／內文
-  auditAsync(c, { ...auditScope(scope), event: "mail_purged", detail: { id, r2_objects: deleted.r2_objects } });
+  // N9：只記 id、R2 物件數與表單實例數，不含主旨／寄件者／內文
+  auditAsync(c, {
+    ...auditScope(scope),
+    event: "mail_purged",
+    detail: { id, r2_objects: deleted.r2_objects, form_instances: deleted.form_instances },
+  });
   return c.json({ ok: true, id, ...deleted });
 });
 
@@ -2211,6 +2226,7 @@ app.delete("/api/mail/:id", requireSession, async (c) => {
  * POST /api/mail/trash/empty — 清空垃圾桶（docs/19 §2）。
  * 對 session scope 內 `folder='trash' AND deleted_at IS NULL` 全部永久刪除；
  * 一次上限 500 封（超過 → 400，要求分批），回傳 `{count, r2_objects}`。
+ * D19-6：每塊硬刪前先清 form 子表（`form_responses` → `form_instances`），否則 FK 會讓整塊 500。
  *
  * D19-5：id 以 **id 游標＋分塊**撈取（每塊 ≤ `SQL_CHUNK`），迴圈直到撈不到；
  * 撈滿 500 後若還有下一封 → `TRASH_TOO_LARGE`，且**一封都不刪**（與原本 LIMIT 501 語意相同）。
@@ -2264,7 +2280,7 @@ app.post("/api/mail/trash/empty", requireSession, async (c) => {
   auditAsync(c, {
     ...auditScope(scope),
     event: "trash_emptied",
-    detail: { count: deleted.messages, r2_objects: deleted.r2_objects },
+    detail: { count: deleted.messages, r2_objects: deleted.r2_objects, form_instances: deleted.form_instances },
   });
   return c.json({ count: deleted.messages, r2_objects: deleted.r2_objects });
 });
@@ -2299,7 +2315,8 @@ app.post("/api/mail/batch", requireSession, async (c) => {
   const ts = now();
   try {
     if (action === "purge") {
-      // purge：走 D19-1 的 hard delete 邏輯（R2 嚴格刪除 → attachments → messages；內部分塊）
+      // purge：走 D19-1 的 hard delete 邏輯（R2 嚴格刪除 → form_responses → form_instances
+      // → attachments → messages；內部分塊；D19-6）
       await hardDeleteMessages(c.env, ids);
     } else {
       // D19-5：UPDATE 也必須分塊（≤ SQL_CHUNK），否則 101–200 個 id 會踩 D1 的 100 參數上限。

@@ -776,22 +776,29 @@ DELETE /api/mail/:id                       → 204
   // 軟刪除：只設 folder='trash'、updated_at=now；deleted_at 保持 NULL。
 
 DELETE /api/mail/:id?mode=hard             → 200 { "ok": true, "id": 1,
-                                                    "messages": 1, "attachments": 2, "r2_objects": 4 }
+                                                    "messages": 1, "attachments": 2,
+                                                    "form_instances": 1, "r2_objects": 4 }
   // 永久刪除（不可復原）。順序固定：
   //   ① 刪 R2：raw_r2_key、html_r2_key、attachments.r2_key（空值略過）
-  //   ② 刪 attachments 列  ③ 刪 messages 列
+  //   ② 同一個 D1 batch（＝單一交易）依 FK 由子到父：
+  //      form_responses（該批訊息的 form_instances 的回覆）→ form_instances
+  //      → attachments → messages
+  //      （D19-6：`form_instances.message_id` / `form_responses.instance_id` 的 FK；
+  //       漏刪子表會讓整塊 batch 以 FOREIGN KEY constraint failed 回滾）
   // ⚠️ R2 刪除失敗 → 500 DELETE_FAILED，且 **D1 完全不變**（與地址刪除的 best-effort 不同）
   // 權限同其他信件端點：不存在／越權 → 404 MAIL_NOT_FOUND
-  // 稽核：mail_purged（detail 只有 { id, r2_objects }，不含主旨／寄件者／內文，N9）
+  // 稽核：mail_purged（detail 只有 { id, r2_objects, form_instances }，
+  //       不含主旨／寄件者／內文，N9）
 
 POST /api/mail/:id/restore                 → 200 { "ok": true, "id": 1, "folder": "inbox" }
   // 僅 folder='trash' 可還原；其他資料夾 → 400 NOT_IN_TRASH
   // 越權／不存在 → 404 MAIL_NOT_FOUND；稽核：mail_restored（detail 只有 { id }）
 
 POST /api/mail/trash/empty                 → 200 { "count": 12, "r2_objects": 15 }
-  // 對 session scope 內所有 folder='trash' AND deleted_at IS NULL 執行 hard delete（同上順序）
+  // 對 session scope 內所有 folder='trash' AND deleted_at IS NULL 執行 hard delete（同上順序：
+  // R2 → form_responses → form_instances → attachments → messages）
   // 一次上限 500 封；超過 → 400 TRASH_TOO_LARGE（請分批處理）。空垃圾桶 → { count: 0, r2_objects: 0 }（不寫稽核）
-  // 稽核：trash_emptied（detail 只有 { count, r2_objects }，N9）
+  // 稽核：trash_emptied（detail 只有 { count, r2_objects, form_instances }，N9）
 ```
 
 **批次動作（D19-2）**
@@ -805,7 +812,7 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
   //   trash   → folder='trash'（軟刪除，不動 deleted_at）
   //   restore → folder='inbox'（只對原本在 trash 的列生效）
   //   read    → read_at=now（已讀者保留原 read_at）
-  //   purge   → 走 D19-1 的 hard delete 邏輯（R2 → attachments → messages）
+  //   purge   → 走 D19-1 的 hard delete 邏輯（R2 → form_responses → form_instances → attachments → messages）
   // ids：1–200 個正整數（重複會去重，count 以唯一 id 計）
   // ⚠️ 每個 id 都必須通過 scopedMessage() 權限檢查；**任一不合格 → 404 MAIL_NOT_FOUND，整批不執行**
   //    （先全部驗證，再執行；不會出現「前面幾封已改、後面才 404」的半套結果）
@@ -823,8 +830,9 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
 - **`SQL_CHUNK = 90`**：所有 `id IN (…)` 查詢（SELECT keys／DELETE／UPDATE／scope 驗證）
   一律以 **90 個 id 為一塊**（保留 10 個參數的安全餘裕）。
 - **`hardDeleteMessages(env, ids)`**：逐塊 ① SELECT raw／html keys ② SELECT 附件 keys
-  ③ `bucket.delete(keys)`（嚴格；失敗即中止該塊）④ 同一個 D1 batch 刪 `attachments` → `messages`。
-  - 回傳值為**所有塊的加總** `{messages, attachments, r2_objects}`；稽核由呼叫端寫入（N9）。
+  ③ `bucket.delete(keys)`（嚴格；失敗即中止該塊）④ 同一個 D1 batch 依 FK 由子到父刪
+  `form_responses` → `form_instances` → `attachments` → `messages`（D19-6）。
+  - 回傳值為**所有塊的加總** `{messages, attachments, form_instances, r2_objects}`；稽核由呼叫端寫入（N9）。
   - R2 失敗 → **該塊 D1 不動**；已完成的塊**不回滾**（塊與塊之間各自交易）。
   - 失敗時記錄 `chunkIndex`／`count`／已刪數量的錯誤 log。
 - **`POST /api/mail/trash/empty`**：以 **id 游標＋分塊**（每塊 ≤90）撈取，迴圈直到撈不到；
@@ -839,6 +847,23 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
   完整成功才寫稽核（`trash_emptied`／`mail_batch`，仍只有數量，N9）。
 - 錯誤碼不變：`DELETE_FAILED`（500）、`TRASH_TOO_LARGE`（400）；
   `deleted` 為新增的**選填**回應欄位（僅失敗時出現，既有呼叫端不受影響）。
+
+**D19-6：永久刪除先清 form 子表（2026-11-04）**
+
+> 現象：D19-5 修正後清空垃圾桶仍 500；`wrangler tail` 顯示
+> `FOREIGN KEY constraint failed`。根因：`form_instances.message_id → messages(id)`、
+> `form_responses.instance_id → form_instances(id)`，硬刪只刪 attachments／messages
+> → 只要垃圾桶有 1 封互動式表單的信，該塊 batch 就整批 FK 失敗（docs/19 §8）。
+
+- `hardDeleteMessages()` 每個 chunk 的**同一個 D1 batch** 內，順序改為（子 → 父）：
+  `form_responses` → `form_instances` → `attachments` → `messages`。
+- R2 先刪（嚴格，失敗 → 該塊 DB 不動）與 `SQL_CHUNK = 90` 分塊語意**不變**。
+- 回傳值追加 `form_instances`（刪除數量）；`DELETE /api/mail/:id?mode=hard` 回應因此附帶此欄位
+  （既有欄位不變）；`trash/empty` 回應維持 `{count, r2_objects}`。
+- 稽核 `mail_purged`／`trash_emptied` 的 detail 追加 `form_instances`（只記數量，N9）。
+  `mail_batch`（含 purge）格式不變。
+- `form_templates` 可重用 → **絕不刪除**（D16）。
+- ⚠️ 只影響刪信路徑；D16 的「刪使用者／刪地址」流程未改動。
 
 **前端（`web/src`）**
 

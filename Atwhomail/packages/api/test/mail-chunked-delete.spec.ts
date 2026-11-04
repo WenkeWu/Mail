@@ -246,7 +246,9 @@ describe("T84：trash/empty 在 131 封（>100）時成功", () => {
     expect(r2.calls.flat()).toEqual(ids.map((id) => `mail/t84/${id}.eml`));
     for (const id of materialized) expect(await exists(`mail/t84/${id}.eml`)).toBe(false);
     expect((await E.MAIL.list()).objects).toEqual([]);
-    expect((await lastAudit("trash_emptied"))?.detail).toBe(JSON.stringify({ count: 131, r2_objects: 131 }));
+    expect((await lastAudit("trash_emptied"))?.detail).toBe(
+      JSON.stringify({ count: 131, r2_objects: 131, form_instances: 0 })
+    );
   });
 });
 
@@ -283,11 +285,13 @@ describe("T86：分塊過程中第二塊 R2 刪除失敗", () => {
     });
 
     expect(res.status).toBe(500);
-    const body = await json<ErrBody & { deleted: { messages: number; attachments: number; r2_objects: number } }>(res);
+    const body = await json<
+      ErrBody & { deleted: { messages: number; attachments: number; form_instances: number; r2_objects: number } }
+    >(res);
     expect(body.error.code).toBe("DELETE_FAILED");
     expect(body.error.message).toContain("部分完成：已刪除 90 封");
     // 第一塊的 90 個 R2 物件已刪；第二塊的 R2 刪除失敗 → 不計入
-    expect(body.deleted).toEqual({ messages: 90, attachments: 0, r2_objects: 90 });
+    expect(body.deleted).toEqual({ messages: 90, attachments: 0, form_instances: 0, r2_objects: 90 });
 
     // 第一塊（90 封）已刪除、第二塊（41 封）完全沒動 → 已完成的塊不回滾
     expect(await count("SELECT COUNT(*) AS n FROM messages WHERE id BETWEEN 3000 AND 3089")).toBe(0);
