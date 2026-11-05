@@ -57,7 +57,9 @@
     //   `turnstileSiteKey: "<key>"`，前端即自動顯示 widget（前端不需重新 build）。
     // ⚠️ Secret key 是機密，**不得**寫在本檔；請用：
     //   pnpm --filter @atwhomail/api exec wrangler secret put TURNSTILE_SECRET_KEY
-    "TURNSTILE_SITE_KEY": "0x4AAAAAAF0fKS2orzRFaSL5"
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAF0fKS2orzRFaSL5",
+      "GOOGLE_CLIENT_ID": "622801721616-afccjqgrlbdn2ujevcaqtgsd9vu0iddm.apps.googleusercontent.com",
+      "OAUTH_REDIRECT_URI": "https://auth.atwho.org/api/auth/oauth/google/callback"
   }
   // Phase 11 加入：vars / secrets（JWT_SECRET 等，用 .dev.vars 與 wrangler secret put）
 }
