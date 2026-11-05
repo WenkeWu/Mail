@@ -1362,7 +1362,8 @@ T146＝既有 T1–T138 全套零回歸；前端 `web/test/idCheck.dom.spec.tsx`
 ```
 
 - owner／app → `sub` 直接是 `users.id`；mailbox → 由地址查出 `user_id`。
-- 一律回 `users` 最新資料；**不得**含 `password_hash`。`contact_email` 屬 D27（目前 schema 尚無此欄位）。
+- 一律回 `users` 最新資料；**不得**含 `password_hash`。`contact_email`（D27 新增欄位）目前仍不回傳
+  —— 本端點契約不變，避免既有 App 依賴額外欄位。
 - 帳號不存在／已刪除 → `404 NOT_FOUND`；停權由 `requireSession` 回 `403 ACCOUNT_SUSPENDED`。
 
 **Session 解析與 scope 邊界**
@@ -1386,6 +1387,130 @@ T146＝既有 T1–T138 全套零回歸；前端 `web/test/idCheck.dom.spec.tsx`
 **部署順序（docs/11 §2-22）**：migration 0012 → API → `atwhomail-auth` → 前端。
 **回退**：前端先回上一版（App 轉交／管理 UI 消失）；API 回上一版即停止簽發 App token；
 migration 0012 為純新增表，可保留。
+
+### 2.28 D27：Google OAuth ＋ user-login ＋ 忘記／重設密碼（2026-11-05）
+
+> 設計：`docs/28`。**migration `0013_oauth_identity.sql`**（`users` 四個新欄位＋兩個索引、
+> `password_resets`）；API 與前端需部署（見 docs/11 §2-23）。`GOOGLE_CLIENT_ID`／
+> `OAUTH_REDIRECT_URI` 放 vars；`GOOGLE_CLIENT_SECRET` 只用 `wrangler secret`（**不得寫入 repo**）。
+
+**資料表（migration 0013）**
+
+| 變更 | 重點 |
+|---|---|
+| `users.provider` | `local`（預設）｜`google` |
+| `users.provider_sub` | Google `sub`；與 `provider` 建唯一索引 `idx_users_provider`（`local` 的 NULL 互不衝突） |
+| `users.contact_email` | Google 驗證過的 Email（小寫）；索引 `idx_users_contact_email` |
+| `users.email_verified` | `0`／`1`（Google 登入成功後為 1） |
+| `password_resets` | `token_hash` UNIQUE、`user_id`、`expires_at`（30 分鐘）、`consumed_at`、`ip`；**只存** `SHA-256(token + JWT_SECRET)` |
+
+> ⚠️ **已知限制**：0001 的 `users.password_hash` 是 `TEXT NOT NULL`，SQLite 無法以 `ALTER`
+> 放寬。純 OAuth 帳號因此以**空字串**代表「未設定密碼」；`auth.ts` 的 `hasPassword()` 將
+> `NULL`／空字串一律視為未設定（登入回 `400 NO_PASSWORD_SET`）。本次刻意不重建 `users`
+> 表（DROP／RENAME 屬破壞性操作；docs/16 N10）。
+
+**`GET /api/auth/oauth/google/start`（公開）**
+
+```
+GET /api/auth/oauth/google/start?redirect_after=/inbox
+→ 302 https://accounts.google.com/o/oauth2/v2/auth?client_id=…&redirect_uri=…
+      &response_type=code&scope=openid%20email%20profile&state=<64 hex>&prompt=select_account
+→ Set-Cookie: awo_state=<state>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600
+→ Set-Cookie: awo_redirect=<URL-encoded JSON {origin,path}>（同上屬性）
+```
+
+- `redirect_uri` **固定** `OAUTH_REDIRECT_URI`，不接受請求傳入的值（防開放轉址）。
+- `redirect_after` 只允許**站內相對路徑**（`/…`；拒絕 `//host`、反斜線、控制字元、外部網址），
+  不合法 → `/`。
+- 未設定 `GOOGLE_CLIENT_ID`／`OAUTH_REDIRECT_URI` → **503 `OAUTH_NOT_CONFIGURED`**。
+
+**`GET /api/auth/oauth/google/callback?code=&state=`（公開）**
+
+1. `state` 必須與 `awo_state` cookie **常數時間相符**，否則 **400 `INVALID_STATE`**（並清除 cookie）。
+2. `POST https://oauth2.googleapis.com/token`（`grant_type=authorization_code`；固定 redirect_uri）。
+3. `GET https://openidconnect.googleapis.com/v1/userinfo`（Bearer）→ `{sub,email,email_verified,name}`。
+4. **只接受 `email_verified === true`** → 否則 **403 `EMAIL_NOT_VERIFIED`**。
+5. 帳號比對（依序）：
+   - `provider='google' AND provider_sub=sub` → 登入
+   - `lower(contact_email)=lower(email)` → **連結**（更新 provider／provider_sub；稽核 `oauth_linked`）
+   - 都沒有 → 自動建立 visitor（`password_hash=''`、`role='visitor'`、`status='active'`、
+     `email_verified=1`、`contact_email=email`）＋地址 `<username>@atwho.org`（`daily_send_quota=5`、
+     `warmup_exempt=0`、`password_hash=NULL`）。`username` 由 Email local part 只保留英文字母、
+     小寫、截 12 字（<3 → `user`），再交 `assignAvailableLocalPart()`（撞名／撞二級網域自動加流水號）。
+6. 每次登入：`contact_email` 不同才更新、`email_verified=1`、稽核 `oauth_login`
+   （detail 只記 `sub` 前 8 碼；**不記 Email 全文／token**）。
+7. 簽 session 後 **302** 導回前端：`Location: <origin><redirect_after>#oauth_token=…&oauth_session=…`
+   （owner 另含 `oauth_user_id`／`oauth_username`；mailbox 另含 `oauth_address_id`／`oauth_email`）。
+   token 只在 fragment（不送伺服器／Referer），前端讀取後立即 `history.replaceState` 清除。
+   錯誤：`400 INVALID_STATE`／`403 EMAIL_NOT_VERIFIED`／`403 ACCOUNT_SUSPENDED`／
+   `502 OAUTH_FAILED`（Google 端失敗，不回傳 Google 原文）／`503 OAUTH_NOT_CONFIGURED`。
+
+**Session scope（登入後）**
+
+| role | token scope | 可用範圍 |
+|---|---|---|
+| `owner` | `owner` | 全部（管理＋信件）|
+| `visitor`（有 active 地址）| `mailbox`（第一個 active 地址）| 自己的信箱／別名 |
+| `visitor`（無 active 地址）| `app`-like user scope（`aud=atwhomail-user`）| **只允許** `GET /api/auth/me`；信件類一律 403 `SCOPE_NOT_ALLOWED` |
+
+**`POST /api/auth/user-login`（公開）**
+
+```jsonc
+{ "identifier": "itag", "password": "…" }   // identifier 可為 username 或 contact_email
+→ 200 { token, session: "owner", user: { id, username } }
+   或 { token, session: "mailbox", address: { id, email } }
+   或 { token, session: "user", user: { id, username } }   // 無地址
+```
+
+- 查詢 `lower(username)=lower(?) OR lower(contact_email)=lower(?)`（大小寫不敏感）。
+- 帳號停權 → **403 `ACCOUNT_SUSPENDED`**；`password_hash` 為 NULL／空字串 → **400 `NO_PASSWORD_SET`**
+  （訊息引導使用 Google 登入或忘記密碼）；密碼錯誤 → **401 `INVALID_CREDENTIALS`**。
+- 失敗計數沿用 `auth_attempts`（key `login:<identifier>`；5 次鎖 15 分鐘 → 429 `LOCKED`）。
+
+**`POST /api/auth/forgot-password`（公開）**
+
+```jsonc
+{ "email": "itag@gmail.com" }   // 可為 contact_email 或 username
+→ 200 { "sent": true }           // **一律 200**（不洩漏帳號是否存在）
+```
+
+- 限流（沿用 `auth_attempts`）：同 identifier **3 次/小時**、同 IP **10 次/小時**；超限仍回 200（不寄信）。
+- 找到 user 且有 `contact_email` 才寄信：`noreply@atwho.org` → `contact_email`，
+  主旨 `AtWhoMail 密碼重設`，內容**只有** `https://app.atwho.org/?reset=<token>`＋30 分鐘說明＋
+  「若非本人請忽略」。
+- token = 32 bytes hex；DB 只存 `SHA-256(token + JWT_SECRET)`；30 分鐘有效。
+- 稽核：`password_reset_requested`（user id、ip；**不記 token**）。
+
+**`POST /api/auth/reset-password`（公開）**
+
+```jsonc
+{ "token": "…", "new_password": "…" }
+→ 200 { "ok": true }
+```
+
+- 驗 token（存在／未使用／未過期）；密碼政策沿用 `validatePasswordPolicy`（≥8、≤128）。
+- 一次性消費（`UPDATE … WHERE consumed_at IS NULL AND expires_at > now`；影響列數須為 1）。
+- 更新 `users.password_hash` ＋ `password_changed_at`，並同步更新名下 `email_addresses.password_changed_at`
+  → **所有舊 JWT（owner／app／user／mailbox）立即失效**；`provider` 保持不變。
+- 寄「`AtWhoMail 密碼已變更`」通知（若有 `contact_email`）。
+- 錯誤：`400 INVALID_TOKEN`／`400 TOKEN_EXPIRED`／`422 WEAK_PASSWORD`。
+- 稽核：`password_reset_done`（user id；不記 token／密碼）。
+
+**前端（docs/28 §6）**
+
+- 登入頁「使用 Google 登入」→ `https://auth.atwho.org/api/auth/oauth/google/start?redirect_after=<目前路徑>`。
+- callback fragment 讀取後存 sessionStorage（與既有 Bearer session 相同），並立即清除 fragment。
+- 「忘記密碼？」→ 輸入 Email／使用者名稱 → 顯示「若帳號存在，已寄出重設信（30 分鐘內有效）」。
+- `?reset=<token>` → 設定新密碼頁；成功後清除 query、回登入頁顯示提示。
+- `400 NO_PASSWORD_SET` → 顯示「使用 Google 登入」與「使用忘記密碼設定」兩個引導。
+- 信箱欄位：`*@atwho.org` 仍走既有 `mailbox-login`（行為不變）；其他輸入走 `user-login`。
+
+**測試**：T161–T172（`packages/api/test/oauth-password.spec.ts`；前端 `web/test/oauth.spec.ts`、
+`web/test/oauth.dom.spec.tsx`）。
+
+**部署順序（docs/11 §2-23）**：migration 0013 → API → 前端（`atwhomail-auth` 代理不需改動）。
+**回退**：前端先回上一版（Google／忘記密碼 UI 消失）；API 回上一版即停止新端點；
+migration 0013 為純新增欄位／表，保留不影響既有流程。
 
 ## 3. 通用原則
 

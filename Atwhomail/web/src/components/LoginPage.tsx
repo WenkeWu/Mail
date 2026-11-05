@@ -2,15 +2,18 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import {
   checkId,
+  forgotPassword,
   getRegistrationMode,
   mailboxLogin,
   ownerLogin,
   register,
   registerRequest,
   registerVerify,
+  userLogin,
 } from "../api/endpoints";
 import type { IdCheckResult, RegistrationMode, Session } from "../api/types";
 import type { LoginMode } from "../lib/hostMode";
+import { buildGoogleStartUrl } from "../lib/oauth";
 import { clearRegistrationParams, parseRegistrationQuery } from "../lib/registrationLinks";
 import { IconMail } from "./icons";
 import { TurnstileWidget } from "./TurnstileWidget";
@@ -137,6 +140,11 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
   const [sendingCode, setSendingCode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // D27（docs/28 §6）：忘記密碼流程＋NO_PASSWORD_SET 引導
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotSent, setForgotSent] = useState(false);
+  const [noPasswordSet, setNoPasswordSet] = useState(false);
   /** D22：`?register=1` 開啟時，等 Email 欄位真正掛載後明確取得焦點 */
   const emailInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -230,6 +238,35 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
   const switchTab = (next: Tab) => {
     setTab(next);
     setError(null);
+    setForgotOpen(false);
+    setForgotSent(false);
+    setNoPasswordSet(false);
+  };
+
+  /** D27：使用 Google 登入（透過 auth.atwho.org 薄代理；登入後導回目前路徑） */
+  const startGoogle = (): void => {
+    const current = `${window.location.pathname}${window.location.search}`;
+    window.location.assign(buildGoogleStartUrl(current));
+  };
+
+  /** D27：寄送重設信（後端一律 200；前端只顯示「若帳號存在…」） */
+  const sendForgot = async (): Promise<void> => {
+    if (busy) return;
+    setError(null);
+    const identifier = forgotEmail.trim();
+    if (!identifier) {
+      setError("請輸入 Email 或使用者名稱");
+      return;
+    }
+    setBusy(true);
+    try {
+      await forgotPassword(identifier);
+      setForgotSent(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "寄送失敗，請稍後再試");
+    } finally {
+      setBusy(false);
+    }
   };
 
   /** 寄送 6 位數驗證碼（D21；成功後顯示驗證碼欄位並啟動 60 秒倒數） */
@@ -274,6 +311,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
     e.preventDefault();
     if (busy || sendingCode) return;
     setError(null);
+    setNoPasswordSet(false);
 
     if (tab === "register" && regMode === "email_verify" && !codeSent) {
       await sendCode();
@@ -312,19 +350,35 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
         return;
       }
       if (tab === "mailbox") {
-        const res = await mailboxLogin(email.trim(), password);
+        const identifier = email.trim();
         try {
-          localStorage.setItem(LAST_EMAIL_KEY, email.trim());
+          localStorage.setItem(LAST_EMAIL_KEY, identifier);
         } catch {
           /* ignore */
         }
-        onLogin({ kind: "mailbox", token: res.token, addressId: res.address.id, email: res.address.email });
+        // D27：`*@atwho.org` 走既有地址登入（行為完全不變）；
+        // 其他輸入（username／contact_email）走 user-login（docs/28 §3）。
+        if (identifier.toLowerCase().endsWith("@atwho.org")) {
+          const res = await mailboxLogin(identifier, password);
+          onLogin({ kind: "mailbox", token: res.token, addressId: res.address.id, email: res.address.email });
+        } else {
+          const res = await userLogin(identifier, password);
+          if (res.session === "owner") {
+            onLogin({ kind: "owner", token: res.token, userId: res.user.id, username: res.user.username });
+          } else if (res.session === "mailbox") {
+            onLogin({ kind: "mailbox", token: res.token, addressId: res.address.id, email: res.address.email });
+          } else {
+            // 無可用地址的 visitor（OAuth 首登一定配發地址；理論上不會發生）
+            setError("此帳號尚未配置信箱地址，請聯絡管理者。");
+          }
+        }
       } else {
         const res = await ownerLogin(username.trim(), password);
         onLogin({ kind: "owner", token: res.token, userId: res.user.id, username: res.user.username });
       }
     } catch (err) {
       if (err instanceof ApiError) {
+        if (err.code === "NO_PASSWORD_SET") setNoPasswordSet(true);
         const hint = tab === "register" ? REGISTER_HINTS[err.code] : undefined;
         setError(hint ? `${err.message}（${hint}）` : err.message);
       } else {
@@ -347,9 +401,11 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
         : regMode === null || regMode === "closed"
           ? null
           : "註冊並登入"
-      : busy
-        ? "登入中…"
-        : "登入";
+      : forgotOpen
+        ? null
+        : busy
+          ? "登入中…"
+          : "登入";
 
   /** D23：site key 非空且為 email_verify 模式才顯示（未設定 → 完全不載入腳本） */
   const turnstileWidget =
@@ -595,30 +651,114 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
               </>
             )
           ) : tab === "mailbox" ? (
-            <>
-              <label>
-                電子郵件地址
-                <input
-                  type="email"
-                  autoComplete="username"
-                  placeholder="you@atwho.org"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                  autoFocus
-                />
-              </label>
-              <label>
-                密碼
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-              </label>
-            </>
+            forgotOpen ? (
+              <>
+                <label>
+                  Email 或使用者名稱
+                  <input
+                    type="text"
+                    autoComplete="username"
+                    placeholder="you@example.com 或 itag"
+                    value={forgotEmail}
+                    onChange={(e) => setForgotEmail(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void sendForgot();
+                      }
+                    }}
+                    required
+                    autoFocus
+                  />
+                </label>
+                {forgotSent ? (
+                  <p className="login-hint">若帳號存在，已寄出重設信（30 分鐘內有效）。</p>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => void sendForgot()}
+                    disabled={busy}
+                  >
+                    {busy ? "寄送中…" : "寄送重設信"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn-link"
+                  onClick={() => {
+                    setForgotOpen(false);
+                    setForgotSent(false);
+                    setError(null);
+                  }}
+                  disabled={busy}
+                >
+                  返回登入
+                </button>
+              </>
+            ) : (
+              <>
+                <label>
+                  電子郵件地址或使用者名稱
+                  <input
+                    type="text"
+                    autoComplete="username"
+                    placeholder="you@atwho.org 或 itag"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    autoFocus
+                  />
+                </label>
+                <label>
+                  密碼
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                </label>
+                <div className="login-inline-links">
+                  <button
+                    type="button"
+                    className="btn-link"
+                    onClick={() => {
+                      setForgotOpen(true);
+                      setForgotEmail(email);
+                      setForgotSent(false);
+                      setNoPasswordSet(false);
+                      setError(null);
+                    }}
+                  >
+                    忘記密碼？
+                  </button>
+                </div>
+                {noPasswordSet && (
+                  <div className="login-guidance">
+                    <p className="login-hint">
+                      此帳號尚未設定密碼：請用 Google 登入，或使用「忘記密碼」設定。
+                    </p>
+                    <button type="button" className="btn-google" onClick={startGoogle}>
+                      使用 Google 登入
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-link"
+                      onClick={() => {
+                        setForgotOpen(true);
+                        setForgotEmail(email);
+                        setForgotSent(false);
+                        setError(null);
+                      }}
+                    >
+                      使用忘記密碼設定
+                    </button>
+                  </div>
+                )}
+              </>
+            )
           ) : (
             <>
               <label>
@@ -653,6 +793,12 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
             </button>
           )}
         </form>
+
+        {tab !== "register" && (
+          <button type="button" className="btn-google" onClick={startGoogle}>
+            使用 Google 登入
+          </button>
+        )}
 
         <p className="login-hint">
           {tab === "mailbox"

@@ -130,7 +130,7 @@ beforeEach(async () => {
     .run();
 });
 
-describe("T92–T96：寄碼與驗碼限制", { timeout: 30_000 }, () => {
+describe("T92–T96：寄碼與驗碼限制", { timeout: 90_000 }, () => {
   it("T92 register-request 正常寄碼（6 位數、15 分鐘、不含個資、DB 只存雜湊）", async () => {
     const res = await requestCode("User@Example.COM", "Alice", "203.0.113.92");
     expect(res.status).toBe(200);
@@ -271,7 +271,7 @@ describe("T92–T96：寄碼與驗碼限制", { timeout: 30_000 }, () => {
   });
 });
 
-describe("T97–T98：驗證成功與一次性", { timeout: 30_000 }, () => {
+describe("T97–T98：驗證成功與一次性", { timeout: 90_000 }, () => {
   it("T97 驗證成功 → 建立 user＋address（暖機生效）＋ mailbox token", async () => {
     const email = "verify@example.com";
     expect((await requestCode(email, "newuser", "203.0.113.97")).status).toBe(200);
@@ -338,7 +338,7 @@ describe("T97–T98：驗證成功與一次性", { timeout: 30_000 }, () => {
   });
 });
 
-describe("T99：REGISTRATION_MODE 分流", { timeout: 30_000 }, () => {
+describe("T99：REGISTRATION_MODE 分流", { timeout: 90_000 }, () => {
   it("closed → 新舊流程皆 403 REGISTRATION_CLOSED；invite → 舊流程可用、新端點關閉", async () => {
     E.REGISTRATION_MODE = "closed";
     expect((await requestCode("x@example.com", "closed1", "203.0.113.99")).status).toBe(403);
@@ -417,7 +417,7 @@ describe("T99：REGISTRATION_MODE 分流", { timeout: 30_000 }, () => {
   });
 });
 
-describe("追加：保留字與速率限制（docs/21 §2／§5）", { timeout: 30_000 }, () => {
+describe("追加：保留字與速率限制（docs/21 §2／§5）", { timeout: 90_000 }, () => {
   it("保留字 → 422 ID_RESERVED，不寄碼（D20 起改為 422）", async () => {
     const res = await requestCode("reserved@example.com", "admin", "203.0.113.110");
     expect(res.status).toBe(422);

@@ -38,6 +38,37 @@ export function mailboxLogin(email: string, password: string) {
   );
 }
 
+/** D27：user-login 的回應（依 role 可能是 owner／mailbox；無地址時為 user scope） */
+export type UserLoginResponse =
+  | { token: string; session: "owner"; user: { id: number; username: string } }
+  | { token: string; session: "mailbox"; address: { id: number; email: string } }
+  | { token: string; session: "user"; user: { id: number; username: string } };
+
+/**
+ * D27（docs/28 §3）：以 username 或 contact_email 登入（本機密碼）。
+ * 純 OAuth 帳號 → 400 `NO_PASSWORD_SET`（前端顯示 Google／忘記密碼引導）。
+ */
+export function userLogin(identifier: string, password: string) {
+  return request<UserLoginResponse>("/api/auth/user-login", {
+    method: "POST",
+    json: { identifier, password },
+  });
+}
+
+/**
+ * D27（docs/28 §5.1）：忘記密碼。後端**一律回 200**（不洩漏帳號是否存在）。
+ * 前端只能顯示「若帳號存在，已寄出重設信」。
+ */
+export const forgotPassword = (email: string) =>
+  request<{ sent: true }>("/api/auth/forgot-password", { method: "POST", json: { email } });
+
+/** D27（docs/28 §5.2）：以一次性 token 設定新密碼（成功後所有舊 JWT 失效） */
+export const resetPassword = (token: string, newPassword: string) =>
+  request<{ ok: boolean }>("/api/auth/reset-password", {
+    method: "POST",
+    json: { token, new_password: newPassword },
+  });
+
 /**
  * D26（docs/27 §5）：登入成功後替指定 App 取得一次性 code。
  * 回應的 `redirect` 已含 `?code=…`，前端直接 `location.assign(redirect)`；

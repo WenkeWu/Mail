@@ -6,8 +6,10 @@ import { clearSession, loadSession, saveSession } from "./auth/session";
 import { AppHandoff } from "./components/AppHandoff";
 import { AppShell } from "./components/AppShell";
 import { LoginPage } from "./components/LoginPage";
+import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { parseAppLoginQuery } from "./lib/appLogin";
 import { loginModeFor } from "./lib/hostMode";
+import { getResetToken, takeOAuthSession } from "./lib/oauth";
 
 /**
  * 登入頁顯示模式：依 hostname 決定一次（docs/16 D1）
@@ -30,7 +32,14 @@ const defaultNavigate = (url: string): void => {
  * - 完全沒帶 app／redirect_uri → 行為與 D26 之前完全相同（`?register=1`／`?invite=` 不受影響）
  */
 export default function App({ navigate = defaultNavigate }: { navigate?: (url: string) => void } = {}) {
-  const [session, setSession] = useState<Session | null>(() => loadSession());
+  // D27：Google OAuth callback 以 `#oauth_token=…` 導回 → 讀取後立即清除 fragment
+  const [session, setSession] = useState<Session | null>(() => {
+    const fromOAuth = takeOAuthSession(window);
+    if (fromOAuth) saveSession(fromOAuth);
+    return fromOAuth ?? loadSession();
+  });
+  // D27：`?reset=<token>` → 先顯示設定新密碼頁（不論是否已登入）
+  const [resetToken, setResetToken] = useState<string | null>(() => getResetToken(window.location.search));
   const [notice, setNotice] = useState<string | null>(null);
   /** 參數只在第一次 render 讀取（與 LoginPage 的 register／invite 行為一致） */
   const [appQuery] = useState(() => parseAppLoginQuery(window.location.search));
@@ -81,6 +90,24 @@ export default function App({ navigate = defaultNavigate }: { navigate?: (url: s
   }, [appQuery, session, handoffAttempt, handoffDismissed, navigate]);
 
   const handoffRequired = appQuery.active && !handoffDismissed;
+
+  // D27：重設密碼頁優先於登入／信箱（連結可能在使用者已登入時開啟）
+  if (resetToken) {
+    return (
+      <ResetPasswordPage
+        token={resetToken}
+        onDone={(message) => {
+          try {
+            window.history.replaceState(null, "", window.location.pathname);
+          } catch {
+            /* ignore */
+          }
+          setResetToken(null);
+          setNotice(message);
+        }}
+      />
+    );
+  }
 
   if (!session) {
     return (

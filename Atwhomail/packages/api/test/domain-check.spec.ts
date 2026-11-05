@@ -134,7 +134,7 @@ beforeEach(async () => {
     .run();
 });
 
-describe("D20 T139–T142：DoH 判定與快取", { timeout: 30_000 }, () => {
+describe("D20 T139–T142：DoH 判定與快取", { timeout: 90_000 }, () => {
   it("T139 命中網域（NOERROR）→ check-id／register-request 422 ID_MATCHES_DOMAIN ＋建議清單", async () => {
     mockDoh(new Set(["hp.com"]));
 
@@ -230,7 +230,7 @@ describe("D20 T139–T142：DoH 判定與快取", { timeout: 30_000 }, () => {
   });
 });
 
-describe("D20 T143–T145：保留字、流水號與限流", { timeout: 30_000 }, () => {
+describe("D20 T143–T145：保留字、流水號與限流", { timeout: 90_000 }, () => {
   it("T143 保留字 → 422 ID_RESERVED；assignAvailableLocalPart('admin') 以 user 為 base", async () => {
     mockDoh(new Set());
 

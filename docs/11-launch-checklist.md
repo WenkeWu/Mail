@@ -22,6 +22,7 @@
 | ID 撞二級網域（D20） | 🟡 程式完成、**未部署** | `check-id` 端點＋`register-request`／`register-verify` 複驗；DoH 26 TLD、fail-open、90／7 天快取；migration `0011` 本地測試已套用、**遠端待 owner**（見 §2-20） |
 | Turnstile 防機器人（D23） | 🟡 程式完成、**金鑰未提供／未部署** | `register-request` 選填 `turnstile_token`；secret 未設定自動跳過、site key 空字串不顯示 widget；無 migration（見 §2-21） |
 | App 登入代理（D26） | 🟡 程式完成、**未部署** | `auth.atwho.org` 薄代理（`atwhomail-auth`）＋ App Clients／`app-login`／`exchange`／`auth/me`；migration `0012` 本地測試已套用、**遠端待 owner**（見 §2-22） |
+| Google OAuth ＋ 忘記密碼（D27） | 🟡 程式完成、**未部署** | `GET /api/auth/oauth/google/start`／`callback`、`POST /api/auth/user-login`、`forgot-password`／`reset-password`；migration `0013` 本地測試已套用、**遠端待 owner**（見 §2-23） |
 
 ### 1.1 2026-10-05 收發信現況稽核（公開 DNS + CF API 實測）
 
@@ -671,6 +672,64 @@
       - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入、
             **未新增任何 secret 值**。
 
+- [ ] **23. Google OAuth ＋ 忘記密碼（docs/28 D27；2026-11-05 程式完成，未部署）**
+
+      **前置（owner／已完成項目，勿重做）**：
+      1. Google OAuth Client 已建立；redirect URI
+         `https://auth.atwho.org/api/auth/oauth/google/callback` 已登記。
+      2. Worker secret `GOOGLE_CLIENT_SECRET` 已設定（**不得**寫入 repo／vars）。
+      3. `wrangler.jsonc` vars 已有 `GOOGLE_CLIENT_ID`、`OAUTH_REDIRECT_URI`。
+      4. `assignAvailableLocalPart()`（D20）已存在，OAuth 首登直接使用。
+
+      **部署順序（缺一不可）**：
+      1. 先套 migration（**由 owner 執行**；實作 agent 不得執行遠端 migration，N10）：
+         ```powershell
+         cd D:\Mail\Atwhomail
+         pnpm --filter @atwhomail/api exec wrangler d1 migrations apply mail-d1 --remote
+         ```
+         預期新增：`users.provider`／`provider_sub`／`contact_email`／`email_verified`、
+         `idx_users_provider`／`idx_users_contact_email`、`password_resets`（＋`idx_password_resets_user`）。
+         套用後抽驗：
+         `SELECT name FROM sqlite_master WHERE type='table' AND name='password_resets';` → 1 列；
+         `SELECT name FROM pragma_table_info('users') WHERE name IN ('provider','provider_sub','contact_email','email_verified');` → 4 列。
+      2. 部署 **API Worker**（`pnpm --filter @atwhomail/api run deploy`）：
+         新增 OAuth start／callback、`user-login`、`forgot-password`、`reset-password`。
+         ⚠️ 確認 `GOOGLE_CLIENT_SECRET` 已存在於該 Worker（`wrangler secret list`）。
+      3. 重新 build／deploy **前端**（`cd web; pnpm run build` → Pages）：
+         登入頁 Google 按鈕、忘記密碼流程、`?reset=` 設定新密碼頁、`NO_PASSWORD_SET` 引導。
+         ⚠️ **前端必須重新部署**：只部署 API 看不到新 UI。
+      4. `atwhomail-auth`（`auth.atwho.org`）**不需重新部署**：既有代理已轉發 `/api/auth/*`
+         與 `Set-Cookie`／`Cookie`。
+
+      **驗收**：
+      - [ ] `GET https://auth.atwho.org/api/auth/oauth/google/start?redirect_after=/` →
+            **302** 到 `accounts.google.com`；`redirect_uri` 固定為
+            `https://auth.atwho.org/api/auth/oauth/google/callback`；回應有
+            `awo_state`（HttpOnly／Secure／SameSite=Lax／Max-Age=600）。
+      - [ ] 用 Google 帳號完成登入：新帳號 → 自動建立 visitor（無密碼）＋
+            `<id>@atwho.org`（`daily_send_quota=5`）→ 導回前端並登入。
+      - [ ] 既有 `contact_email` 相同的帳號 → 連結（`provider='google'`＋`provider_sub`），
+            不重複建帳號；稽核 `oauth_linked`。
+      - [ ] 第二次登入 → 同一 user；`contact_email` 變更時同步更新；稽核 `oauth_login`
+            （detail 只有 `sub` 前 8 碼，**不含 Email 全文／token**）。
+      - [ ] `POST /api/auth/user-login`：以 username 或 contact_email 皆可登入；
+            純 OAuth 帳號 → **400 `NO_PASSWORD_SET`**。
+      - [ ] `POST /api/auth/forgot-password`：不存在的 Email → **200**（不洩漏）、不寄信；
+            有帳號 → 收到 `noreply@atwho.org` 的「AtWhoMail 密碼重設」（30 分鐘、一次性）。
+      - [ ] `POST /api/auth/reset-password`：成功後舊 JWT 立即 **401 `TOKEN_STALE`**；
+            同一 token 第二次 → 400 `INVALID_TOKEN`；過期 → 400 `TOKEN_EXPIRED`；
+            弱密碼 → 422 `WEAK_PASSWORD`；成功後寄「密碼已變更」通知。
+      - [ ] 限流：同 Email 第 4 次 forgot → 仍 200 但不寄信；同 IP 第 11 次 → 仍 200 但不寄信。
+      - [ ] T161–T172 全綠；既有 T1–T160 零回歸（`pnpm test`）。
+
+      **回退**：
+      前端可先回上一版（Google／忘記密碼 UI 消失）；API 回上一版即停止新端點；
+      migration 0013 為純新增欄位／表，保留不影響既有流程
+      （`users.password_hash` 仍為 NOT NULL；OAuth 帳號以空字串表示未設密碼）。
+
+      - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入、
+            **未新增任何 secret 值**（`GOOGLE_CLIENT_SECRET` 為既有 secret，本次未變更）。
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -682,6 +741,11 @@
 | `POST /api/auth/app-login` | owner／mailbox session（rescue 亦可） | **D26**：替指定 App 產生 60 秒一次性 code → `{redirect}`；app 必須 active、`redirect_uri` **完全相符**白名單。app token → 403 `SCOPE_NOT_ALLOWED` |
 | `POST /api/auth/exchange` | 公開，但需 `app_secret` | **D26**：App 後端以 secret＋code 換 JWT（`scope='app'`、`aud=app_id`、`sub=users.id`）；一次性、60 秒；限流 30/分/app。錯誤：401 `INVALID_CLIENT`／400 `INVALID_CODE`／409 `CODE_ALREADY_USED`／400 `INVALID_REDIRECT_URI` |
 | `GET /api/auth/me` | owner／mailbox／**app** session | **D26**：目前使用者身分（id／username／display_name／role／created_at；**不含** `password_hash`） |
+| `GET /api/auth/oauth/google/start` | 公開 | **D27**：302 到 Google OAuth；`redirect_uri` **固定** `OAUTH_REDIRECT_URI`；`state` 存 cookie（HttpOnly／Secure／SameSite=Lax／600 秒）；`redirect_after` 只接受站內相對路徑 |
+| `GET /api/auth/oauth/google/callback` | 公開 | **D27**：驗 state＋`email_verified=true` → 以 provider_sub／contact_email（連結）／自動建立 visitor＋地址（配額 5）比對 → 簽 session 後以 `#oauth_token=…` fragment 導回前端。稽核 `oauth_registered`／`oauth_linked`／`oauth_login`（不記 Email 全文／token） |
+| `POST /api/auth/user-login` | 公開（5 次失敗鎖 15 分） | **D27**：username 或 contact_email ＋ 密碼 → owner／mailbox／user session；停權 403 `ACCOUNT_SUSPENDED`、未設密碼 400 `NO_PASSWORD_SET` |
+| `POST /api/auth/forgot-password` | 公開 | **D27**：**一律 200**（不洩漏帳號存在）；限流 3/時/identifier、10/時/IP；寄 `noreply@atwho.org` 的 30 分鐘一次性重設連結（DB 只存 SHA-256）|
+| `POST /api/auth/reset-password` | 公開（一次性 token） | **D27**：更新密碼＋`pca`（撤銷所有舊 JWT）＋寄「密碼已變更」；400 `INVALID_TOKEN`／`TOKEN_EXPIRED`、422 `WEAK_PASSWORD` |
 | `/api/apps*` | owner 或 rescue | **D26**：App Client 管理。`POST` 回一次性 `app_secret`；`GET` 不含 secret；`PATCH` 更新名稱／狀態／redirect_uris；`DELETE` 軟停用。稽核 `app_created`／`app_updated`（不記 secret） |
 | `POST /api/auth/register` | **公開**（行為依 `REGISTRATION_MODE`；預設 `invite` 需邀請碼） | 訪客註冊（Phase 1）→ mailbox session。**D21**：`email_verify` → 403 `REGISTRATION_EMAIL_VERIFY_REQUIRED`（改走下方兩端點）；`closed` → 403 `REGISTRATION_CLOSED` |
 | `GET /api/auth/registration-mode` | 公開 | **D21**：目前註冊模式 `{mode}`（僅供前端表單顯示；權限仍由後端強制）。**D22**：管理端於 `email_verify` 時據此顯示「一般註冊連結」卡片。**D23**：另回 `turnstileSiteKey`（未設／空字串 → `null`；僅供前端顯示 widget） |

@@ -63,6 +63,12 @@ export interface Env {
    * 未設定／空字串 → `register-request` 跳過 siteverify（只記一次 warning；回退用）。
    */
   TURNSTILE_SECRET_KEY?: string;
+  /** D27（docs/28）：Google OAuth client_id（非機密；放 vars） */
+  GOOGLE_CLIENT_ID?: string;
+  /** D27：Google OAuth client_secret（機密；`wrangler secret put GOOGLE_CLIENT_SECRET`） */
+  GOOGLE_CLIENT_SECRET?: string;
+  /** D27：固定 redirect URI（非機密；放 vars；不得接受請求傳入的值） */
+  OAUTH_REDIRECT_URI?: string;
 }
 
 export type Scope =
@@ -122,6 +128,17 @@ export function validatePasswordPolicy(pw: string): string | null {
   if (pw.length < 8) return "密碼至少 8 個字元";
   if (pw.length > 128) return "密碼過長（≤128）";
   return null;
+}
+
+/**
+ * D27（docs/28）：此帳號是否**有可用密碼**。
+ *
+ * `users.password_hash` 在 0001 是 `TEXT NOT NULL`（SQLite 無法以 ALTER 放寬），
+ * 所以純 OAuth 帳號以空字串儲存；這裡把 `NULL`／空字串一律視為「未設定密碼」。
+ * 呼叫端（user-login／owner-password 等）不得直接以 truthy 判斷。
+ */
+export function hasPassword(hash: string | null | undefined): hash is string {
+  return typeof hash === "string" && hash.length > 0;
 }
 
 // ───────────────────────── JWT ─────────────────────────

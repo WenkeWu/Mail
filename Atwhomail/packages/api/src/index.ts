@@ -14,12 +14,14 @@
  * - 越權一律 404（不洩漏資源存在性）
  */
 import { Hono, type Context } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import PostalMime from "postal-mime";
 import {
   hashPassword,
   verifyPassword,
   validatePasswordPolicy,
+  hasPassword,
   signOwnerToken,
   signMailboxToken,
   signAppToken,
@@ -47,7 +49,18 @@ import {
   redirectWithCode,
 } from "./apps";
 import { BACKUP_TABLES, clampLimit, formatCursor, parseCursor, type Cursor } from "./backup";
-import { localPartAvailability, suggestAvailableLabels } from "./domains";
+import { localPartAvailability, suggestAvailableLabels, assignAvailableLocalPart } from "./domains";
+import {
+  exchangeGoogleCode,
+  fetchGoogleUserInfo,
+  oauthLocalPartFromEmail,
+  safeRedirectAfter,
+  GOOGLE_AUTH_ENDPOINT,
+  OAUTH_COOKIE_MAX_AGE,
+  OAUTH_DEFAULT_ORIGIN,
+  OAUTH_REDIRECT_COOKIE,
+  OAUTH_STATE_COOKIE,
+} from "./oauth";
 import { turnstileSiteKey, verifyTurnstile } from "./turnstile";
 import {
   buildFormStaticText,
@@ -1058,6 +1071,619 @@ app.patch("/api/auth/owner-password/self", requireSession, async (c) => {
   return c.json({ ok: true });
 });
 
+// ══════════════════════ D27：Google OAuth ＋ 忘記密碼（docs/28）══════════════════════
+
+/**
+ * 無可用地址的 visitor（理論上不會發生：OAuth 首登一定配發地址）使用 `app`-like 的
+ * 使用者層級 scope（`aud=atwhomail-user`）→ 只被 `requireSession` 接受（`/api/auth/me`），
+ * 信件類端點一律 403 `SCOPE_NOT_ALLOWED`（docs/28 §4）。
+ */
+const USER_SCOPE_AUD = "atwhomail-user";
+
+/** OAuth 首登配發地址的每日寄信配額（docs/26 §9.4：比 Email 驗證碼註冊的 20 更嚴格） */
+const OAUTH_DAILY_QUOTA = 5;
+
+/** 密碼重設 token 有效期（docs/28 §5.1：30 分鐘） */
+const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
+/** 重設信內連結的前端網址（固定；不取使用者輸入） */
+const PASSWORD_RESET_LINK_BASE = "https://app.atwho.org/?reset=";
+/** 同 Email 每小時 3 次、同 IP 每小時 10 次（docs/28 §5.1） */
+const FORGOT_EMAIL_HOURLY_LIMIT = 3;
+const FORGOT_IP_HOURLY_LIMIT = 10;
+
+/** OAuth 一次性 cookie 的屬性（docs/28 §2.1） */
+const OAUTH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: true,
+  sameSite: "Lax",
+  path: "/",
+  maxAge: OAUTH_COOKIE_MAX_AGE,
+} as const;
+
+interface AccountUserRow {
+  id: number;
+  username: string;
+  role: string;
+  status: string;
+  password_changed_at: number | null;
+  contact_email: string | null;
+  email_verified?: number;
+}
+
+/** 登入成功後回給前端的 session（owner／mailbox／無地址的 user scope） */
+type IssuedSession =
+  | { token: string; session: "owner"; user: { id: number; username: string } }
+  | { token: string; session: "mailbox"; address: { id: number; email: string } }
+  | { token: string; session: "user"; user: { id: number; username: string } };
+
+/**
+ * 依 role 簽發 session（docs/28 §4）：
+ *  - owner → `scope='owner'`
+ *  - visitor → `scope='mailbox'`（以**第一個 active 地址**）
+ *  - visitor 無 active 地址 → `app`-like 的 user scope（只允許 `/api/auth/me`）
+ */
+async function issueSessionForUser(env: Env, user: AccountUserRow): Promise<IssuedSession> {
+  const pca = Number(user.password_changed_at ?? 0);
+  if (user.role === "owner") {
+    return {
+      token: await signOwnerToken(env, user.id, pca),
+      session: "owner",
+      user: { id: user.id, username: user.username },
+    };
+  }
+  const address = await env.DB.prepare(
+    `SELECT id, email, password_changed_at FROM email_addresses
+     WHERE user_id = ?1 AND status = 'active' AND deleted_at IS NULL
+     ORDER BY id LIMIT 1`
+  )
+    .bind(user.id)
+    .first<{ id: number; email: string; password_changed_at: number | null }>();
+  if (address) {
+    return {
+      token: await signMailboxToken(env, address.id, address.email, Number(address.password_changed_at ?? 0)),
+      session: "mailbox",
+      address: { id: address.id, email: address.email },
+    };
+  }
+  return {
+    token: await signAppToken(env, {
+      userId: user.id,
+      appId: USER_SCOPE_AUD,
+      username: user.username,
+      role: user.role,
+      pca,
+    }),
+    session: "user",
+    user: { id: user.id, username: user.username },
+  };
+}
+
+/**
+ * OAuth 完成後要導回的前端來源：只接受 Referer 的 origin，且必須在白名單內
+ * （`ALLOWED_ORIGINS` 或預設 `https://app.atwho.org`）。其他一律回預設值。
+ * ⚠️ 僅影響 302 目的地；授權仍由簽發的 JWT 決定（docs/16 N3）。
+ */
+function oauthReturnOrigin(env: Env, referer: string | undefined): string {
+  if (!referer) return OAUTH_DEFAULT_ORIGIN;
+  try {
+    const origin = new URL(referer).origin;
+    if (origin === OAUTH_DEFAULT_ORIGIN || allowedOrigin(env, origin)) return origin;
+  } catch {
+    /* 忽略畸形 Referer */
+  }
+  return OAUTH_DEFAULT_ORIGIN;
+}
+
+/** 讀取 `awo_redirect` cookie（只信任白名單 origin ＋ 相對路徑；防開放轉址） */
+function readOAuthReturnTarget(env: Env, raw: string | undefined): { origin: string; path: string } {
+  const fallback = { origin: OAUTH_DEFAULT_ORIGIN, path: "/" };
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(decodeURIComponent(raw)) as { origin?: unknown; path?: unknown };
+    const origin = typeof parsed.origin === "string" ? parsed.origin : "";
+    const path = safeRedirectAfter(parsed.path);
+    if (origin === OAUTH_DEFAULT_ORIGIN || (origin !== "" && allowedOrigin(env, origin))) {
+      return { origin, path };
+    }
+    return { origin: OAUTH_DEFAULT_ORIGIN, path };
+  } catch {
+    return fallback;
+  }
+}
+
+/** 組 Google 授權頁 URL（redirect_uri 固定取 env；`%20` 不用 `+`） */
+function googleAuthRedirectUrl(env: Env, state: string): string {
+  const params = new URLSearchParams({
+    client_id: (env.GOOGLE_CLIENT_ID ?? "").trim(),
+    redirect_uri: (env.OAUTH_REDIRECT_URI ?? "").trim(),
+    response_type: "code",
+    scope: "openid email profile",
+    state,
+    prompt: "select_account",
+  });
+  return `${GOOGLE_AUTH_ENDPOINT}?${params.toString().replace(/\+/g, "%20")}`;
+}
+
+/**
+ * 把 session 放在 **URL fragment**（`#oauth_token=…`）導回前端：
+ * fragment 不會送到伺服器、也不會出現在 Referer；前端讀取後立即以 history.replaceState 清除。
+ */
+function oauthSessionRedirect(origin: string, path: string, issued: IssuedSession): string {
+  const url = new URL(path, origin);
+  const params = new URLSearchParams({ oauth_token: issued.token, oauth_session: issued.session });
+  if (issued.session === "mailbox") {
+    params.set("oauth_address_id", String(issued.address.id));
+    params.set("oauth_email", issued.address.email);
+  } else {
+    params.set("oauth_user_id", String(issued.user.id));
+    params.set("oauth_username", issued.user.username);
+  }
+  url.hash = params.toString();
+  return url.toString();
+}
+
+/** 重設信：寄件者 noreply@atwho.org；內容**只有連結與 30 分鐘說明**（docs/28 §5.1） */
+async function sendPasswordResetEmail(env: Env, to: string, token: string): Promise<void> {
+  const link = `${PASSWORD_RESET_LINK_BASE}${encodeURIComponent(token)}`;
+  const text = `請點擊以下連結設定新密碼（30 分鐘內有效）：\n\n${link}\n\n若非本人操作，請忽略本信。`;
+  const html =
+    `<p>請點擊以下連結設定新密碼（30 分鐘內有效）：</p>` +
+    `<p><a href="${link}">${link}</a></p>` +
+    `<p>若非本人操作，請忽略本信。</p>`;
+  await env.EMAIL.send({
+    from: "noreply@atwho.org",
+    to: [to],
+    subject: "AtWhoMail 密碼重設",
+    text,
+    html,
+  });
+}
+
+/** 「密碼已變更」通知（成功重設後才寄；不含 token） */
+async function sendPasswordChangedEmail(env: Env, to: string): Promise<void> {
+  const text =
+    "您的 AtWhoMail 帳號密碼已變更。\n\n" +
+    "若這不是您本人的操作，請立即使用「忘記密碼」重新設定，並檢查您的 Email 帳號安全。";
+  await env.EMAIL.send({
+    from: "noreply@atwho.org",
+    to: [to],
+    subject: "AtWhoMail 密碼已變更",
+    text,
+    html: `<p>您的 AtWhoMail 帳號密碼已變更。</p><p>若這不是您本人的操作，請立即使用「忘記密碼」重新設定，並檢查您的 Email 帳號安全。</p>`,
+  });
+}
+
+/**
+ * GET /api/auth/oauth/google/start — 開始 Google OAuth（docs/28 §2.1）
+ *
+ * 產生 32 bytes hex state 存 cookie；`redirect_uri` **固定**用 `OAUTH_REDIRECT_URI`，
+ * 不接受任何請求參數覆寫（防開放轉址）。`redirect_after` 只允許站內相對路徑。
+ */
+app.get("/api/auth/oauth/google/start", (c) => {
+  if (!(c.env.GOOGLE_CLIENT_ID ?? "").trim() || !(c.env.OAUTH_REDIRECT_URI ?? "").trim()) {
+    return err(c, "OAUTH_NOT_CONFIGURED", "Google 登入尚未設定", 503);
+  }
+  const state = randomHex(32);
+  const origin = oauthReturnOrigin(c.env, c.req.header("referer"));
+  const path = safeRedirectAfter(c.req.query("redirect_after"));
+  setCookie(c, OAUTH_STATE_COOKIE, state, OAUTH_COOKIE_OPTIONS);
+  setCookie(c, OAUTH_REDIRECT_COOKIE, encodeURIComponent(JSON.stringify({ origin, path })), OAUTH_COOKIE_OPTIONS);
+  return c.redirect(googleAuthRedirectUrl(c.env, state), 302);
+});
+
+/**
+ * GET /api/auth/oauth/google/callback — 完成 Google OAuth（docs/28 §2.2）
+ *
+ * 驗 state → code 換 token → userinfo → **只接受 email_verified=true** →
+ * 帳號比對（provider_sub → contact_email 連結 → 自動建立）→ 簽 session → 302 導回前端。
+ */
+app.get("/api/auth/oauth/google/callback", async (c) => {
+  const cookieState = getCookie(c, OAUTH_STATE_COOKIE) ?? "";
+  const redirectRaw = getCookie(c, OAUTH_REDIRECT_COOKIE);
+  // state／redirect cookie 都是一次性的：不論成功或失敗都立即清除
+  deleteCookie(c, OAUTH_STATE_COOKIE, { path: "/", secure: true, sameSite: "Lax", httpOnly: true });
+  deleteCookie(c, OAUTH_REDIRECT_COOKIE, { path: "/", secure: true, sameSite: "Lax", httpOnly: true });
+
+  const state = c.req.query("state") ?? "";
+  if (!cookieState || !state || !constantTimeEqual(cookieState, state)) {
+    return err(c, "INVALID_STATE", "登入狀態驗證失敗，請重新登入", 400);
+  }
+  const code = c.req.query("code") ?? "";
+  if (!code) return err(c, "INVALID_STATE", "缺少授權碼，請重新登入", 400);
+  if (
+    !(c.env.GOOGLE_CLIENT_ID ?? "").trim() ||
+    !(c.env.OAUTH_REDIRECT_URI ?? "").trim() ||
+    !c.env.GOOGLE_CLIENT_SECRET
+  ) {
+    return err(c, "OAUTH_NOT_CONFIGURED", "Google 登入尚未設定", 503);
+  }
+
+  const exchanged = await exchangeGoogleCode(c.env, code);
+  if (!exchanged.ok) {
+    console.warn("[atwhomail-api] google token exchange failed", { reason: exchanged.reason }); // 不記 code／secret
+    return err(c, "OAUTH_FAILED", "Google 登入失敗，請稍後再試", 502);
+  }
+  const info = await fetchGoogleUserInfo(exchanged.accessToken);
+  if (!info) return err(c, "OAUTH_FAILED", "Google 登入失敗，請稍後再試", 502);
+  // ⚠️ 只接受 Google 已驗證的 Email（docs/28 §2.2）
+  if (info.email_verified !== true) {
+    return err(c, "EMAIL_NOT_VERIFIED", "Google 帳號的 Email 尚未驗證", 403);
+  }
+  const email = normalizeEmailAddress(info.email);
+  if (!email) return err(c, "OAUTH_FAILED", "Google 未提供有效的 Email", 400);
+
+  const db = c.env.DB;
+  const ts = now();
+  const ip = clientIp(c);
+  const userAgent = c.req.header("user-agent") ?? null;
+  const sub = info.sub;
+  const subPrefix = sub.slice(0, 8); // 稽核只記前 8 碼（docs/28 §2.2）
+
+  // 5a. provider_sub 已連結 → 直接登入
+  let user = await db
+    .prepare(
+      `SELECT id, username, role, status, password_changed_at, contact_email, email_verified
+       FROM users WHERE provider = 'google' AND provider_sub = ?1`
+    )
+    .bind(sub)
+    .first<AccountUserRow>();
+
+  // 5b. contact_email 相同（大小寫不敏感）→ 連結既有帳號
+  let linked = false;
+  if (!user) {
+    user = await db
+      .prepare(
+        `SELECT id, username, role, status, password_changed_at, contact_email, email_verified
+         FROM users WHERE lower(contact_email) = ?1 ORDER BY id LIMIT 1`
+      )
+      .bind(email)
+      .first<AccountUserRow>();
+    if (user) linked = true;
+  }
+
+  if (user && user.status !== "active") {
+    auditAsync(c, {
+      event: "login_failed",
+      userId: user.id,
+      ip,
+      userAgent,
+      detail: { reason: "ACCOUNT_SUSPENDED", provider: "google" },
+    });
+    return err(c, "ACCOUNT_SUSPENDED", "此帳號已停權，請聯絡管理者", 403);
+  }
+
+  let registeredAddressId: number | null = null;
+  if (user) {
+    // 連結（provider_sub）與 contact_email 更新都只在需要時寫入
+    if (linked) {
+      await db
+        .prepare("UPDATE users SET provider = 'google', provider_sub = ?1, updated_at = ?2 WHERE id = ?3")
+        .bind(sub, ts, user.id)
+        .run();
+    }
+    if ((user.contact_email ?? "").toLowerCase() !== email) {
+      await db
+        .prepare("UPDATE users SET contact_email = ?1, email_verified = 1, updated_at = ?2 WHERE id = ?3")
+        .bind(email, ts, user.id)
+        .run();
+    } else if (user.email_verified !== 1) {
+      await db
+        .prepare("UPDATE users SET email_verified = 1, updated_at = ?1 WHERE id = ?2")
+        .bind(ts, user.id)
+        .run();
+    }
+  } else {
+    // 5c. 自動建立 visitor 帳號（無密碼）＋ 第一個地址（配額 5）
+    const base = oauthLocalPartFromEmail(email);
+    const localPart = await assignAvailableLocalPart(c.env, base);
+    if (!localPart) return err(c, "OAUTH_FAILED", "無法配發可用的信箱地址，請稍後再試", 500);
+    const mailboxEmail = `${localPart}@${DOMAIN}`;
+    try {
+      const results = await db.batch([
+        db
+          .prepare(
+            `INSERT INTO users
+               (username, display_name, password_hash, status, role, provider, provider_sub,
+                contact_email, email_verified, password_changed_at, created_at, updated_at)
+             VALUES (?1, NULL, '' , 'active', 'visitor', 'google', ?2, ?3, 1, 0, ?4, ?4)`
+          )
+          .bind(localPart, sub, email, ts),
+        db
+          .prepare(
+            `INSERT INTO email_addresses
+               (user_id, local_part, domain, email, password_hash, password_changed_at, status,
+                can_send, daily_send_quota, sent_today, created_at, updated_at)
+             SELECT id, ?2, ?3, ?4, NULL, 0, 'active', 1, ?5, 0, ?6, ?6
+             FROM users WHERE username = ?1`
+          )
+          .bind(localPart, localPart, DOMAIN, mailboxEmail, OAUTH_DAILY_QUOTA, ts),
+      ]);
+      const userId = Number(results[0]?.meta.last_row_id ?? 0);
+      registeredAddressId = Number(results[1]?.meta.last_row_id ?? 0);
+      user = {
+        id: userId,
+        username: localPart,
+        role: "visitor",
+        status: "active",
+        password_changed_at: 0,
+        contact_email: email,
+        email_verified: 1,
+      };
+      auditAsync(c, {
+        event: "oauth_registered",
+        userId,
+        addressId: registeredAddressId,
+        ip,
+        userAgent,
+        // username／provider／配發的 @atwho.org 地址；不記 Google Email 全文
+        detail: { username: localPart, provider: "google", address: mailboxEmail },
+      });
+    } catch (e) {
+      console.error("[atwhomail-api] oauth registration failed", { reason: String(e) });
+      return err(c, "OAUTH_FAILED", "建立帳號失敗，請稍後再試", 500);
+    }
+  }
+
+  if (linked && user) {
+    auditAsync(c, {
+      event: "oauth_linked",
+      userId: user.id,
+      ip,
+      userAgent,
+      detail: { provider: "google", sub_prefix: subPrefix },
+    });
+  }
+  // 每次登入都稽核（只記 sub 前 8 碼與 user id；不記 Email 全文與 token）
+  auditAsync(c, {
+    event: "oauth_login",
+    userId: user.id,
+    addressId: registeredAddressId,
+    ip,
+    userAgent,
+    detail: { provider: "google", sub_prefix: subPrefix },
+  });
+
+  const issued = await issueSessionForUser(c.env, user);
+  const target = readOAuthReturnTarget(c.env, redirectRaw);
+  return c.redirect(oauthSessionRedirect(target.origin, target.path, issued), 302);
+});
+
+/**
+ * POST /api/auth/user-login — 本機帳密登入（identifier 可為 username 或 contact_email）
+ * （docs/28 §3）
+ *
+ * 順序依規格：查無 → 401；停權 → 403 `ACCOUNT_SUSPENDED`；未設密碼 → 400 `NO_PASSWORD_SET`；
+ * 密碼錯誤 → 401。失敗計數沿用 `auth_attempts`（key = `login:<identifier>`）。
+ */
+app.post("/api/auth/user-login", async (c) => {
+  const body = await c.req.json<{ identifier?: unknown; password?: unknown }>().catch(() => null);
+  if (
+    typeof body?.identifier !== "string" ||
+    typeof body?.password !== "string" ||
+    body.identifier.trim() === "" ||
+    body.password === ""
+  ) {
+    return err(c, "INVALID_BODY", "identifier 與 password 必填", 400);
+  }
+  const identifier = body.identifier.trim();
+  const key = `login:${identifier.toLowerCase()}`;
+
+  const lockedUntil = await checkLocked(c.env.DB, key);
+  if (lockedUntil) {
+    return err(c, "LOCKED", `嘗試次數過多，請於 ${new Date(lockedUntil).toISOString()} 後再試`, 429);
+  }
+
+  const user = await c.env.DB.prepare(
+    `SELECT id, username, role, status, password_hash, password_changed_at, contact_email, email_verified
+     FROM users
+     WHERE lower(username) = lower(?1) OR lower(contact_email) = lower(?1)
+     ORDER BY CASE WHEN lower(username) = lower(?1) THEN 0 ELSE 1 END
+     LIMIT 1`
+  )
+    .bind(identifier)
+    .first<
+      AccountUserRow & {
+        password_hash: string | null;
+      }
+    >();
+
+  if (!user) {
+    await recordFailure(c.env.DB, key);
+    auditAsync(c, {
+      event: "login_failed",
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+      detail: { reason: "INVALID_CREDENTIALS", method: "user-login" },
+    });
+    return err(c, "INVALID_CREDENTIALS", "帳號或密碼錯誤", 401);
+  }
+  if (user.status !== "active") {
+    return err(c, "ACCOUNT_SUSPENDED", "此帳號已停權，請聯絡管理者", 403);
+  }
+  if (!hasPassword(user.password_hash)) {
+    return err(
+      c,
+      "NO_PASSWORD_SET",
+      "此帳號尚未設定密碼，請用 Google 登入，或使用『忘記密碼』設定",
+      400
+    );
+  }
+  const okPw = await verifyPassword(body.password, user.password_hash);
+  if (!okPw) {
+    await recordFailure(c.env.DB, key);
+    auditAsync(c, {
+      event: "login_failed",
+      userId: user.id,
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+      detail: { reason: "INVALID_CREDENTIALS", method: "user-login" },
+    });
+    return err(c, "INVALID_CREDENTIALS", "帳號或密碼錯誤", 401);
+  }
+  await clearFailures(c.env.DB, key);
+  return c.json(await issueSessionForUser(c.env, user));
+});
+
+/**
+ * POST /api/auth/forgot-password — 寄送重設信（docs/28 §5.1）
+ *
+ * **一律回 200 `{sent:true}`**（不洩漏帳號是否存在）。限流沿用 `auth_attempts`：
+ * 同 identifier 每小時 3 次、同 IP 每小時 10 次；超限仍回 200（只是不寄信）。
+ */
+app.post("/api/auth/forgot-password", async (c) => {
+  const ok = { sent: true } as const;
+  const body = await c.req.json<{ email?: unknown }>().catch(() => null);
+  const raw = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+  if (!raw) return c.json(ok);
+
+  const ts = now();
+  const ip = clientIp(c);
+  const hour = Math.floor(ts / 3_600_000);
+  // 過長的輸入不可能是 username／Email；避免撐大 auth_attempts key（仍回 200）
+  const keyId = raw.length <= 254 ? raw : "invalid";
+  const emailAllowed = await claimRegistrationCounter(
+    c.env.DB,
+    `forgot:${keyId}:h:${hour}`,
+    FORGOT_EMAIL_HOURLY_LIMIT,
+    ts
+  );
+  const ipAllowed = await claimRegistrationCounter(
+    c.env.DB,
+    `forgot-ip:${ip ?? "unknown"}:h:${hour}`,
+    FORGOT_IP_HOURLY_LIMIT,
+    ts
+  );
+  if (!emailAllowed || !ipAllowed) {
+    console.warn("[atwhomail-api] forgot-password rate limited", { ip }); // 不記 identifier（可能是 Email）
+    return c.json(ok);
+  }
+
+  // 以 contact_email 或 username 找 user（contact_email 優先）
+  const user = await c.env.DB.prepare(
+    `SELECT id, username, contact_email FROM users
+     WHERE lower(contact_email) = ?1 OR lower(username) = ?1
+     ORDER BY CASE WHEN lower(contact_email) = ?1 THEN 0 ELSE 1 END
+     LIMIT 1`
+  )
+    .bind(keyId)
+    .first<{ id: number; username: string; contact_email: string | null }>();
+  if (!user?.contact_email) return c.json(ok);
+
+  // 同一「實際收件 Email」再限流一次：identifier 可能是 username，
+  // 不能只靠輸入值計數（否則交替 username／contact_email 可繞過 3 次/小時）。
+  const accountAllowed = await claimRegistrationCounter(
+    c.env.DB,
+    `forgot-mail:${user.contact_email.toLowerCase()}:h:${hour}`,
+    FORGOT_EMAIL_HOURLY_LIMIT,
+    ts
+  );
+  if (!accountAllowed) return c.json(ok);
+
+  const token = randomHex(32);
+  const tokenHash = await hashAppSecret(token, c.env.JWT_SECRET);
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO password_resets (token_hash, user_id, created_at, expires_at, consumed_at, ip)
+       VALUES (?1, ?2, ?3, ?4, NULL, ?5)`
+    )
+      .bind(tokenHash, user.id, ts, ts + PASSWORD_RESET_TTL_MS, ip)
+      .run();
+  } catch (e) {
+    // migration 尚未套用等情況：不讓端點變成帳號存在性探測；只記 log
+    console.error("[atwhomail-api] password reset insert failed", { userId: user.id, error: String(e) });
+    return c.json(ok);
+  }
+
+  try {
+    await sendPasswordResetEmail(c.env, user.contact_email, token);
+  } catch (e) {
+    // 寄送失敗仍回 200（避免洩漏）；token 保留至過期，不重試
+    console.error("[atwhomail-api] password reset email failed", { userId: user.id, error: String(e) });
+  }
+
+  auditAsync(c, {
+    event: "password_reset_requested",
+    userId: user.id,
+    ip,
+    userAgent: c.req.header("user-agent") ?? null,
+  });
+  return c.json(ok);
+});
+
+/**
+ * POST /api/auth/reset-password — 以一次性 token 設定新密碼（docs/28 §5.2）
+ *
+ * 成功後：更新 `password_hash` ＋ `password_changed_at`（users 與名下地址）→ 舊 JWT 全部失效；
+ * token 一次性消費；寄「密碼已變更」通知。`provider` 保持不變。
+ */
+app.post("/api/auth/reset-password", async (c) => {
+  const body = await c.req.json<{ token?: unknown; new_password?: unknown }>().catch(() => null);
+  const token = typeof body?.token === "string" ? body.token.trim() : "";
+  if (!token || token.length > 256) {
+    return err(c, "INVALID_TOKEN", "重設連結無效或已使用", 400);
+  }
+
+  const row = await c.env.DB.prepare(
+    "SELECT id, user_id, expires_at, consumed_at FROM password_resets WHERE token_hash = ?1"
+  )
+    .bind(await hashAppSecret(token, c.env.JWT_SECRET))
+    .first<{ id: number; user_id: number; expires_at: number; consumed_at: number | null }>();
+  if (!row || row.consumed_at !== null) {
+    return err(c, "INVALID_TOKEN", "重設連結無效或已使用", 400);
+  }
+  const ts = now();
+  if (Number(row.expires_at) <= ts) {
+    return err(c, "TOKEN_EXPIRED", "重設連結已過期，請重新申請", 400);
+  }
+
+  const newPassword = typeof body?.new_password === "string" ? body.new_password : "";
+  const pwErr = validatePasswordPolicy(newPassword);
+  if (pwErr) return err(c, "WEAK_PASSWORD", pwErr, 422);
+
+  const user = await c.env.DB.prepare("SELECT id, username, contact_email FROM users WHERE id = ?1")
+    .bind(row.user_id)
+    .first<{ id: number; username: string; contact_email: string | null }>();
+  if (!user) return err(c, "INVALID_TOKEN", "重設連結無效或已使用", 400);
+
+  const passwordHash = await hashPassword(newPassword);
+  // 一次性消費：只有「仍未使用且未過期」才更新成功；併發請求只有一個能通過
+  const consumed = await c.env.DB.prepare(
+    "UPDATE password_resets SET consumed_at = ?1 WHERE id = ?2 AND consumed_at IS NULL AND expires_at > ?1"
+  )
+    .bind(ts, row.id)
+    .run();
+  if (consumed.meta.changes !== 1) {
+    return err(c, "TOKEN_EXPIRED", "重設連結已過期，請重新申請", 400);
+  }
+
+  // users.pca → owner／app／user scope 失效；名下地址 pca → 既有 mailbox scope 一併失效
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE users SET password_hash = ?1, password_changed_at = ?2, updated_at = ?2 WHERE id = ?3"
+    ).bind(passwordHash, ts, user.id),
+    c.env.DB.prepare("UPDATE email_addresses SET password_changed_at = ?1, updated_at = ?1 WHERE user_id = ?2").bind(
+      ts,
+      user.id
+    ),
+  ]);
+
+  auditAsync(c, {
+    event: "password_reset_done",
+    userId: user.id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+  });
+
+  if (user.contact_email) {
+    try {
+      await sendPasswordChangedEmail(c.env, user.contact_email);
+    } catch (e) {
+      console.error("[atwhomail-api] password changed notice failed", { userId: user.id, error: String(e) });
+    }
+  }
+  return c.json({ ok: true });
+});
+
 // ══════════════════════ D26：App Clients 與一次性 code（docs/27）══════════════════════
 
 interface AppClientBaseRow {
@@ -1451,7 +2077,7 @@ app.post("/api/auth/exchange", async (c) => {
  * GET /api/auth/me — 目前使用者身分（D26，docs/27 §4.4）
  *
  * 接受 owner／mailbox／app 三種 scope；一律從 `users` 取最新資料。
- * **不得**回傳 `password_hash`；`contact_email` 屬 D27（目前 schema 尚無此欄位）。
+ * **不得**回傳 `password_hash`；`contact_email` 雖為 D27 新增欄位，但為維持既有契約仍不回傳。
  */
 app.get("/api/auth/me", requireSession, async (c) => {
   const scope = c.get("scope");
@@ -2603,6 +3229,8 @@ app.delete("/api/users/:id", requireOwner, async (c) => {
           WHERE target_email_address_id IN (SELECT id FROM email_addresses WHERE user_id = ?1)`
       ).bind(id),
       c.env.DB.prepare("DELETE FROM email_addresses WHERE user_id = ?1").bind(id),
+      // D27：password_resets.user_id 參照 users → 必須先清（否則 FK 會讓整個 batch 回滾）
+      c.env.DB.prepare("DELETE FROM password_resets WHERE user_id = ?1").bind(id),
       c.env.DB.prepare("DELETE FROM users WHERE id = ?1").bind(id),
       // auth_attempts：該地址的 mailbox 計數 key（逐一字串比對，不用 LIKE）
       ...addresses.map((a) => c.env.DB.prepare("DELETE FROM auth_attempts WHERE key = ?1").bind(`mailbox:${a.email}`)),

@@ -1398,6 +1398,48 @@ select {
   cursor: default;
 }
 
+/* D27：忘記密碼／Google 登入（docs/28 §6） */
+.login-form .login-inline-links {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -6px;
+}
+
+.login-form .login-guidance {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.login-form .login-guidance .login-hint {
+  margin: 0;
+}
+
+.btn-google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: #3c4043;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-google:hover {
+  background: #f8f9fa;
+}
+
 /* D20：ID 即時檢查與建議 chip */
 .login-form .id-check {
   display: flex;

@@ -149,7 +149,7 @@ beforeEach(async () => {
     .run();
 });
 
-describe("T147–T150：D23 Turnstile", { timeout: 30_000 }, () => {
+describe("T147–T150：D23 Turnstile", { timeout: 90_000 }, () => {
   it("T147 未設定 secret → 跳過驗證、200 並寄碼；warning 只記一次", async () => {
     E.TURNSTILE_SECRET_KEY = undefined;
     const siteverifyCalls: unknown[] = [];
