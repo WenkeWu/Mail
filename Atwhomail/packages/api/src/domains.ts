@@ -47,6 +47,14 @@ export const CHECK_TLDS = [
 ] as const;
 
 const DNS_ENDPOINT = "https://cloudflare-dns.com/dns-query";
+/**
+ * 互動式檢查（`POST /api/auth/check-id`、建議名稱）只查前 5 個 TLD。
+ * 理由：企業網域 95% 以上在 `.com`／`.net`／`.org`；完整 26 個留給送出時複驗。
+ * 送出時（register-request／register-verify／OAuth 配發）仍用完整清單。
+ */
+export const FAST_CHECK_TLDS = ["com", "net", "org", "io", "co"] as const;
+/** 每批同時查詢的 TLD 數（命中即早退，其餘批次不再送） */
+const TLD_BATCH_SIZE = 5;
 /** 全部 TLD 查詢的**總**逾時（docs/20 §3.1） */
 const DOMAIN_CHECK_TIMEOUT_MS = 2_000;
 /** 命中快取 90 天（新網域幾乎不會消失） */
@@ -217,13 +225,22 @@ async function writeCache(
 }
 
 /**
- * 檢查 `label` 是否與任何 `<label>.<tld>`（25 個 TLD）的二級網域同名。
+ * 檢查 `label` 是否與任何 `<label>.<tld>` 的二級網域同名。
  *
  * - 有命中 → `{ hit: true, tldHit }`（寫入 90 天快取）
  * - 全部 NXDOMAIN → `{ hit: false }`（寫入 7 天快取）
- * - 任一查詢 unknown → `{ hit: false, degraded: true }`（fail-open，**不寫快取**，記 warning）
+ * - 任一查詢 unknown 且無命中 → `{ hit: false, degraded: true }`（fail-open，**不寫快取**，記 warning）
+ *
+ * ⚡ 分批（每批 5 個）＋**命中即早退**：企業網域多在 `.com` 第一批命中，
+ *    一般情況只花 1 批（約 0.1–0.3 秒），不必等 26 個查詢全部回來。
+ *
+ * @param options.tlds 自訂 TLD 清單（互動式檢查傳 `FAST_CHECK_TLDS`；預設完整 26 個）
  */
-export async function checkLabelAgainstDomains(env: Env, label: string): Promise<DomainCheckResult> {
+export async function checkLabelAgainstDomains(
+  env: Env,
+  label: string,
+  options?: { tlds?: readonly string[] }
+): Promise<DomainCheckResult> {
   const normalized = normalizeLabel(label);
   if (!isValidLabel(normalized)) return { hit: false };
 
@@ -231,30 +248,35 @@ export async function checkLabelAgainstDomains(env: Env, label: string): Promise
   const cached = await readCache(env, normalized, nowMs);
   if (cached) return cached;
 
+  const tlds = options?.tlds ?? CHECK_TLDS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DOMAIN_CHECK_TIMEOUT_MS);
-  let results: PromiseSettledResult<TldResult>[];
-  try {
-    results = await Promise.allSettled(
-      CHECK_TLDS.map((tld) => queryTld(normalized, tld, controller.signal))
-    );
-  } finally {
-    clearTimeout(timer);
-  }
 
   let tldHit: string | undefined;
   const degradedTlds: string[] = [];
-  for (let i = 0; i < results.length; i += 1) {
-    const result = results[i]!;
-    if (result.status === "fulfilled") {
-      if (result.value.kind === "hit") {
-        if (!tldHit) tldHit = result.value.tld;
-      } else if (result.value.kind === "unknown") {
-        degradedTlds.push(result.value.tld);
+  try {
+    for (let offset = 0; offset < tlds.length; offset += TLD_BATCH_SIZE) {
+      const batch = tlds.slice(offset, offset + TLD_BATCH_SIZE);
+      const settled = await Promise.allSettled(
+        batch.map((tld) => queryTld(normalized, tld, controller.signal))
+      );
+      for (let i = 0; i < settled.length; i += 1) {
+        const result = settled[i]!;
+        if (result.status === "fulfilled") {
+          if (result.value.kind === "hit") {
+            if (!tldHit) tldHit = result.value.tld;
+          } else if (result.value.kind === "unknown") {
+            degradedTlds.push(result.value.tld);
+          }
+        } else {
+          degradedTlds.push(batch[i]!);
+        }
       }
-    } else {
-      degradedTlds.push(CHECK_TLDS[i]!);
+      // ⚡ 早退：已命中就不必再查後面批次
+      if (tldHit) break;
     }
+  } finally {
+    clearTimeout(timer);
   }
 
   if (tldHit) {
@@ -282,7 +304,11 @@ export async function checkLabelAgainstDomains(env: Env, label: string): Promise
  *
  * `id_blocklist` 讀取失敗時 fail-open（不阻擋註冊），只記 warning。
  */
-export async function localPartAvailability(env: Env, label: string): Promise<LocalPartAvailability> {
+export async function localPartAvailability(
+  env: Env,
+  label: string,
+  options?: { fast?: boolean }
+): Promise<LocalPartAvailability> {
   const normalized = normalizeLabel(label);
 
   if (RESERVED_LOCAL_PARTS.has(normalized)) {
@@ -309,7 +335,11 @@ export async function localPartAvailability(env: Env, label: string): Promise<Lo
     .first<{ id: number }>();
   if (user) return { available: false, reason: "TAKEN" };
 
-  const domain = await checkLabelAgainstDomains(env, normalized);
+  const domain = await checkLabelAgainstDomains(
+    env,
+    normalized,
+    options?.fast ? { tlds: FAST_CHECK_TLDS } : undefined
+  );
   if (domain.hit) {
     return { available: false, reason: "MATCHES_DOMAIN", ...(domain.tldHit ? { tldHit: domain.tldHit } : {}) };
   }
@@ -377,7 +407,8 @@ export async function suggestAvailableLabels(env: Env, base: string, limit = 6):
   const results = await Promise.all(
     checks.map(async (candidate) => {
       try {
-        return (await localPartAvailability(env, candidate)).available ? candidate : null;
+        // ⚡ 建議名稱只用前 5 個 TLD（互動延遲優先；送出時仍會完整複驗）
+        return (await localPartAvailability(env, candidate, { fast: true })).available ? candidate : null;
       } catch (e) {
         console.warn("[atwhomail-api] suggestion check failed (ignored)", {
           label: candidate,

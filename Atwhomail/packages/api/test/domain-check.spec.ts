@@ -149,7 +149,7 @@ describe("D20 T139–T142：DoH 判定與快取", { timeout: 30_000 }, () => {
     expect(checkBody.available).toBe(false);
     expect(checkBody.reason).toBe("MATCHES_DOMAIN");
     expect(checkBody.tldHit).toBe("com");
-    expect(checkBody.suggestions?.length).toBe(6);
+    expect(checkBody.suggestions?.length).toBe(4);
     expect(checkBody.suggestions).not.toContain("hp");
     expect(checkBody.suggestions?.every((s) => typeof s === "string" && s.length > 0)).toBe(true);
 

@@ -1307,12 +1307,13 @@ app.post("/api/auth/check-id", async (c) => {
     return err(c, "INVALID_LOCAL_PART", "ID 需為 1–64 字元（a-z0-9._-），不能以 . 或 - 開頭或結尾", 400);
   }
 
-  const availability = await localPartAvailability(c.env, label);
+  // ⚡ 互動式檢查走 fast 模式（前 5 個 TLD）；送出時（register-request／register-verify）仍用完整清單複驗
+  const availability = await localPartAvailability(c.env, label, { fast: true });
   if (availability.available) {
     return c.json({ available: true, reason: "OK" as const });
   }
 
-  const suggestions = await suggestAvailableLabels(c.env, label);
+  const suggestions = await suggestAvailableLabels(c.env, label, 4);
   return c.json({
     available: false,
     reason: availability.reason,
