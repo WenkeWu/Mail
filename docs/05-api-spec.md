@@ -15,6 +15,7 @@
 | Auth | POST | `/api/auth/mailbox-login` | 信箱帳號（email address + 密碼）登入 |
 | Auth | POST | `/api/auth/register` | **訪客註冊（公開）** → mailbox session；行為依 `REGISTRATION_MODE`（`invite` 預設＝邀請碼／`email_verify`＝改走下方兩端點／`closed`＝關閉，docs/21 D21） |
 | Auth | GET | `/api/auth/registration-mode` | **目前註冊模式**（公開；`{mode}`，僅影響前端表單顯示，docs/21 D21） |
+| Auth | POST | `/api/auth/check-id` | **ID 即時可用性檢查**（公開；`{label}` → `{available, reason, tldHit?, suggestions?}`；同 IP 20 次/分，docs/20 D20） |
 | Auth | POST | `/api/auth/register-request` | **寄送 6 位數 Email 驗證碼**（公開；僅 `email_verify` 模式，docs/21 D21） |
 | Auth | POST | `/api/auth/register-verify` | **驗碼＋建立訪客帳號＋回 mailbox session**（公開；僅 `email_verify` 模式，docs/21 D21） |
 | Auth | PATCH | `/api/auth/owner-password/self` | **owner 本人變更自己的密碼**（session ＋ 舊密碼；docs/16 D7） |
@@ -973,11 +974,11 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
 { "email": "me@example.com", "local_part": "friend01" }
 → 200 { "sent": true, "expiresIn": 900 }
 ```
-- 檢查順序：模式 → **IP 限流** → Email 格式 → ID 格式／保留字／既有地址／既有 username → **Email 寄送限制** → 存雜湊 → 寄信。
+- 檢查順序：模式 → **IP 限流** → Email 格式 → ID 格式 → **D20 ID 可用性**（保留字／封鎖清單／既有地址／二級網域）→ **Email 寄送限制** → 存雜湊 → 寄信。
 - 寄件者固定 `noreply@atwho.org`；信件內容**只有 6 位數與 15 分鐘有效說明**，不含 Email、ID 或任何個資。
 - 驗證碼：6 位數（`crypto.getRandomValues`）；DB 只存 `SHA-256(code + JWT_SECRET)`；15 分鐘有效；一次性。
 - 重寄會讓同一 Email 的**舊碼立即作廢**（舊碼 `consumed_at` 寫入）。
-- 錯誤：`EMAIL_INVALID`(400)、`INVALID_LOCAL_PART`(400)、`ID_RESERVED`(409)、`ID_TAKEN`(409)、`CODE_COOLDOWN`(429)、`CODE_DAILY_LIMIT`(429)、`RATE_LIMITED`(429)、`REGISTRATION_CLOSED`(403)、`REGISTRATION_INVITE_ONLY`(403)、`EMAIL_SEND_FAILED`(502)。
+- 錯誤：`EMAIL_INVALID`(400)、`INVALID_LOCAL_PART`(400)、`ID_MATCHES_DOMAIN`(422，含 `suggestions`)、`ID_RESERVED`(422)、`ID_TAKEN`(409)、`CODE_COOLDOWN`(429)、`CODE_DAILY_LIMIT`(429)、`RATE_LIMITED`(429)、`REGISTRATION_CLOSED`(403)、`REGISTRATION_INVITE_ONLY`(403)、`EMAIL_SEND_FAILED`(502)。
 
 **`POST /api/auth/register-verify`（公開；僅 `email_verify` 模式）**
 
@@ -991,7 +992,7 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
 - 驗碼通過**才**檢查 ID 是否仍可用；ID 在 request 後被搶走 → 409 且**不消耗**驗證碼。
 - 成功後以單一 D1 `batch`（交易）建立 `users(role='visitor')` ＋ `email_addresses(status='active')`；
   `created_at=now` → 既有 **24 小時暖機期／5 封** 自動生效；`daily_send_quota=20`。
-- 錯誤：`EMAIL_INVALID`(400)、`INVALID_LOCAL_PART`(400)、`CODE_INVALID`(400)、`CODE_EXPIRED`(400)、`CODE_LOCKED`(429)、`ID_RESERVED`(409)、`ID_TAKEN`(409)、`WEAK_PASSWORD`(422)、`REGISTRATION_CLOSED`(403)、`REGISTRATION_INVITE_ONLY`(403)、`REGISTER_FAILED`(500)。
+- 錯誤：`EMAIL_INVALID`(400)、`INVALID_LOCAL_PART`(400)、`CODE_INVALID`(400)、`CODE_EXPIRED`(400)、`CODE_LOCKED`(429)、`ID_MATCHES_DOMAIN`(422，含 `suggestions`)、`ID_RESERVED`(422)、`ID_TAKEN`(409)、`WEAK_PASSWORD`(422)、`REGISTRATION_CLOSED`(403)、`REGISTRATION_INVITE_ONLY`(403)、`REGISTER_FAILED`(500)。
 
 **速率限制（沿用 `auth_attempts`，固定視窗 UTC）**
 
@@ -1013,8 +1014,9 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
 
 **Migration**：`migrations/0009_email_verifications.sql`（只新增 `email_verifications` 表與索引；**部署前須先套用**，見 docs/11 §2-17）。
 
-**未包含（依 docs/20）**：DNS 二級網域撞名檢查（`ID_MATCHES_DOMAIN`／建議名稱）——`docs/20` 仍為「設計待審」，
-需另建 `domain_checks`／`id_blocklist`；本次僅實作格式／保留字／既有地址／既有 username。
+**D20（ID 撞二級網域）**：已於 2026-11-05 接上（migration `0011_domain_check.sql`）。
+`register-request`／`register-verify` 在既有格式／保留字／既有地址檢查後，會再做
+DNS 二級網域撞名檢查（fail-open）；詳見 §2.25。
 
 **前端**：`LoginPage` 於 `email_verify` 模式顯示 Email＋想要的 ID（`@atwho.org` 後綴）＋密碼＋確認密碼；
 「寄送驗證碼」後顯示 6 位數欄位與 60 秒重寄倒數；成功後以回傳 token 自動登入。
@@ -1147,6 +1149,70 @@ recipient 查 email_addresses（active）→ 命中：既有流程，envelope_to
 ⚠️ 規格矛盾已回報：docs/25 §3.1 的 SQL 會讓 `alias_names.next_serial` 停在 1，與 T109
 （應為 2）衝突；實作以 T109 與欄位語意（下一個可用號碼）為準，且別名地址含 `@atwho.org`
 （規格範例僅寫 local part）。
+
+### 2.25 D20：ID 與二級網域同名偵測（2026-11-05）
+
+> 設計：`docs/20`。新增 migration `0011_domain_check.sql`；後端 API／前端需部署（見 docs/11 §2-20）。
+> owner 2026-11-04 定案：DNS 失敗 → **fail-open**（放行＋warning）；TLD 清單照 docs/20 §2
+> 列出的 26 個（原文標題寫「25 個」）；**不回溯**檢查既有地址。
+
+**判定順序（`packages/api/src/domains.ts` 的 `localPartAvailability()`）**
+
+1. 保留字（`admin`／`postmaster`／`abuse`／`root`／`noreply`／`mailerdaemon`／…）→ `RESERVED`
+2. `id_blocklist`（owner 人工封鎖，例：商標但無網域）→ `RESERVED`
+3. `email_addresses.email`（含軟刪除）或 `users.username` 已存在 → `TAKEN`
+4. `<label>.<tld>` 任一存在（26 個 TLD）→ `MATCHES_DOMAIN`（附 `tldHit`）
+5. 以上皆無 → `OK`
+
+**DoH 查詢（`checkLabelAgainstDomains()`）**
+
+- Cloudflare DoH：`GET https://cloudflare-dns.com/dns-query?name=<label>.<tld>&type=NS`，
+  `accept: application/dns-json`，自訂 `User-Agent`；26 個 TLD **平行**查詢，**總逾時 2 秒**。
+- `Status===0` 且有 `Answer` → 命中；`Status===3`（NXDOMAIN）→ 未命中；
+  其他／HTTP 錯誤／逾時／解析失敗 → **fail-open**（不阻擋）並記 `console.warn`。
+- 快取 `domain_checks`：命中 **90 天**、未命中 **7 天**；fail-open 的結果**不寫快取**。
+- ⚠️ 已知限制：`id_blocklist`／快取讀寫失敗時 fail-open（可用性優先）；不在清單內的 TLD
+  （例 `.museum`）不會被檢查。
+
+**`POST /api/auth/check-id`（公開）**
+
+```http
+{ "label": "hp" }
+→ 200 { "available": false, "reason": "MATCHES_DOMAIN", "tldHit": "com",
+        "suggestions": ["myhp", "hpinbox", "hpbox", "hpmail", "hphub", "hp001"] }
+→ 200 { "available": true, "reason": "OK" }
+→ 400 INVALID_LOCAL_PART（格式不符）
+→ 429 RATE_LIMITED（同 IP 每分鐘 20 次；`auth_attempts` key=`check-id:<ip>`）
+```
+
+- 只影響前端提示；**送出時後端仍會複驗**（N3）。
+- `suggestions` 只在不可用時產生：`my<base>`、`<base>inbox`、`<base>box`、`<base>mail`、
+  `<base>hub`、`<base>001`…（不使用 `<base>-mail`）；每個候選都通過同一檢查，
+  **最多檢查 6 個**，失敗的候選直接略過。
+
+**註冊端點的錯誤碼（D21 既有端點）**
+
+| 情境 | 狀態 | code |
+|---|---|---|
+| 撞二級網域 | **422** | `ID_MATCHES_DOMAIN`（`error.suggestions`） |
+| 保留字／`id_blocklist` | **422** | `ID_RESERVED`（D20 前為 409） |
+| 既有地址／username | 409 | `ID_TAKEN` |
+
+**供後續 OAuth 配發使用（已匯出，尚未接線）**
+
+- `assignAvailableLocalPart(env, base)`：`base` 可用 → 原樣；否則 `<base>001`…（3 位流水號，
+  最多 999 次）。**保留字不產生 `admin001`**，改以 `user` 為 base（docs/26 §9.3）。
+- `localPartAvailability(env, label)`／`suggestAvailableLabels(env, base, limit=6)`。
+
+**Migration 與部署**
+
+- `migrations/0011_domain_check.sql`：只新增 `domain_checks`、`id_blocklist`（無 ALTER／DROP／DELETE）。
+- 部署順序：**先套 migration → 再部署 API → 再 build／deploy 前端**
+  （未套 migration 時只會少快取與人工封鎖，DNS 檢查仍可運作）。
+- **不回溯**：既有地址不會被重新檢查或停用。
+
+**測試**：T139–T146（`packages/api/test/domain-check.spec.ts`；
+T146＝既有 T1–T138 全套零回歸；前端 `web/test/idCheck.dom.spec.tsx`）。
 
 ## 3. 通用原則
 

@@ -405,9 +405,9 @@ describe("T99：REGISTRATION_MODE 分流", { timeout: 30_000 }, () => {
 });
 
 describe("追加：保留字與速率限制（docs/21 §2／§5）", { timeout: 30_000 }, () => {
-  it("保留字 → 409 ID_RESERVED，不寄碼", async () => {
+  it("保留字 → 422 ID_RESERVED，不寄碼（D20 起改為 422）", async () => {
     const res = await requestCode("reserved@example.com", "admin", "203.0.113.110");
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(422);
     expect(errorCode(await json(res))).toBe("ID_RESERVED");
     expect(sentMails).toHaveLength(0);
   });

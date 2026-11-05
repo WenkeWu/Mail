@@ -1398,6 +1398,55 @@ select {
   cursor: default;
 }
 
+/* D20：ID 即時檢查與建議 chip */
+.login-form .id-check {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: -2px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.login-form .id-check-pending {
+  color: var(--muted);
+}
+
+.login-form .id-check-ok {
+  color: #1b7f3b;
+}
+
+.login-form .id-check-bad {
+  color: var(--danger);
+}
+
+.login-form .id-check-warn {
+  color: #9a6b00;
+}
+
+.login-form .id-suggestions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--muted);
+}
+
+.login-form .id-suggestion-chip {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--purple);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.login-form .id-suggestion-chip:hover {
+  border-color: var(--purple);
+  background: var(--purple-soft);
+}
+
 .login-notice {
   background: #fff7e0;
   border: 1px solid #f0d9a0;

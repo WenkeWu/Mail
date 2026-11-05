@@ -14,6 +14,7 @@
  * - 越權一律 404（不洩漏資源存在性）
  */
 import { Hono, type Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import PostalMime from "postal-mime";
 import {
   hashPassword,
@@ -34,6 +35,7 @@ import {
   type Scope,
 } from "./auth";
 import { BACKUP_TABLES, clampLimit, formatCursor, parseCursor, type Cursor } from "./backup";
+import { localPartAvailability, suggestAvailableLabels } from "./domains";
 import {
   buildFormStaticText,
   sanitizeDisplayText,
@@ -552,42 +554,15 @@ const REGISTER_IP_HOURLY_LIMIT = 5;
 const REGISTER_IP_DAILY_LIMIT = 20;
 /** 同一 Email 每日驗證碼寄送上限（docs/21 §2） */
 const REGISTER_EMAIL_DAILY_LIMIT = 5;
+/** D20：`POST /api/auth/check-id` 同一 IP 每分鐘上限（docs/20 §3.3） */
+const CHECK_ID_IP_MINUTE_LIMIT = 20;
 
 /**
- * 保留字（docs/21 §4 要求「格式／保留字／既有地址」；清單取自 docs/20 §2）。
- *
- * ⚠️ **D20 的 DNS 二級網域撞名檢查（`ID_MATCHES_DOMAIN`）不在本次範圍**：
- *    docs/20 仍為「設計待審」，且需要 `domain_checks`／`id_blocklist` 等尚未建立的前置資料。
- *    本檔已把 ID 判定集中在 `localPartAvailability()`，D20 核准後可直接在此接上。
+ * 保留字與 ID 判定已集中到 `domains.ts`（D20）：
+ * - 保留字／`id_blocklist`／既有地址／二級網域 → `localPartAvailability()`
+ * - 建議名稱 → `suggestAvailableLabels()`
+ * - 流水號配發 → `assignAvailableLocalPart()`
  */
-const RESERVED_LOCAL_PARTS = new Set([
-  "admin",
-  "administrator",
-  "postmaster",
-  "abuse",
-  "root",
-  "noreply",
-  "no-reply",
-  "mailer-daemon",
-  "hostmaster",
-  "webmaster",
-  "support",
-  "sysadmin",
-  "security",
-  "billing",
-  "info",
-  "sales",
-  "contact",
-  "help",
-  "www",
-  "mail",
-  "email",
-  "owner",
-  "alerts",
-  "app",
-  "itag",
-  "tlsrpt",
-]);
 
 /** 基本 Email 格式（僅供收件；不做 DNS／寄達驗證） */
 const EMAIL_ADDRESS_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -669,6 +644,26 @@ async function claimRegistrationCounter(db: D1Database, key: string, limit: numb
 }
 
 /**
+ * D20：`check-id` 的 IP 每分鐘限流（固定視窗 UTC；沿用 `auth_attempts`）。
+ * `updated_at` 落在不同分鐘 → 視為新視窗，`fail_count` 從 1 重新起算。
+ */
+async function claimCheckIdMinuteCounter(db: D1Database, ip: string | null, ts: number): Promise<boolean> {
+  const minuteStart = Math.floor(ts / 60_000) * 60_000;
+  const res = await db
+    .prepare(
+      `INSERT INTO auth_attempts (key, fail_count, locked_until, updated_at)
+       VALUES (?1, 1, 0, ?2)
+       ON CONFLICT(key) DO UPDATE SET
+         fail_count = CASE WHEN auth_attempts.updated_at < ?3 THEN 1 ELSE auth_attempts.fail_count + 1 END,
+         updated_at = ?2
+       WHERE auth_attempts.updated_at < ?3 OR auth_attempts.fail_count < ?4`
+    )
+    .bind(`check-id:${ip ?? "unknown"}`, ts, minuteStart, CHECK_ID_IP_MINUTE_LIMIT)
+    .run();
+  return res.meta.changes === 1;
+}
+
+/**
  * Email 冷卻（60 秒）：原子搶佔，成功＝現在可以寄。
  * `locked_until` 在此列代表「下次可寄時間」（不是登入鎖定）。
  */
@@ -727,19 +722,6 @@ async function releaseEmailDailySlot(db: D1Database, email: string, ts: number):
     .catch(() => undefined);
 }
 
-/** ID 是否可用：保留字／既有地址（含軟刪除）／既有使用者名稱 */
-async function localPartAvailability(
-  db: D1Database,
-  localPart: string
-): Promise<"available" | "reserved" | "taken"> {
-  if (RESERVED_LOCAL_PARTS.has(localPart)) return "reserved";
-  const email = `${localPart}@${DOMAIN}`;
-  const addr = await db.prepare("SELECT id FROM email_addresses WHERE email = ?1").bind(email).first<{ id: number }>();
-  if (addr) return "taken";
-  const user = await db.prepare("SELECT id FROM users WHERE username = ?1").bind(localPart).first<{ id: number }>();
-  return user ? "taken" : "available";
-}
-
 /** 驗證碼信：寄件者 noreply@atwho.org；內容只有 6 位數＋15 分鐘說明（不含任何個資） */
 async function sendRegistrationEmail(env: Env, to: string, code: string): Promise<void> {
   const text =
@@ -764,7 +746,15 @@ async function sendRegistrationEmail(env: Env, to: string, code: string): Promis
  */
 function auditRegistrationRejected(
   c: Context<AuthEnv>,
-  opts: { code: string; status: number; reason: string; localPart: string | null; message: string }
+  opts: {
+    code: string;
+    status: ContentfulStatusCode;
+    reason: string;
+    localPart: string | null;
+    message: string;
+    /** 額外的錯誤欄位（例：`ID_MATCHES_DOMAIN` 的 `suggestions`） */
+    extra?: Record<string, unknown>;
+  }
 ): Response {
   auditAsync(c, {
     event: "register_rejected",
@@ -772,6 +762,9 @@ function auditRegistrationRejected(
     userAgent: c.req.header("user-agent") ?? null,
     detail: { reason: opts.reason, local_part: opts.localPart },
   });
+  if (opts.extra) {
+    return c.json({ error: { code: opts.code, message: opts.message, ...opts.extra } }, opts.status);
+  }
   return err(c, opts.code, opts.message, opts.status);
 }
 
@@ -1291,6 +1284,44 @@ app.get("/api/auth/registration-mode", (c) => {
 });
 
 /**
+ * POST /api/auth/check-id — 公開（D20，docs/20 §3.3）。
+ *
+ * 前端註冊表的 ID 欄位 debounce 500ms 後呼叫；**只影響顯示**，
+ * 送出時 `register-request`／`register-verify` 仍會由後端複驗（N3）。
+ *
+ * 限流：同 IP 每分鐘 20 次（沿用 `auth_attempts`）→ 429 `RATE_LIMITED`。
+ * 回應：`{ available, reason, tldHit?, suggestions? }`
+ */
+app.post("/api/auth/check-id", async (c) => {
+  const ts = now();
+  const ip = clientIp(c);
+
+  // 先計數再解析 body：格式錯誤的請求同樣受限
+  if (!(await claimCheckIdMinuteCounter(c.env.DB, ip, ts))) {
+    return err(c, "RATE_LIMITED", `查詢次數過多（每分鐘上限 ${CHECK_ID_IP_MINUTE_LIMIT} 次），請稍後再試`, 429);
+  }
+
+  const body = await c.req.json<{ label?: unknown }>().catch(() => null);
+  const label = typeof body?.label === "string" ? body.label.trim().toLowerCase() : "";
+  if (!validLocalPart(label)) {
+    return err(c, "INVALID_LOCAL_PART", "ID 需為 1–64 字元（a-z0-9._-），不能以 . 或 - 開頭或結尾", 400);
+  }
+
+  const availability = await localPartAvailability(c.env, label);
+  if (availability.available) {
+    return c.json({ available: true, reason: "OK" as const });
+  }
+
+  const suggestions = await suggestAvailableLabels(c.env, label);
+  return c.json({
+    available: false,
+    reason: availability.reason,
+    ...(availability.tldHit ? { tldHit: availability.tldHit } : {}),
+    suggestions,
+  });
+});
+
+/**
  * POST /api/auth/register-request — 寄送 6 位數 Email 驗證碼（docs/21 §4／§5）。
  *
  * 流程：模式檢查 → IP 限流（5/小時、20/日）→ Email／ID 驗證（格式／保留字／既有地址）
@@ -1357,17 +1388,31 @@ app.post("/api/auth/register-request", async (c) => {
     });
   }
 
-  const availability = await localPartAvailability(db, localPart);
-  if (availability === "reserved") {
-    return auditRegistrationRejected(c, {
-      code: "ID_RESERVED",
-      status: 409,
-      reason: "ID_RESERVED",
-      localPart,
-      message: "此 ID 為系統保留",
-    });
-  }
-  if (availability === "taken") {
+  // D20：保留字／人工封鎖／既有地址 → 二級網域撞名（fail-open；DNS 故障不擋註冊）
+  const availability = await localPartAvailability(c.env, localPart);
+  if (!availability.available) {
+    if (availability.reason === "MATCHES_DOMAIN") {
+      const suggestions = await suggestAvailableLabels(c.env, localPart);
+      return auditRegistrationRejected(c, {
+        code: "ID_MATCHES_DOMAIN",
+        status: 422,
+        reason: "ID_MATCHES_DOMAIN",
+        localPart,
+        message: availability.tldHit
+          ? `此 ID 與 ${localPart}.${availability.tldHit} 網域同名，請改用其他名稱`
+          : "此 ID 與現有網域同名，請改用其他名稱",
+        extra: { suggestions },
+      });
+    }
+    if (availability.reason === "RESERVED") {
+      return auditRegistrationRejected(c, {
+        code: "ID_RESERVED",
+        status: 422,
+        reason: "ID_RESERVED",
+        localPart,
+        message: "此 ID 為系統保留",
+      });
+    }
     return auditRegistrationRejected(c, {
       code: "ID_TAKEN",
       status: 409,
@@ -1479,8 +1524,14 @@ app.post("/api/auth/register-verify", async (c) => {
     .catch(() => null);
   const email = normalizeEmailAddress(body?.email);
   const localPart = typeof body?.local_part === "string" ? body.local_part.trim().toLowerCase() : "";
-  const rejection = (code: string, message: string, status: number, reason: string): Response =>
-    auditRegistrationRejected(c, { code, message, status, reason, localPart: localPart || null });
+  const rejection = (
+    code: string,
+    message: string,
+    status: ContentfulStatusCode,
+    reason: string,
+    extra?: Record<string, unknown>
+  ): Response =>
+    auditRegistrationRejected(c, { code, message, status, reason, localPart: localPart || null, extra });
 
   if (!email) return rejection("EMAIL_INVALID", "Email 格式不正確", 400, "EMAIL_INVALID");
   if (!validLocalPart(localPart)) {
@@ -1542,9 +1593,26 @@ app.post("/api/auth/register-verify", async (c) => {
   }
 
   // 2) 驗碼通過後才檢查 ID（錯誤碼不洩漏 ID 狀態；ID 被搶走時不消耗驗證碼）
-  const availability = await localPartAvailability(db, localPart);
-  if (availability === "reserved") return rejection("ID_RESERVED", "此 ID 為系統保留", 409, "ID_RESERVED");
-  if (availability === "taken") return rejection("ID_TAKEN", "這個 ID 已被使用", 409, "ID_TAKEN");
+  //    D20：此處同樣包含二級網域撞名（request 後才被註冊的網域也要擋）。
+  const availability = await localPartAvailability(c.env, localPart);
+  if (availability.reason === "MATCHES_DOMAIN") {
+    const suggestions = await suggestAvailableLabels(c.env, localPart);
+    return rejection(
+      "ID_MATCHES_DOMAIN",
+      availability.tldHit
+        ? `此 ID 與 ${localPart}.${availability.tldHit} 網域同名，請改用其他名稱`
+        : "此 ID 與現有網域同名，請改用其他名稱",
+      422,
+      "ID_MATCHES_DOMAIN",
+      { suggestions }
+    );
+  }
+  if (availability.reason === "RESERVED") {
+    return rejection("ID_RESERVED", "此 ID 為系統保留", 422, "ID_RESERVED");
+  }
+  if (availability.reason === "TAKEN") {
+    return rejection("ID_TAKEN", "這個 ID 已被使用", 409, "ID_TAKEN");
+  }
 
   // 3) 一次性：原子標記（併發請求只有一個能成功）
   const consume = await db

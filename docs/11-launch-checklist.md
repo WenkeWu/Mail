@@ -19,6 +19,7 @@
 | 健康檢查 | ✅ | `GET /api/health` 含 D1 探測（DB 異常 → 503） |
 | 訪客註冊（Phase 1） | 🟡 程式完成、**未部署** | 邀請碼註冊＋配額／限流／停權＋稽核；migration 0006 本地已套用、**遠端待 owner**（見 §2-8） |
 | 別名 Phase 1（D25） | 🟡 程式完成、**未部署** | 別名建立／列表／停用＋收信轉投＋回覆自動 From（範圍 A）；migration `0010` 本地測試已套用、**遠端待 owner**（見 §2-19） |
+| ID 撞二級網域（D20） | 🟡 程式完成、**未部署** | `check-id` 端點＋`register-request`／`register-verify` 複驗；DoH 26 TLD、fail-open、90／7 天快取；migration `0011` 本地測試已套用、**遠端待 owner**（見 §2-20） |
 
 ### 1.1 2026-10-05 收發信現況稽核（公開 DNS + CF API 實測）
 
@@ -466,16 +467,16 @@
             ③ 收到信：寄件者 `noreply@atwho.org`、內容只有 6 位數與 15 分鐘說明、不含 ID／Email。
             ④ DB：`email_verifications.code_hash` 為 64 字元 SHA-256（**無明碼**）、`expires_at-created_at=900000`。
             ⑤ 錯碼 5 次 → `CODE_LOCKED`；過期 → `CODE_EXPIRED`；60 秒內重寄 → `CODE_COOLDOWN`；
-               同一碼第二次 → `CODE_INVALID`；ID 重複 → `409 ID_TAKEN`；保留字 → `409 ID_RESERVED`。
+               同一碼第二次 → `CODE_INVALID`；ID 重複 → `409 ID_TAKEN`；保留字 → `422 ID_RESERVED`
+               （D20 起；另見 §2-20 的 `422 ID_MATCHES_DOMAIN`）。
             ⑥ 成功後：`users.role='visitor'`、`email_addresses.status='active'`、`daily_send_quota=20`、
                `created_at` 為當下（**24 小時暖機 5 封**自動生效）；回傳 token 可讀 `/api/me`／`/api/mail/*`。
             ⑦ 限流：同 IP `register-request` 第 6 次／小時 → `429 RATE_LIMITED`；同 Email 第 6 封／日 →
                `429 CODE_DAILY_LIMIT`。
             ⑧ 稽核：`register_requested`／`register_verified`／`register_rejected` 的 detail **只含**
                `local_part`（必要時加 `reason`），**不得**含 Email／驗證碼／密碼／token。
-      - [ ] **已知限制**：`docs/20` 的 DNS 二級網域撞名檢查（`ID_MATCHES_DOMAIN`／建議名稱）**尚未實作**
-            （docs/20 仍為設計待審）→ 本次僅擋格式／保留字／既有地址／既有 username。
-            機器人防護目前只有速率限制（Turnstile 為 docs/21 §8 的下一階段）。
+      - [ ] **已知限制**：DNS 二級網域撞名檢查已於 D20 接上（§2-20）。機器人防護目前只有速率限制
+            （Turnstile 為 docs/21 §8 的下一階段）。
       - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
 
 - [ ] **18. 可分享的註冊／邀請連結（docs/22 D22；2026-11-04 程式完成，未部署）**
@@ -528,6 +529,42 @@
 
       - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
 
+- [ ] **20. ID 撞二級網域偵測（docs/20 D20；2026-11-05 程式完成，未部署）**
+
+      **部署順序（缺一不可）**：
+      1. 先套 migration（**由 owner 執行**；實作 agent 不得執行遠端 migration，N10）：
+         ```powershell
+         cd D:\Mail\Atwhomail
+         pnpm --filter @atwhomail/api exec wrangler d1 migrations apply mail-d1 --remote
+         ```
+         預期新增：`domain_checks`（DoH 快取）、`id_blocklist`（人工封鎖 ID）。
+         套用後抽驗：
+         `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('domain_checks','id_blocklist');` → 2 列。
+      2. 部署 **API Worker**（`atwhomail-api`）：新增 `POST /api/auth/check-id`；
+         `register-request`／`register-verify` 加入二級網域檢查（fail-open）。
+      3. 重新 build／deploy **前端**（`atwhomail-web`）：註冊表單 ID 欄位即時檢查＋建議 chip。
+      4. **無新增環境變數／binding**（DoH 用一般 `fetch`；不需要新 secret／KV）。
+
+      **驗收**：
+      - [ ] `POST /api/auth/check-id {label:"hp"}` → `200 {available:false, reason:"MATCHES_DOMAIN",
+            tldHit:"com", suggestions:[…]}`（建議每個都可用）。
+      - [ ] `POST /api/auth/register-request {email:…, local_part:"hp"}` → **422 `ID_MATCHES_DOMAIN`**
+            ＋`error.suggestions`；**不寄驗證碼**。
+      - [ ] `zzqqxxyy123` → 可註冊；`admin` → **422 `ID_RESERVED`**；既有地址 → 409 `ID_TAKEN`。
+      - [ ] 前端 ID 欄停止輸入 500ms 後顯示「✅ 可用／❌ 已被 hp.com 網域使用／⚠️ 保留字／
+            ⚠️ 已有人使用」；建議 chip 可點選填入。
+      - [ ] `domain_checks` 有快取列（命中 90 天、未命中 7 天）；同一 ID 第二次查詢不再打 DoH。
+      - [ ] 同 IP `check-id` 第 21 次／分 → `429 RATE_LIMITED`。
+      - [ ] DNS 故障（可暫時封鎖 `cloudflare-dns.com` 或觀察 log）→ 註冊仍可完成（fail-open）
+            且 log 有 `domain check degraded` warning。
+      - [ ] **不回溯**：既有地址不受影響（上線後抽查任一舊地址仍可登入／收信）。
+      - [ ] 既有 T1–T138 零回歸（`pnpm test` 全綠）。
+
+      **回退**：前端可先回上一版（少了即時提示）；API 回上一版即可恢復 D20 前的行為。
+      `domain_checks`／`id_blocklist` 為純新增表，保留不影響既有流程。
+
+      - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -538,8 +575,9 @@
 | `PATCH /api/auth/owner-password/self` | owner session ＋ 舊密碼 | owner 自助改密碼（階段 2／D7） |
 | `POST /api/auth/register` | **公開**（行為依 `REGISTRATION_MODE`；預設 `invite` 需邀請碼） | 訪客註冊（Phase 1）→ mailbox session。**D21**：`email_verify` → 403 `REGISTRATION_EMAIL_VERIFY_REQUIRED`（改走下方兩端點）；`closed` → 403 `REGISTRATION_CLOSED` |
 | `GET /api/auth/registration-mode` | 公開 | **D21**：目前註冊模式 `{mode}`（僅供前端表單顯示；權限仍由後端強制）。**D22**：管理端於 `email_verify` 時據此顯示「一般註冊連結」卡片 |
-| `POST /api/auth/register-request` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：寄 6 位數驗證碼到指定 Email（寄件者 `noreply@atwho.org`；DB 只存 SHA-256；15 分鐘）。限流：IP 5/時、20/日；Email 60 秒/封、5/日 |
-| `POST /api/auth/register-verify` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：驗碼（一次性／5 次上限）→ 建立 visitor＋address（暖機 24h）→ 回 mailbox token。ID 重複 `409 ID_TAKEN`、保留字 `409 ID_RESERVED` |
+| `POST /api/auth/register-request` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：寄 6 位數驗證碼到指定 Email（寄件者 `noreply@atwho.org`；DB 只存 SHA-256；15 分鐘）。限流：IP 5/時、20/日；Email 60 秒/封、5/日。**D20**：ID 撞二級網域 → 422 `ID_MATCHES_DOMAIN`（含建議）、保留字 → 422 `ID_RESERVED`、重複 → 409 `ID_TAKEN` |
+| `POST /api/auth/register-verify` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：驗碼（一次性／5 次上限）→ 建立 visitor＋address（暖機 24h）→ 回 mailbox token。**D20**：ID 撞二級網域 → 422 `ID_MATCHES_DOMAIN`、保留字 → 422 `ID_RESERVED`、重複 → 409 `ID_TAKEN` |
+| `POST /api/auth/check-id` | 公開（**D20**） | ID 即時可用性：`{label}` → `{available, reason, tldHit?, suggestions?}`；保留字／封鎖清單／既有地址／二級網域（26 TLD，fail-open）。限流：同 IP 20 次/分 → 429 `RATE_LIMITED` |
 | `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（**預設只回遮罩碼**；`?reveal=1` 額外回全碼並寫稽核）／撤銷 |
 | `GET /api/me` | owner 或 mailbox | 身分與寄信配額（供前端顯示） |
 | **（session 檢查）** | owner 或 mailbox | `401 TOKEN_STALE`：**查不到列**（帳號／地址已被刪除，階段 6／D10）或密碼已變更；rescue 不受影響（N5） |

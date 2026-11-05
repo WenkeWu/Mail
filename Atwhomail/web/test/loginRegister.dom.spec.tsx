@@ -17,6 +17,8 @@ const MODE_URL = "/api/auth/registration-mode";
 function routes(mode: "invite" | "email_verify" | "closed", extra?: (call: FetchCall) => FakeReply | null) {
   return (call: FetchCall): FakeReply => {
     if (call.url === MODE_URL) return { body: { mode } };
+    // D20：ID 欄位 debounce 後會呼叫 check-id（本檔不驗證提示，只回可用）
+    if (call.url === "/api/auth/check-id") return { body: { available: true, reason: "OK" } };
     const reply = extra?.(call);
     if (reply) return reply;
     throw new Error(`未預期的請求：${call.method} ${call.url}`);

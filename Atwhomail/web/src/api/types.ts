@@ -154,6 +154,18 @@ export interface DeletedAddressInfo {
 /** D21：註冊模式（`GET /api/auth/registration-mode`；僅影響表單顯示，權限仍由後端判定） */
 export type RegistrationMode = "invite" | "email_verify" | "closed";
 
+/** D20：ID 可用性（`POST /api/auth/check-id`） */
+export type IdCheckReason = "OK" | "MATCHES_DOMAIN" | "RESERVED" | "TAKEN";
+
+export interface IdCheckResult {
+  available: boolean;
+  reason: IdCheckReason;
+  /** `MATCHES_DOMAIN` 時命中的 TLD（例如 `com`） */
+  tldHit?: string;
+  /** 後端驗證過可用的建議 ID（最多 6 個） */
+  suggestions?: string[];
+}
+
 /** 登入 session（Model C：owner 或單一信箱） */
 export type Session =
   | { kind: "owner"; token: string; userId: number; username: string }

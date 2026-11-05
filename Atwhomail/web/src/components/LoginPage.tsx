@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import {
+  checkId,
   getRegistrationMode,
   mailboxLogin,
   ownerLogin,
@@ -8,7 +9,7 @@ import {
   registerRequest,
   registerVerify,
 } from "../api/endpoints";
-import type { RegistrationMode, Session } from "../api/types";
+import type { IdCheckResult, RegistrationMode, Session } from "../api/types";
 import type { LoginMode } from "../lib/hostMode";
 import { clearRegistrationParams, parseRegistrationQuery } from "../lib/registrationLinks";
 import { IconMail } from "./icons";
@@ -43,6 +44,7 @@ const REGISTER_HINTS: Record<string, string> = {
   EMAIL_INVALID: "請輸入有效的 Email 地址。",
   ID_TAKEN: "這個 ID 已被使用，請換一個。",
   ID_RESERVED: "此 ID 為系統保留，請換一個。",
+  ID_MATCHES_DOMAIN: "這個 ID 與真實網域同名（品牌冒用風險），請改用下方建議。",
   CODE_INVALID: "驗證碼錯誤或已失效，請確認後再試。",
   CODE_EXPIRED: "驗證碼已過期（15 分鐘），請重新寄送。",
   CODE_LOCKED: "驗證碼錯誤次數過多，請重新寄送驗證碼。",
@@ -118,6 +120,9 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
   const [regMode, setRegMode] = useState<RegistrationMode | null>(null);
   const [regEmail, setRegEmail] = useState("");
   const [regLocalPart, setRegLocalPart] = useState("");
+  // D20：ID 即時檢查（debounce 500ms；只影響顯示，後端仍會複驗）
+  const [idCheck, setIdCheck] = useState<IdCheckResult | null>(null);
+  const [idChecking, setIdChecking] = useState(false);
   const [codeSent, setCodeSent] = useState(false);
   const [verificationCode, setVerificationCode] = useState("");
   const [resendIn, setResendIn] = useState(0);
@@ -166,6 +171,48 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
     }, 1000);
     return () => window.clearInterval(timer);
   }, [resendIn]);
+
+  /**
+   * D20（docs/20 §3.5）：ID 欄位停止輸入 500ms 後呼叫 `check-id`。
+   * 只做提示；真正能否註冊由 `register-request`／`register-verify` 複驗（N3）。
+   */
+  useEffect(() => {
+    if (tab !== "register" || regMode !== "email_verify" || codeSent) {
+      setIdCheck(null);
+      setIdChecking(false);
+      return;
+    }
+    const name = regLocalPart.trim().toLowerCase();
+    if (!name || !/^[a-z0-9][a-z0-9._-]*[a-z0-9]$|^[a-z0-9]$/.test(name)) {
+      setIdCheck(null);
+      setIdChecking(false);
+      return;
+    }
+
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      setIdChecking(true);
+      checkId(name)
+        .then((result) => {
+          if (alive) setIdCheck(result);
+        })
+        .catch((err: unknown) => {
+          if (!alive) return;
+          setIdCheck(null);
+          if (err instanceof ApiError && err.code === "RATE_LIMITED") {
+            setError("ID 檢查過於頻繁，請稍後再試。");
+          }
+        })
+        .finally(() => {
+          if (alive) setIdChecking(false);
+        });
+    }, 500);
+
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [tab, regMode, codeSent, regLocalPart]);
 
   const switchTab = (next: Tab) => {
     setTab(next);
@@ -343,6 +390,45 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                     <span>@atwho.org</span>
                   </div>
                 </label>
+                {!codeSent && regLocalPart.trim() !== "" && (
+                  <div className="id-check" aria-live="polite">
+                    {idChecking ? (
+                      <span className="id-check-pending">檢查中…</span>
+                    ) : idCheck?.available ? (
+                      <span className="id-check-ok">✅ 可用</span>
+                    ) : idCheck?.reason === "MATCHES_DOMAIN" ? (
+                      <span className="id-check-bad">
+                        ❌ 已被{" "}
+                        {idCheck.tldHit
+                          ? `${regLocalPart.trim().toLowerCase()}.${idCheck.tldHit}`
+                          : "現有"}{" "}
+                        網域使用
+                      </span>
+                    ) : idCheck?.reason === "RESERVED" ? (
+                      <span className="id-check-warn">⚠️ 保留字，請換一個</span>
+                    ) : idCheck?.reason === "TAKEN" ? (
+                      <span className="id-check-warn">⚠️ 已有人使用</span>
+                    ) : null}
+                    {idCheck && !idCheck.available && (idCheck.suggestions?.length ?? 0) > 0 && (
+                      <div className="id-suggestions">
+                        <span>建議：</span>
+                        {idCheck.suggestions!.map((suggestion) => (
+                          <button
+                            key={suggestion}
+                            type="button"
+                            className="id-suggestion-chip"
+                            onClick={() => {
+                              setRegLocalPart(suggestion);
+                              setIdCheck(null);
+                            }}
+                          >
+                            {suggestion}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <label>
                   密碼
                   <input

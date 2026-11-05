@@ -10,6 +10,7 @@ import type {
   FormSendPayload,
   FormSendResult,
   FormView,
+  IdCheckResult,
   Invite,
   MailDetail,
   MailListResponse,
@@ -52,6 +53,16 @@ export function register(payload: {
 
 /** 目前註冊模式（公開端點；僅影響表單顯示） */
 export const getRegistrationMode = () => request<{ mode: RegistrationMode }>("/api/auth/registration-mode");
+
+/**
+ * D20：即時檢查 ID 是否可用（公開；同 IP 每分鐘 20 次）。
+ * 只影響表單提示；送出時後端仍會複驗（N3）。
+ */
+export const checkId = (label: string) =>
+  request<IdCheckResult>("/api/auth/check-id", {
+    method: "POST",
+    json: { label },
+  });
 
 /** 寄送 6 位數驗證碼（模式必須為 email_verify，否則後端回 403） */
 export const registerRequest = (payload: { email: string; local_part: string }) =>
