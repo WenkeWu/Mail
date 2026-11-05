@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import type { Session } from "../api/types";
-import { IconCompose, IconKey, IconLogout, IconMail, IconMenu, IconSearch, IconTicket, IconUsers } from "./icons";
+import { IconAt, IconCompose, IconKey, IconLogout, IconMail, IconMenu, IconSearch, IconTicket, IconUsers } from "./icons";
 
 interface Props {
   session: Session;
@@ -9,6 +9,8 @@ interface Props {
   onSubmitSearch: () => void;
   onCompose: () => void;
   onOpenAddresses: () => void;
+  /** D25：別名管理（owner 與 mailbox 都可用） */
+  onOpenAliases: () => void;
   onChangePassword: () => void;
   /** D7：owner 的帳號設定（自行變更密碼） */
   onOpenAccountSettings: () => void;
@@ -34,6 +36,7 @@ export function Header({
   onSubmitSearch,
   onCompose,
   onOpenAddresses,
+  onOpenAliases,
   onChangePassword,
   onOpenAccountSettings,
   onOpenInvites,
@@ -130,6 +133,15 @@ export function Header({
                 <IconUsers size={16} /> 地址管理
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                onOpenAliases();
+              }}
+            >
+              <IconAt size={16} /> 別名管理
+            </button>
             {/* D4／D5／D7：管理主控台（僅 mail.／localhost 顯示；app. 不顯示） */}
             {showAdminConsole && (
               <>

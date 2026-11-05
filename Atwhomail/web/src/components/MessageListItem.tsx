@@ -63,6 +63,12 @@ export const MessageListItem = memo(function MessageListItem({
             <span className={`mail-kind-badge kind-${category}`} title={CATEGORY_TITLE[category]}>
               {CATEGORY_LABEL[category]}
             </span>
+            {/* D25：寄給別名的信件顯示來源別名（envelope_to） */}
+            {item.envelope_to && (
+              <span className="alias-badge" title={`此信寄給別名 ${item.envelope_to}`}>
+                寄給 {item.envelope_to}
+              </span>
+            )}
             <span className="mail-time">{relativeTime(item.received_at)}</span>
           </span>
           <span className="mail-subject">

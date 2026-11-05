@@ -181,6 +181,14 @@ export const IconTicket = ({ size }: IconProps) => (
   </Svg>
 );
 
+/** D25：別名（`@` 符號） */
+export const IconAt = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <circle cx="12" cy="12" r="4" />
+    <path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4.5 8.4" />
+  </Svg>
+);
+
 export const IconUsers = ({ size }: IconProps) => (
   <Svg size={size}>
     <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />

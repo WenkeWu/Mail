@@ -18,6 +18,7 @@
 | 安全標頭 | ✅ | nosniff / DENY / no-referrer / HSTS / CSP（HTML 端點保留專屬 CSP） |
 | 健康檢查 | ✅ | `GET /api/health` 含 D1 探測（DB 異常 → 503） |
 | 訪客註冊（Phase 1） | 🟡 程式完成、**未部署** | 邀請碼註冊＋配額／限流／停權＋稽核；migration 0006 本地已套用、**遠端待 owner**（見 §2-8） |
+| 別名 Phase 1（D25） | 🟡 程式完成、**未部署** | 別名建立／列表／停用＋收信轉投＋回覆自動 From（範圍 A）；migration `0010` 本地測試已套用、**遠端待 owner**（見 §2-19） |
 
 ### 1.1 2026-10-05 收發信現況稽核（公開 DNS + CF API 實測）
 
@@ -497,6 +498,36 @@
             仍由後端判定。
       - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
 
+- [ ] **19. 別名 Phase 1（docs/25 D25；2026-11-05 程式完成，未部署）**
+
+      **部署順序（缺一不可）**：
+      1. 先套 migration（**由 owner 執行**；實作 agent 不得執行遠端 migration，N10）：
+         ```powershell
+         pnpm --filter @atwhomail/api exec wrangler d1 migrations apply mail-d1 --remote
+         ```
+         預期新增：`alias_names` 表、`messages.envelope_to`、`messages.reply_to`、
+         `idx_messages_envelope_to`。
+      2. 部署 **API Worker**（`atwhomail-api`）：新增 `/api/email-aliases*` 與別名 From 寄信。
+      3. 部署 **email-handler**（`atwhomail-email-handler`）：別名收信轉投／停用回 550。
+      4. 重新 build／deploy **前端**（別名管理頁、`envelope_to` 徽章、回覆 From 規則）。
+
+      **驗收**：
+      - [ ] `POST /api/email-aliases {name:"luke",target_address_id:<自己地址>}` → 201
+            `alias_address = luke001@atwho.org`；第二個同名（不同帳號）→ `luke002@atwho.org`。
+      - [ ] 外部寄到 `luke001@atwho.org` → 目標地址收件匣可見，列表／閱讀窗顯示「寄給 luke001@atwho.org」。
+      - [ ] 回覆該信 → ComposeWindow 的 From 顯示別名（外部寄件者）；回覆 `@atwho.org` 寄件者 → 真實地址。
+      - [ ] 別名停用後再寄 → SMTP 550 5.1.1，訊息不寫入 D1／R2。
+      - [ ] `GET /api/email-aliases` 的 `received_count`／`last_received_at` 與實際封數一致；
+            mailbox session 只看得到自己地址的別名。
+      - [ ] 以別名寄信後：目標地址 `sent_today` +1、寄件備份 `from_address` 為別名、
+            稽核 `mail_sent.detail.via_alias=true`（不含信件內容，N9）。
+      - [ ] migration 未套用前**不得**部署 API／handler（別名端點與收信會因缺欄位失敗）。
+
+      **回退**：前端可先回上一版（別名 UI 消失）；API／handler 回上一版後，`alias_names` 與
+      `messages.envelope_to` 欄位保留不影響既有流程（新增欄位皆可為 NULL／未使用）。
+
+      - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -521,7 +552,9 @@
 | `GET /api/email-addresses?deleted=1` | owner 或 rescue | **已軟刪除**（垃圾桶）的地址清單（階段 7／D11-5）：`deleted_at`／`messages`，供網頁「已刪除的地址」區塊；未帶參數＝既有清單（僅未刪除的列） |
 | `DELETE /api/email-addresses/:id?mode=soft\|hard` | owner 或 rescue（**自身名下**） | address 刪除（階段 7／D11）：`soft`（預設，信件與 R2 保留）／`hard`（信件／附件／R2 一併清除＋**釋放名稱**）；一律寫稽核 `address_deleted`。**D11-5**：對**已軟刪除**的列 `hard` → `200`（`previously_deleted: true`）、`soft` → `404`（不重複標記、非 500）。**D16**：`hard` 先清 `form_responses`／`form_instances`（`form_templates` 保留）；`soft` 把該地址的 `open` 實例轉 `revoked`（其餘資料不動）|
 | `PATCH /api/email-addresses/:id/status` | owner 或 rescue | 停用／啟用**訪客**地址（階段 3／D5；解 404 缺口）；**立即生效**且**連收信都停止**（階段 5／D8-4） |
-| `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9）。`/api/mail/send`：全內部 active 收件人→**本地直送**（不呼叫 EMAIL.send）。**D19**：`DELETE /api/mail/:id` 為軟刪除（只設 `folder='trash'`，`deleted_at` 保持 NULL）；`?mode=hard`／`POST /api/mail/trash/empty` 永久刪除（R2→attachments→messages，R2 失敗→500 且 DB 不變）；`POST /api/mail/:id/restore` 還原；`POST /api/mail/batch` 批次 trash／restore／read／purge（任一 id 越權→404 整批不執行；上限 200） |
+| `/api/email-aliases*` | owner 或 mailbox（scope 隔離） | **D25 別名 Phase 1**：`POST` 建立（名字 3–12 字母＋系統流水號）、`GET` 清單（owner 全部／mailbox 只看自己地址；含 `received_count`／`last_received_at`）、`PATCH` 啟用停用、`DELETE` **軟停用**（不刪列）。每帳號 ≤ 50；稽核 `alias_created`／`alias_updated`（不含信件內容，N9）|
+| `GET /api/mail/inbox`、`GET /api/mail/:id` | owner 或 mailbox（scope 隔離） | **D25**：回應新增 `envelope_to`（寄給別名時的別名地址；否則 `null`），供列表／閱讀窗顯示「寄給 …」徽章 |
+| `/api/mail/*`、`/api/attachments/*` | owner 或 mailbox（scope 隔離） | 收發信與附件（**寄信另有配額／限流**）；owner **不得**讀訪客信件（N9）。`/api/mail/send`：全內部 active 收件人→**本地直送**（不呼叫 EMAIL.send）。**D25**：`from` 可為自己名下的 active 別名（target 屬於 session scope）；配額一律計入 target 地址、寄件備份 `from_address` 為別名、稽核 `mail_sent.detail.via_alias`。**D19**：`DELETE /api/mail/:id` 為軟刪除（只設 `folder='trash'`，`deleted_at` 保持 NULL）；`?mode=hard`／`POST /api/mail/trash/empty` 永久刪除（R2→attachments→messages，R2 失敗→500 且 DB 不變）；`POST /api/mail/:id/restore` 還原；`POST /api/mail/batch` 批次 trash／restore／read／purge（任一 id 越權→404 整批不執行；上限 200） |
 | `POST /api/forms/send` | owner 或 mailbox（from 需在 scope 內） | **互動式表單**：收件人全內部 active（否則 422 `FORM_RECIPIENT_NOT_INTERNAL`）、schema 白名單、每人一筆實例、**絕不呼叫 EMAIL.send** |
 | `GET /api/forms/:id` | 收件人本人（mailbox 同地址 **或 owner JWT 且地址屬於自己**；D18-1；rescue／訪客地址→404） | 表單 schema；四道鎖任一失敗→**404**（不洩漏存在性）；稽核 `form_viewed` 含 `via` |
 | `POST /api/forms/:id/responses` | 收件人本人（同上；D18-1） | 送出回覆（payload 依 schema 驗證；重複→409 `FORM_ALREADY_SUBMITTED`）；稽核 `form_submitted` 含 `via`、不含 payload |
@@ -549,7 +582,7 @@
 | 4 | inline 附件（`cid:` 內嵌圖）不顯示 | HTML 信的內嵌圖片看不到 | 之後做 cid → R2 對應 |
 | 5 | 遠端圖片被剝離（MVP 刻意） | HTML 信中的外部圖片不顯示 | 之後做圖片代理（08 §16） |
 | 6 | ~~無**內建**前端 App（Inbox UI）~~ → **✅ 2026-10-07 已補**：`web/`（Vite + React 19 + TS）Yahoo Mail 風格三欄式 UI —— 雙身分登入、資料夾未讀 badge、跨資料夾搜尋、sanitized HTML 內文（sandbox iframe）、附件下載、回覆／轉寄、含附件寄信、owner 地址管理。啟動：`pnpm dev:web`（`docs/06` §2.1）。外部 App 走 API 的方式不變（`docs/12`） | — | 後續可選：部署成與 API 同源（Workers Static Assets）以便手機使用 |
-| 7 | `email_aliases` 表已建但無 API | 別名功能未實作 | 依需求排程 |
+| 7 | ~~`email_aliases` 表已建但無 API~~ → **✅ D25 Phase 1 程式完成（2026-11-05，未部署）**：別名 CRUD／收信轉投／停用 550／回覆自動 From（範圍 A）。**Phase 2 尚未實作**：反向別名（`messages.reply_to` 已預留但未啟用）、以別名主動寄新信、一次性別名、轉寄外部信箱 | 需 migration 0010 與三處部署（見 §2-19） | 依 §2-19 上線 |
 | 8 | ~~TLS-RPT（`_smtp._tls`）未發佈~~ → **✅ 2026-10-06 已發佈**：TXT `v=TLSRPTv1; rua=mailto:tlsrpt@atwho.org,mailto:ulhome@gmail.com`（權威 NS 實測一致） | — | 觀察 2–4 週後再評估切 `enforce`（§2-4） |
 | 9 | ~~演練殘留資源未清~~ → **✅ 2026-10-05 已解決**：測試 D1 `mail-d1-restore-test`、R2 `mail-r2-restore-test` 已刪除（僅保留 production） | — | 下次季度還原演練前需先建立新的測試標的（見 §2-7；`docs/09` §5.1 步驟 0b） |
 | 10 | **CF API token 缺 read 權限**：DNS / Email Routing / Email Sending 皆 403 | 稽核無法全自動，只能靠公開 DNS | Dashboard → API Tokens → Edit 加**唯讀** scope（token 值不變，無需換檔） |

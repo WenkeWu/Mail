@@ -82,7 +82,13 @@ export function ComposeWindow({ draft, session, addresses, onClose, onSent, onEr
   }, [draft.key, draft.bodyText, interactive]);
 
   const activeAddresses = addresses.filter((a) => a.status === "active");
-  const fromOptions = session.kind === "mailbox" ? [] : activeAddresses.map((a) => a.email);
+  /**
+   * D25：回覆外部寄件者時，`draft.from` 會是別名（不在真實地址清單中）。
+   * 仍要讓它出現在選單並保持選取——使用者可手動改回自己的真實地址（限自己名下）。
+   */
+  const baseFromOptions = session.kind === "mailbox" ? [] : activeAddresses.map((a) => a.email);
+  const fromOptions =
+    from && !baseFromOptions.includes(from) ? [from, ...baseFromOptions] : baseFromOptions;
 
   /** 任何編輯都通知上層（放棄確認用） */
   const touch = () => onDirty();

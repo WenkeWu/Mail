@@ -26,6 +26,11 @@ interface RawEmailMessage {
   headers: Headers | null;
   raw: ReadableStream<Uint8Array> | null;
   rawSize: number;
+  /**
+   * Cloudflare Email Workers 的拒收 API（實際 runtime 一定有；測試 mock 可省略）。
+   * 呼叫後 SMTP 回 550；`reason` 本文建議以 `5.1.1 …` 開頭。
+   */
+  setReject?: (reason: string) => void;
 }
 
 interface AddressRow {
@@ -33,6 +38,30 @@ interface AddressRow {
   user_id: number;
   email: string;
   status: string;
+}
+
+/** 別名 → 目標地址（D25，docs/25 §4）：只允許指向 email_addresses，禁止 alias → alias */
+interface AliasRow {
+  alias_address: string;
+  alias_status: string;
+  target_id: number;
+  target_user_id: number;
+  target_email: string;
+  target_status: string;
+  target_deleted_at: number | null;
+}
+
+/**
+ * 回 550 5.1.1（docs/25 §4：別名停用／查無信箱時避免 backscatter）。
+ * 測試用的 message mock 沒有 setReject → 僅記錄；正式 runtime 會真的拒收。
+ */
+function rejectUnknownMailbox(message: RawEmailMessage, rcpt: string, reason: string): void {
+  console.log("[atwhomail-email-handler] rejected", { to: rcpt, reason });
+  try {
+    message.setReject?.(`5.1.1 ${reason}`);
+  } catch (e) {
+    console.error("[atwhomail-email-handler] setReject failed", { to: rcpt, error: String(e) });
+  }
 }
 
 const now = () => Date.now();
@@ -181,19 +210,68 @@ export default {
     const key = buildMailKey(new Date());
 
     try {
-      // ── 1. 地址存在性檢查 ──
+      // ── 1. 收件人解析（docs/25 §4）：先查真實地址，再查別名 ──
+      //   1a. email_addresses 命中 active → 既有流程完全不變（envelope_to = NULL）
+      //   1b. email_aliases 命中 active → 投遞到 target；envelope_to = 別名
+      //   1c. 別名 disabled（或目標不可投遞）→ 550 5.1.1
+      //   1d. 兩者都沒有 → 550 5.1.1（避免靜默丟棄造成寄件者誤以為已送達）
       const addr = await env.DB.prepare(
         "SELECT id, user_id, email, status FROM email_addresses WHERE email = ?1"
       )
         .bind(rcpt)
         .first<AddressRow>();
-      if (!addr || addr.status !== "active") {
-        console.log("[atwhomail-email-handler] dropped (address not found/not active)", {
+      if (addr && addr.status !== "active") {
+        // 真實地址存在但停用：維持既有語意（靜默丟棄；與別名停用的 550 不同）
+        console.log("[atwhomail-email-handler] dropped (address not active)", {
           to: rcpt,
-          status: addr?.status ?? "not-found",
+          status: addr.status,
         });
         return;
       }
+
+      let deliveryAddr: AddressRow | null = addr ?? null;
+      let envelopeTo: string | null = null;
+      if (!deliveryAddr) {
+        const alias = await env.DB.prepare(
+          `SELECT a.alias_address, a.status AS alias_status,
+                  e.id AS target_id, e.user_id AS target_user_id, e.email AS target_email,
+                  e.status AS target_status, e.deleted_at AS target_deleted_at
+             FROM email_aliases a
+             JOIN email_addresses e ON e.id = a.target_email_address_id
+            WHERE a.alias_address = ?1`
+        )
+          .bind(rcpt)
+          .first<AliasRow>();
+
+        if (!alias) {
+          rejectUnknownMailbox(message, rcpt, "Mailbox unavailable");
+          return;
+        }
+        if (alias.alias_status !== "active") {
+          // 停用別名：550（不建立 messages、不存 R2）
+          rejectUnknownMailbox(message, rcpt, "Mailbox unavailable");
+          return;
+        }
+        if (alias.target_status !== "active" || alias.target_deleted_at !== null) {
+          // 別名仍 active 但目標地址停用／刪除 → 不可投遞；同樣回 550（避免寫入不可讀的信箱）
+          console.log("[atwhomail-email-handler] dropped (alias target not deliverable)", {
+            to: rcpt,
+            alias: alias.alias_address,
+            target_status: alias.target_status,
+          });
+          rejectUnknownMailbox(message, rcpt, "Mailbox unavailable");
+          return;
+        }
+        deliveryAddr = {
+          id: Number(alias.target_id),
+          user_id: Number(alias.target_user_id),
+          email: alias.target_email,
+          status: "active",
+        };
+        envelopeTo = alias.alias_address;
+      }
+      // 到這裡 deliveryAddr 必定已解析（真實地址或別名目標）
+      const targetAddr = deliveryAddr;
 
       // ── 2. raw → R2 ──
       if (!message.raw) {
@@ -203,7 +281,7 @@ export default {
       const buf = await new Response(message.raw).arrayBuffer();
       await env.MAIL.put(key, buf, {
         httpMetadata: { contentType: "message/rfc822" },
-        customMetadata: { "d1-address-id": String(addr.id) },
+        customMetadata: { "d1-address-id": String(targetAddr.id) },
       });
 
       // ── 3. parse metadata ──
@@ -230,7 +308,7 @@ export default {
           try {
             await env.MAIL.put(k, new TextEncoder().encode(sanitized), {
               httpMetadata: { contentType: "text/html; charset=utf-8" },
-              customMetadata: { "d1-address-id": String(addr.id) },
+              customMetadata: { "d1-address-id": String(targetAddr.id) },
             });
             htmlKey = k;
           } catch (e) {
@@ -246,13 +324,14 @@ export default {
         `INSERT INTO messages
            (owner_user_id, address_id, folder, message_id, from_address, to_address, cc,
             subject, text_preview, received_at, raw_r2_key, html_r2_key, created_at, updated_at,
-            origin, kind, delivery_scope, sender_spf, sender_dkim, sender_dmarc, suspicious_form_claim)
+            origin, kind, delivery_scope, sender_spf, sender_dkim, sender_dmarc, suspicious_form_claim,
+            envelope_to)
          VALUES (?1, ?2, 'inbox', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12,
-                 'external', 'normal', 'external', ?13, ?14, ?15, ?16)`
+                 'external', 'normal', 'external', ?13, ?14, ?15, ?16, ?17)`
       )
         .bind(
-          addr.user_id,
-          addr.id,
+          targetAddr.user_id,
+          targetAddr.id,
           parsed.messageId ?? null,
           fromDisplay,
           JSON.stringify(toList),
@@ -266,7 +345,8 @@ export default {
           senderAuth.spf,
           senderAuth.dkim,
           senderAuth.dmarc,
-          formClaims.length > 0 ? 1 : 0
+          formClaims.length > 0 ? 1 : 0,
+          envelopeTo
         )
         .run();
       const messageRowId = res.meta.last_row_id;
@@ -278,7 +358,7 @@ export default {
             `INSERT INTO registration_audit (event, user_id, address_id, detail, created_at)
              VALUES ('claim_blocked', ?1, ?2, ?3, ?4)`
           )
-            .bind(addr.user_id, addr.id, JSON.stringify({ origin: "external", markers: formClaims }), now())
+            .bind(targetAddr.user_id, targetAddr.id, JSON.stringify({ origin: "external", markers: formClaims }), now())
             .run();
         } catch (auditErr) {
           console.error("[atwhomail-email-handler] claim audit failed", { error: String(auditErr) });
@@ -334,7 +414,7 @@ export default {
         key,
         rawSize: message.rawSize,
         to: rcpt,
-        addressId: addr.id,
+        addressId: targetAddr.id,
         messageRowId,
         subject: parsed.subject ?? null,
         attachmentCount: parsed.attachments.length,

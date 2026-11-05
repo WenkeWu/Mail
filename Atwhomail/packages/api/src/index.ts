@@ -91,6 +91,58 @@ app.use("*", async (c, next) => {
 const DOMAIN = "atwho.org";
 const LOCAL_PART_RE = /^[a-z0-9][a-z0-9._-]*[a-z0-9]$|^[a-z0-9]$/i;
 const FOLDERS = ["inbox", "sent", "archive", "trash", "spam"];
+
+// ── D25（docs/25）：別名 Phase 1 ──
+/**
+ * 使用者輸入的別名「名字」：3–12 個英文字母（不接受數字／符號），儲存一律小寫。
+ * 流水號（3 位，001–999）由系統附加，所以使用者輸入**不得**含數字。
+ */
+const ALIAS_NAME_RE = /^[a-z]{3,12}$/;
+/** 保留字（小寫比對）：不可作為別名名稱（docs/25 §1） */
+const ALIAS_RESERVED_NAMES = new Set([
+  "admin",
+  "postmaster",
+  "abuse",
+  "root",
+  "noreply",
+  "mailerdaemon",
+  "hostmaster",
+  "webmaster",
+  "support",
+]);
+/** 每個帳號的別名數量上限（docs/25 §3.1） */
+const ALIAS_MAX_PER_ACCOUNT = 50;
+/** 每個名字的流水號上限（001–999；docs/25 §1） */
+const ALIAS_SERIAL_MAX = 999;
+
+/**
+ * 由名字與流水號組出別名「地址」：`luke` ＋ 1 → `luke001`（local part），
+ * 完整地址為 `luke001@atwho.org`（docs/24 §3.1、docs/25 §6 的範例皆含網域）。
+ * ⚠️ 規格 §3.1 的公式寫成 `name + '0' + zeroPad3(serial)`，但同節與 T109／T110 的
+ *    範例皆是 `luke001`／`luke002`；「固定 0」即 3 位流水號的前導零。此處以範例為準。
+ */
+function aliasAddressFor(name: string, serial: number): string {
+  return `${name}${String(serial).padStart(3, "0")}@${DOMAIN}`;
+}
+
+/** 驗證使用者輸入的名字；合法 → 小寫名字，否則 null（錯誤碼由呼叫端統一為 INVALID_ALIAS_NAME） */
+function normalizeAliasName(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const name = raw.trim().toLowerCase();
+  if (!ALIAS_NAME_RE.test(name)) return null;
+  if (ALIAS_RESERVED_NAMES.has(name)) return null;
+  return name;
+}
+
+/** 取得 session 所屬「帳號」的 user id（別名數量上限以帳號計，不是以單一地址計） */
+async function accountUserIdForScope(db: D1Database, scope: Scope): Promise<number | null> {
+  if (scope.kind === "owner") return scope.userId;
+  const row = await db
+    .prepare("SELECT user_id FROM email_addresses WHERE id = ?1")
+    .bind(scope.addressId)
+    .first<{ user_id: number }>();
+  return row ? Number(row.user_id) : null;
+}
 /** D19-2：批次動作與上限（docs/19 §3） */
 const BATCH_ACTIONS = ["trash", "restore", "read", "purge"] as const;
 type BatchAction = (typeof BATCH_ACTIONS)[number];
@@ -2421,6 +2473,240 @@ app.patch("/api/email-addresses/:id/password", requireSession, async (c) => {
   return c.json({ ok: true, id, has_password: true });
 });
 
+// ══════════════════════ D25：別名管理（owner 或 mailbox scope）══════════════════════
+
+/**
+ * POST /api/email-aliases — 建立別名（docs/25 §3.1）。
+ *
+ * 使用者只提供 `name`（3–12 字母）與 `target_address_id`；流水號由系統分配：
+ *   1. 驗證名字（保留字／數字／符號一律 400 INVALID_ALIAS_NAME）
+ *   2. 目標地址必須在 session scope 內且 active（否則 403 TARGET_NOT_ALLOWED）
+ *   3. 每帳號 ≤ 50 個別名（否則 409 ALIAS_LIMIT_REACHED）
+ *   4. `alias_names` 原子遞增取得流水號 → `luke` + 001 = `luke001`
+ *   5. 寫 `email_aliases`；稽核 `alias_created`（只記別名與目標，N9）
+ *
+ * ⚠️ 目標只能是 `email_addresses`（API 限制），**禁止 alias → alias**（docs/25 §4）。
+ */
+app.post("/api/email-aliases", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const body = await c.req.json<{ name?: unknown; target_address_id?: unknown }>().catch(() => null);
+  const name = normalizeAliasName(body?.name);
+  if (!name) {
+    return err(c, "INVALID_ALIAS_NAME", "別名需為 3–12 個英文字母，且不得使用保留字", 400);
+  }
+
+  const targetId = Number(body?.target_address_id);
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    return err(c, "TARGET_NOT_ALLOWED", "target_address_id 必須是 scope 內的 active 地址", 403);
+  }
+  const target = await c.env.DB.prepare(
+    "SELECT id, email, user_id FROM email_addresses WHERE id = ?1 AND status = 'active' AND deleted_at IS NULL"
+  )
+    .bind(targetId)
+    .first<{ id: number; email: string; user_id: number }>();
+  // owner：目標必須是自己名下；mailbox：只能是自己的地址（越權一律相同錯誤，不洩漏存在性）
+  const targetAllowed =
+    target !== null && (scope.kind === "owner" ? target.user_id === scope.userId : target.id === scope.addressId);
+  if (!target || !targetAllowed) {
+    return err(c, "TARGET_NOT_ALLOWED", "target_address_id 必須是 scope 內的 active 地址", 403);
+  }
+
+  const accountUserId = await accountUserIdForScope(c.env.DB, scope);
+  if (accountUserId === null) return err(c, "TARGET_NOT_ALLOWED", "session 的帳號不存在", 403);
+  const countRow = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM email_aliases a
+       JOIN email_addresses e ON e.id = a.target_email_address_id
+      WHERE e.user_id = ?1`
+  )
+    .bind(accountUserId)
+    .first<{ n: number }>();
+  if (Number(countRow?.n ?? 0) >= ALIAS_MAX_PER_ACCOUNT) {
+    return err(c, "ALIAS_LIMIT_REACHED", `每個帳號最多 ${ALIAS_MAX_PER_ACCOUNT} 個別名`, 409);
+  }
+
+  const ts = now();
+  /**
+   * 原子取流水號（併發下不會拿到同一個號碼）。
+   *
+   * `next_serial` 的語意是「下一個可用的流水號」：首次插入存 2、回傳 2 → 本次用 1；
+   * 之後每次 ON CONFLICT 遞增（回傳 3 → 本次用 2），因此發完第一號後計數器是 2
+   * （符合 docs/25 T109 的 `alias_names.next_serial=2`）。
+   * ⚠️ docs/25 §3.1 的 SQL 寫 `VALUES(?, 1, ?)` 並直接使用回傳值，會讓計數器停在 1
+   *    與 T109 矛盾；這裡以 T109 與「next_serial = 下一個號碼」的欄位語意為準。
+   */
+  const serialRow = await c.env.DB.prepare(
+    `INSERT INTO alias_names (name, next_serial, created_at) VALUES (?1, 2, ?2)
+       ON CONFLICT(name) DO UPDATE SET next_serial = next_serial + 1
+       RETURNING next_serial`
+  )
+    .bind(name, ts)
+    .first<{ next_serial: number }>();
+  const serial = Number(serialRow?.next_serial ?? 0) - 1;
+  if (!Number.isInteger(serial) || serial <= 0) {
+    console.error("[atwhomail-api] alias serial allocation failed", { name });
+    return err(c, "ALIAS_CREATE_FAILED", "別名建立失敗，請稍後再試", 500);
+  }
+  if (serial > ALIAS_SERIAL_MAX) {
+    return err(c, "ALIAS_LIMIT_REACHED", `名稱「${name}」的流水號已用完（${ALIAS_SERIAL_MAX}）`, 409);
+  }
+
+  const aliasAddress = aliasAddressFor(name, serial);
+  let aliasId: number;
+  try {
+    const res = await c.env.DB.prepare(
+      `INSERT INTO email_aliases (alias_address, target_email_address_id, status, created_at, updated_at)
+       VALUES (?1, ?2, 'active', ?3, ?3)`
+    )
+      .bind(aliasAddress, target.id, ts)
+      .run();
+    aliasId = Number(res.meta.last_row_id);
+  } catch (e) {
+    console.error("[atwhomail-api] alias insert failed", { name, error: String(e) });
+    return err(c, "ALIAS_CREATE_FAILED", "別名建立失敗，請稍後再試", 500);
+  }
+
+  // N9：只記別名與目標；不含任何信件內容
+  auditAsync(c, {
+    event: "alias_created",
+    userId: accountUserId,
+    addressId: target.id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { alias_address: aliasAddress, target: target.email },
+  });
+
+  return c.json({ id: aliasId, alias_address: aliasAddress, target_address_id: target.id, status: "active" }, 201);
+});
+
+/**
+ * GET /api/email-aliases — 別名清單（owner 看名下全部；mailbox 只看自己地址的）。
+ * `received_count` / `last_received_at` 以 `messages.envelope_to` 統計（索引 idx_messages_envelope_to）。
+ */
+app.get("/api/email-aliases", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const where = scope.kind === "owner" ? "e.user_id = ?1" : "a.target_email_address_id = ?1";
+  const bindValue = scope.kind === "owner" ? scope.userId : scope.addressId;
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT a.id, a.alias_address, a.target_email_address_id AS target_address_id,
+            e.email AS target_email, a.status, a.created_at, a.updated_at,
+            (SELECT COUNT(*) FROM messages m WHERE m.envelope_to = a.alias_address) AS received_count,
+            (SELECT MAX(m.received_at) FROM messages m WHERE m.envelope_to = a.alias_address) AS last_received_at
+       FROM email_aliases a
+       JOIN email_addresses e ON e.id = a.target_email_address_id
+      WHERE ${where}
+      ORDER BY a.id`
+  )
+    .bind(bindValue)
+    .all<{
+      id: number;
+      alias_address: string;
+      target_address_id: number;
+      target_email: string;
+      status: string;
+      created_at: number;
+      updated_at: number;
+      received_count: number;
+      last_received_at: number | null;
+    }>();
+
+  return c.json({
+    aliases: results.map((r) => ({
+      id: Number(r.id),
+      alias_address: r.alias_address,
+      target_address_id: Number(r.target_address_id),
+      target_email: r.target_email,
+      status: r.status,
+      created_at: Number(r.created_at),
+      updated_at: Number(r.updated_at),
+      received_count: Number(r.received_count ?? 0),
+      last_received_at: r.last_received_at === null ? null : Number(r.last_received_at),
+    })),
+  });
+});
+
+/** 取 session scope 內可見的單一別名（不存在／越權 → null；回應一律 404，不洩漏存在性） */
+async function scopedAlias(db: D1Database, scope: Scope, id: number) {
+  const where = scope.kind === "owner" ? "e.user_id = ?2" : "a.target_email_address_id = ?2";
+  const bindValue = scope.kind === "owner" ? scope.userId : scope.addressId;
+  return db
+    .prepare(
+      `SELECT a.id, a.alias_address, a.status, a.target_email_address_id, e.email AS target_email
+         FROM email_aliases a
+         JOIN email_addresses e ON e.id = a.target_email_address_id
+        WHERE a.id = ?1 AND ${where}`
+    )
+    .bind(id, bindValue)
+    .first<{
+      id: number;
+      alias_address: string;
+      status: string;
+      target_email_address_id: number;
+      target_email: string;
+    }>();
+}
+
+/**
+ * PATCH /api/email-aliases/:id — 啟用／停用（docs/25 §3.2）。
+ * 停用後寄到該別名的來信在 email-handler 端回 550 5.1.1（不建立 messages）。
+ */
+app.patch("/api/email-aliases/:id", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
+
+  const body = await c.req.json<{ status?: unknown }>().catch(() => null);
+  if (body?.status !== "active" && body?.status !== "disabled") {
+    return err(c, "INVALID_STATUS", 'status 只能是 "active" 或 "disabled"', 400);
+  }
+
+  const row = await scopedAlias(c.env.DB, scope, id);
+  if (!row) return err(c, "ALIAS_NOT_FOUND", "alias not found", 404);
+
+  await c.env.DB.prepare("UPDATE email_aliases SET status = ?1, updated_at = ?2 WHERE id = ?3")
+    .bind(body.status, now(), id)
+    .run();
+
+  auditAsync(c, {
+    event: "alias_updated",
+    userId: scope.kind === "owner" ? scope.userId : null,
+    addressId: row.target_email_address_id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { alias_address: row.alias_address, target: row.target_email, status: body.status },
+  });
+
+  return c.json({ ok: true, id, alias_address: row.alias_address, status: body.status });
+});
+
+/**
+ * DELETE /api/email-aliases/:id — **軟停用**（`status='disabled'`；不刪資料列，docs/25 §3.2）。
+ * 與 PATCH disabled 相同語意；保留資料列以維持稽核與歷史 `envelope_to` 對應。
+ */
+app.delete("/api/email-aliases/:id", requireSession, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
+
+  const row = await scopedAlias(c.env.DB, scope, id);
+  if (!row) return err(c, "ALIAS_NOT_FOUND", "alias not found", 404);
+
+  await c.env.DB.prepare("UPDATE email_aliases SET status = 'disabled', updated_at = ?1 WHERE id = ?2")
+    .bind(now(), id)
+    .run();
+
+  auditAsync(c, {
+    event: "alias_updated",
+    userId: scope.kind === "owner" ? scope.userId : null,
+    addressId: row.target_email_address_id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { alias_address: row.alias_address, target: row.target_email, status: "disabled" },
+  });
+
+  return c.json({ ok: true, id, alias_address: row.alias_address, status: "disabled" });
+});
+
 // ══════════════════════ Phase 8：Inbox / Mail（owner 或 mailbox scope）══════════════════════
 app.get("/api/mail/inbox", requireSession, async (c) => {
   const scope = c.get("scope");
@@ -2436,6 +2722,7 @@ app.get("/api/mail/inbox", requireSession, async (c) => {
 
   let sql = `SELECT m.id, m.from_address AS "from", m.to_address, m.cc, m.subject, m.text_preview,
                     m.folder, m.read_at, m.received_at, m.origin, m.kind, m.delivery_scope,
+                    m.envelope_to,
                     (SELECT COUNT(*) FROM attachments a WHERE a.message_id = m.id) AS att_count
              FROM messages m
              WHERE ${sw.sql} AND m.deleted_at IS NULL`;
@@ -2497,6 +2784,8 @@ app.get("/api/mail/inbox", requireSession, async (c) => {
     origin: r.origin ?? "external",
     kind: r.kind ?? "normal",
     delivery_scope: r.delivery_scope ?? "external",
+    // D25：這封信原本寄給哪個別名（null = 寄給真實地址）
+    envelope_to: r.envelope_to ?? null,
   }));
   const last = page[page.length - 1];
   return c.json({ items, nextCursor: hasMore && last ? `${last.received_at}_${last.id}` : null });
@@ -2552,7 +2841,7 @@ app.get("/api/mail/:id", requireSession, async (c) => {
     `SELECT m.id, m.from_address AS "from", m.to_address, m.cc, m.subject, m.text_preview,
             m.folder, m.read_at, m.received_at, m.html_r2_key, m.message_id,
             m.origin, m.kind, m.delivery_scope, m.form_instance_id, m.suspicious_form_claim,
-            m.sender_spf, m.sender_dkim, m.sender_dmarc
+            m.sender_spf, m.sender_dkim, m.sender_dmarc, m.envelope_to
      FROM messages m WHERE m.id = ? AND m.deleted_at IS NULL AND ${sw.sql}`
   )
     .bind(id, ...sw.binds)
@@ -2587,6 +2876,8 @@ app.get("/api/mail/:id", requireSession, async (c) => {
     sender_spf: row.sender_spf ?? null,
     sender_dkim: row.sender_dkim ?? null,
     sender_dmarc: row.sender_dmarc ?? null,
+    // D25：寄給別名時記錄別名地址；寄給真實地址時為 null
+    envelope_to: row.envelope_to ?? null,
   });
 });
 
@@ -3113,7 +3404,7 @@ app.post("/api/mail/send", requireSession, async (c) => {
     created_at: number;
   };
   const fromCols = "id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at";
-  const fromAddr =
+  let fromAddr: FromRow | null =
     scope.kind === "owner"
       ? await c.env.DB.prepare(
           `SELECT ${fromCols} FROM email_addresses
@@ -3127,6 +3418,36 @@ app.post("/api/mail/send", requireSession, async (c) => {
         )
           .bind(fromEmail, scope.addressId)
           .first<FromRow>();
+
+  /**
+   * D25（docs/25 §5）：`from` 也可以是**自己名下的別名**（回覆外部寄件者時自動帶入）。
+   * - 別名必須 active，目標地址必須 active 且屬於 session scope（owner：自己名下／mailbox：同地址）
+   * - 找到後以**目標地址**當配額與寄件備份的 `address_id`（配額一律計入 target）
+   * - 實際寄出的 `From` 標頭用別名（`senderEmail`）；稽核只記 `via_alias` 布林（N9）
+   */
+  let viaAlias = false;
+  let senderEmail = fromEmail;
+  if (!fromAddr) {
+    const aliasRow = await c.env.DB.prepare(
+      `SELECT a.alias_address, e.id, e.email, e.user_id, e.can_send, e.daily_send_quota,
+              e.sent_today, e.quota_reset_at, e.created_at
+         FROM email_aliases a
+         JOIN email_addresses e ON e.id = a.target_email_address_id
+        WHERE a.alias_address = ?1 AND a.status = 'active'
+          AND e.status = 'active' AND e.deleted_at IS NULL`
+    )
+      .bind(fromEmail)
+      .first<FromRow & { alias_address: string }>();
+    const aliasAllowed =
+      aliasRow !== null &&
+      (scope.kind === "owner" ? aliasRow.user_id === scope.userId : aliasRow.id === scope.addressId);
+    if (aliasRow && aliasAllowed) {
+      const { alias_address, ...target } = aliasRow;
+      fromAddr = target;
+      senderEmail = alias_address;
+      viaAlias = true;
+    }
+  }
   if (!fromAddr) return err(c, "FROM_NOT_ALLOWED", "from 不屬於此 session 的 active 地址", 403);
 
   const toList = normalizeRecipients(body.to);
@@ -3243,7 +3564,7 @@ app.post("/api/mail/send", requireSession, async (c) => {
     const messageId = `${crypto.randomUUID()}@${DOMAIN}`;
     try {
       await deliverLocalMail(c.env, {
-        from: fromAddr.email,
+        from: senderEmail,
         recipients: [...localRecipients.values()],
         to: toList,
         cc: ccList,
@@ -3255,7 +3576,7 @@ app.post("/api/mail/send", requireSession, async (c) => {
         ts: ts0,
       });
     } catch (e) {
-      console.error("[atwhomail-api] local delivery failed", { from: fromAddr.email, error: String(e) });
+      console.error("[atwhomail-api] local delivery failed", { from: senderEmail, error: String(e) });
       await refundQuota(c.env.DB, fromAddr.id);
       return err(c, "SEND_FAILED", "本地投遞失敗，請稍後再試", 500);
     }
@@ -3263,7 +3584,7 @@ app.post("/api/mail/send", requireSession, async (c) => {
   } else {
     try {
       result = await c.env.EMAIL.send({
-        from: fromAddr.email,
+        from: senderEmail,
         to: toList,
         cc: ccList.length ? ccList : undefined,
         bcc: bccList.length ? bccList : undefined,
@@ -3281,7 +3602,7 @@ app.post("/api/mail/send", requireSession, async (c) => {
       });
     } catch (e) {
       const code = (e as { code?: string })?.code ?? "SEND_FAILED";
-      console.error("[atwhomail-api] send failed", { from: fromAddr.email, code, error: String(e) });
+      console.error("[atwhomail-api] send failed", { from: senderEmail, code, error: String(e) });
       await refundQuota(c.env.DB, fromAddr.id); // 未寄出 → 回補配額（避免誤扣）
       return err(c, "SEND_FAILED", `${code}: ${String(e)}`, 502);
     }
@@ -3292,7 +3613,7 @@ app.post("/api/mail/send", requireSession, async (c) => {
   const d = new Date(ts);
   const key = buildMailKey(d);
   const eml = buildPlainEml({
-    from: fromAddr.email,
+    from: senderEmail,
     to: toList,
     cc: ccList,
     subject: body.subject,
@@ -3328,7 +3649,7 @@ app.post("/api/mail/send", requireSession, async (c) => {
       ownerId,
       fromAddr.id,
       result.messageId ?? null,
-      fromAddr.email,
+      senderEmail,
       JSON.stringify(toList.map((a) => ({ address: a, name: "" }))),
       JSON.stringify(ccList.map((a) => ({ address: a, name: "" }))),
       body.subject,
@@ -3341,10 +3662,18 @@ app.post("/api/mail/send", requireSession, async (c) => {
     )
     .run();
 
+  // D25：成功寄出的稽核（只記 via_alias 布林；不含主旨／內文／收件人，N9）
+  auditAsync(c, {
+    event: "mail_sent",
+    userId: fromAddr.user_id,
+    ...auditCtx,
+    detail: { via_alias: viaAlias },
+  });
+
   return c.json({
     messageId: result.messageId,
     send_status: "sent",
-    from: fromAddr.email,
+    from: senderEmail,
     to: toList,
     delivery_scope: deliveryScope,
   });

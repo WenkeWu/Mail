@@ -23,6 +23,8 @@ export interface MailListItem {
   origin: MailOrigin;
   kind: MailKind;
   delivery_scope: DeliveryScope;
+  /** D25：這封信原本寄給哪個別名（null = 寄給真實地址） */
+  envelope_to: string | null;
 }
 
 export interface MailListResponse {
@@ -68,6 +70,33 @@ export interface MailDetail {
   sender_spf: SenderAuthResult | null;
   sender_dkim: SenderAuthResult | null;
   sender_dmarc: SenderAuthResult | null;
+  /** D25：這封信原本寄給哪個別名（null = 寄給真實地址） */
+  envelope_to: string | null;
+}
+
+// ── D25：別名（docs/25） ──
+
+/** `GET /api/email-aliases` 的單筆別名 */
+export interface EmailAlias {
+  id: number;
+  alias_address: string;
+  target_address_id: number;
+  target_email: string;
+  status: "active" | "disabled";
+  /** 寄到這個別名的信件數（`messages.envelope_to` 統計） */
+  received_count: number;
+  /** 最後一次收到信的時間（epoch ms；從未收到 = null） */
+  last_received_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** `POST /api/email-aliases` 的回應 */
+export interface CreatedAlias {
+  id: number;
+  alias_address: string;
+  target_address_id: number;
+  status: "active";
 }
 
 export interface FolderCount {

@@ -227,6 +227,12 @@ export function ReadingPane({
                 <span className={`mail-kind-badge kind-${category}`} title={CATEGORY_TITLE[category]}>
                   {CATEGORY_LABEL[category]}
                 </span>
+                {/* D25：這封信是寄給哪個別名（envelope_to） */}
+                {detail.envelope_to && (
+                  <span className="alias-badge" title={`此信寄給別名 ${detail.envelope_to}`}>
+                    寄給 {detail.envelope_to}
+                  </span>
+                )}
                 <span>{formatFullDate(detail.received_at)}</span>
               </div>
               {detail.origin === "external" && (

@@ -7,6 +7,7 @@ import {
   downloadAttachment,
   emptyTrash,
   fetchMailHtml,
+  listEmailAliases,
   getMail,
   getMailText,
   getMe,
@@ -21,6 +22,7 @@ import type {
   AttachmentMeta,
   BodyState,
   EmailAddressInfo,
+  EmailAlias,
   Folder,
   FolderQuery,
   MailDetail,
@@ -30,11 +32,13 @@ import type {
 import { useCounts } from "../hooks/useCounts";
 import { useMailList } from "../hooks/useMailList";
 import { useMailSelection } from "../hooks/useMailSelection";
+import { replyFromFor } from "../lib/alias";
 import { displaySender, formatFullDate, parseAddress } from "../lib/format";
 import { showsAdminConsole, type LoginMode } from "../lib/hostMode";
 import { joinRecipients, quoteText, withPrefix } from "../lib/recipients";
 import { AccountSettings } from "./AccountSettings";
 import { AddressManager } from "./AddressManager";
+import { AliasManager } from "./AliasManager";
 import { ComposeWindow, type Draft, type DraftMode } from "./ComposeWindow";
 import { FolderSidebar, type AppPage } from "./FolderSidebar";
 import { Header } from "./Header";
@@ -84,6 +88,9 @@ export function AppShell({
   const [listRefreshKey, setListRefreshKey] = useState(0);
   const [countsRefreshKey, setCountsRefreshKey] = useState(0);
   const [addresses, setAddresses] = useState<EmailAddressInfo[]>([]);
+  /** D25：session scope 內的別名（回覆外部寄件者時決定 From；範圍 A） */
+  const [aliases, setAliases] = useState<EmailAlias[]>([]);
+  const [aliasRefreshKey, setAliasRefreshKey] = useState(0);
   /** Phase 1：session 身分與寄信配額（visitor 顯示配額、配額用盡則停用撰寫） */
   const [me, setMe] = useState<MeResponse | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -198,6 +205,21 @@ export function AppShell({
       cancelled = true;
     };
   }, [session]);
+
+  // D25：別名清單（owner 全部／mailbox 自己地址的）——回覆時判斷 From 用
+  useEffect(() => {
+    let cancelled = false;
+    listEmailAliases()
+      .then((res) => {
+        if (!cancelled) setAliases(res.aliases);
+      })
+      .catch(() => {
+        /* 401 由全域處理；其餘不阻斷主流程（回覆時會再嘗試重抓） */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session, aliasRefreshKey]);
 
   const ownAddresses = useMemo(() => {
     if (session.kind === "mailbox") return new Set([session.email.toLowerCase()]);
@@ -533,8 +555,31 @@ export function AppShell({
       const quoteHeader = `\n\n在 ${formatFullDate(detail.received_at)}，${displaySender(detail.from)} 寫道：\n`;
       const quoted = `${quoteHeader}${quoteText(original)}`;
 
+      /**
+       * D25（docs/25 §5、範圍 A）：只有「回覆」才依別名決定 From。
+       * 外部寄件者 → 別名；@atwho.org 內部寄件者 → 別名的目標真實地址。
+       * 這裡重抓一次清單，避免使用者剛建立／停用別名後狀態過期。
+       */
+      let from = defaultFrom;
+      if (mode !== "forward" && detail.envelope_to) {
+        let latest = aliases;
+        try {
+          const res = await listEmailAliases();
+          latest = res.aliases;
+          setAliases(latest);
+        } catch {
+          /* 取不到就用既有快取；退回預設地址 */
+        }
+        from = replyFromFor({
+          envelopeTo: detail.envelope_to,
+          sender: detail.from,
+          aliases: latest,
+          fallbackFrom: defaultFrom,
+        });
+      }
+
       if (mode === "reply") {
-        openDraft({ mode, to: sender, subject: withPrefix(detail.subject, "Re:"), bodyText: quoted });
+        openDraft({ mode, from, to: sender, subject: withPrefix(detail.subject, "Re:"), bodyText: quoted });
       } else if (mode === "replyAll") {
         const to = [sender, ...detail.to.map((a) => a.address.toLowerCase())].filter(
           (a) => a && !ownAddresses.has(a)
@@ -542,6 +587,7 @@ export function AppShell({
         const cc = detail.cc.map((a) => a.address.toLowerCase()).filter((a) => a && !ownAddresses.has(a));
         openDraft({
           mode,
+          from,
           to: joinRecipients([...new Set(to)]),
           cc: joinRecipients([...new Set(cc)]),
           subject: withPrefix(detail.subject, "Re:"),
@@ -562,7 +608,7 @@ export function AppShell({
         });
       }
     },
-    [detail, guardDraft, openDraft, ownAddresses]
+    [detail, guardDraft, openDraft, ownAddresses, aliases, defaultFrom]
   );
 
   const handleSent = useCallback(
@@ -624,6 +670,7 @@ export function AppShell({
         onOpenAccountSettings={() => setPage("account")}
         onOpenInvites={() => setPage("invites")}
         onOpenVisitors={() => setPage("visitors")}
+        onOpenAliases={() => setPage("aliases")}
         showAdminConsole={canUseAdminConsole}
         onLogout={onLogout}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -635,6 +682,13 @@ export function AppShell({
           session={session}
           onBack={() => setPage("mail")}
           onToast={showToast}
+        />
+      ) : page === "aliases" ? (
+        <AliasManager
+          session={session}
+          onBack={() => setPage("mail")}
+          onToast={showToast}
+          onChanged={() => setAliasRefreshKey((k) => k + 1)}
         />
       ) : page === "account" && canUseAdminConsole ? (
         <AccountSettings
@@ -659,6 +713,7 @@ export function AppShell({
             onSelectFolder={selectFolder}
             onSelectAddress={selectAddress}
             onOpenAddresses={() => setPage("addresses")}
+            onOpenAliases={() => setPage("aliases")}
             onOpenAccountSettings={() => setPage("account")}
             onOpenInvites={() => setPage("invites")}
             onOpenVisitors={() => setPage("visitors")}

@@ -34,9 +34,10 @@
 | 地址 | GET | `/api/email-addresses/:id` | 單一地址 |
 | 地址 | PATCH | `/api/email-addresses/:id` | 改名/改狀態（active↔disabled） |
 | 地址 | DELETE | `/api/email-addresses/:id` | Soft delete |
-| Alias | POST | `/api/email-aliases` | 建立 alias |
-| Alias | PATCH | `/api/email-aliases/:id` | 啟用/停用 |
-| Alias | DELETE | `/api/email-aliases/:id` | 刪除 alias |
+| Alias | POST | `/api/email-aliases` | **建立別名（D25；流水號由系統分配）** |
+| Alias | GET | `/api/email-aliases` | **別名清單（D25；含 received_count／last_received_at）** |
+| Alias | PATCH | `/api/email-aliases/:id` | **啟用／停用（D25）** |
+| Alias | DELETE | `/api/email-aliases/:id` | **軟停用（D25；不刪資料列）** |
 | Inbox | GET | `/api/mail/inbox` | 收件匣（分頁＋搜尋，scope 見 §2.0） |
 | Inbox | GET | `/api/mail/counts` | 各資料夾未讀/總數（側欄 badge；owner 另附各地址） |
 | Mail | GET | `/api/mail/:id` | 信件詳情（含附件清單） |
@@ -133,6 +134,8 @@ Authorization: Bearer <JWT>
 {
   "from": "alice@atwho.org",            // Mailbox session：必須等於自己的 address
                                         // Owner session：必須是名下 active 地址
+                                        // D25：也可以是「自己名下的 active 別名」
+                                        //       （別名 target 須屬於 session scope；配額計入 target）
   "to": ["bob@example.com"],
   "cc": [],
   "subject": "Hello",
@@ -150,7 +153,11 @@ Authorization: Bearer <JWT>
 { "messageId": "01JQ...", "send_status": "sent" }
 ```
 
-錯誤：`403`（from 不屬於 session scope）、`413`（總大小 > 5 MiB）、`422`（收件人 > 50）。
+錯誤：`403`（from 不屬於 session scope，含停用／他人的別名 → `FROM_NOT_ALLOWED`）、`413`（總大小 > 5 MiB）、`422`（收件人 > 50）。
+
+> **D25（別名 From）**：成功寄出後寫稽核 `mail_sent`，`detail` 只有 `{ via_alias: boolean }`
+> （不記別名地址、主旨或收件人，N9）。寄件備份的 `address_id` 與配額（每日／每小時／暖機）
+> **一律計入別名的 target 地址**；實際寄出的 From 標頭是別名。
 
 > 5 MiB 上限與 base64 膨脹（×4/3）考量：大附件建議改「先上傳到暫存 → 拿 `uploadId` → 寄信時引用」，MVP 直接內嵌亦可，但要在前端先擋 > 3.5 MiB 的 base64 請求。
 
@@ -163,7 +170,8 @@ GET /api/mail/inbox?folder=inbox&cursor=...&limit=50
     "items": [
       { "id": 9001, "from": "x@y.com", "subject": "...",
         "text_preview": "...", "received_at": 1788000000000,
-        "read": false, "has_attachments": true, "folder": "inbox" }
+        "read": false, "has_attachments": true, "folder": "inbox",
+        "envelope_to": "luke001@atwho.org" }   // D25：寄給別名時為別名；否則 null
     ],
     "nextCursor": "..."   // keyset 分頁（received_at, id），null = 到底
   }
@@ -174,6 +182,7 @@ GET /api/mail/:id
     "id": 9001, "from": "...", "to": [...], "cc": [...],
     "subject": "...", "text_preview": "...", "received_at": ...,
     "read_at": ..., "html_url": null,          // 見下
+    "envelope_to": "luke001@atwho.org",        // D25：寄給別名時為別名；否則 null
     "attachments": [{ "id": 5, "filename": "x.pdf",
                       "size_bytes": 1234, "content_type": "application/pdf" }]
   }
@@ -1036,6 +1045,108 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
   - `email_verify` 模式顯示「一般註冊連結」卡片（`https://app.atwho.org/?register=1`）＋一鍵複製。
   - 複製成功 toast 一律為「已複製連結」。
 - 部署：僅需重新 build／deploy 前端（`atwhomail-web`）；API Worker 不需重新部署。
+
+### 2.24 D25：別名 Phase 1（2026-11-05）
+
+> 設計：`docs/25`（owner 已定案範圍 A）。新增 migration `0010_alias_phase1.sql`；
+> 後端 API／`email-handler`／前端皆需部署（見 docs/11 §2-18）。
+> ⚠️ Phase 2 的**反向別名**（`messages.reply_to`、`reverse_aliases`）**尚未啟用**——
+> 欄位已預留但 Phase 1 不寫入。
+
+**命名規則（owner 2026-11-04 定案）**
+
+| 規則 | 值 |
+|---|---|
+| 使用者輸入 | 3–12 個英文字母（`a–z`／`A–Z`，儲存小寫；不可數字／符號） |
+| 保留字 | `admin postmaster abuse root noreply mailerdaemon hostmaster webmaster support` |
+| 系統附加 | 3 位流水號（`001`–`999`，不可自選）→ `luke` → `luke001@atwho.org` |
+| 別名上限 | 每個帳號 ≤ 50 個；每個名字流水號 ≤ 999 |
+
+**端點**
+
+```http
+POST /api/email-aliases        Authorization: Bearer <JWT>
+{ "name": "luke", "target_address_id": 12 }
+
+201 { "id": 3, "alias_address": "luke001@atwho.org",
+      "target_address_id": 12, "status": "active" }
+→ 400 INVALID_ALIAS_NAME（長度／數字／符號／保留字）
+→ 403 TARGET_NOT_ALLOWED（目標不在 session scope、非 active 或已刪除）
+→ 409 ALIAS_LIMIT_REACHED（帳號已 50 個／該名字流水號已滿）
+```
+
+- 流水號以 `alias_names` **原子取得**（`INSERT … ON CONFLICT DO UPDATE … RETURNING`）；
+  併發建立同名別名不會拿到重複號碼。`next_serial` 的語意是「下一個可用號碼」，
+  建立第一號後為 2（T109）。
+- 目標只能是 `email_addresses`（**禁止 alias → alias**）。
+
+```http
+GET /api/email-aliases        Authorization: Bearer <JWT>
+200 {
+  "aliases": [{
+    "id": 3, "alias_address": "luke001@atwho.org",
+    "target_address_id": 12, "target_email": "alice@atwho.org",
+    "status": "active",
+    "received_count": 5,            // messages.envelope_to = 此別名 的封數
+    "last_received_at": 1788000000000, // 從未收到 → null
+    "created_at": ..., "updated_at": ...
+  }]
+}
+```
+
+- owner：名下**全部**地址的別名；mailbox：**只看自己地址**的別名（SQL scope 強制）。
+- `received_count`／`last_received_at` 由 `messages.envelope_to` 統計（`idx_messages_envelope_to`）。
+
+```http
+PATCH  /api/email-aliases/:id   body: { "status": "active" | "disabled" }
+DELETE /api/email-aliases/:id
+→ 200 { "ok": true, "id": 3, "alias_address": "...", "status": "disabled" }
+→ 404 ALIAS_NOT_FOUND（不存在或不在 scope；不洩漏存在性）
+```
+
+- **DELETE 是軟停用**：只設 `status='disabled'`，**不刪資料列**（保留既有信件的
+  `envelope_to` 對應與稽核）。
+- PATCH／DELETE 皆寫稽核 `alias_updated`；建立寫 `alias_created`。detail 只含
+  `{ alias_address, target, status? }`，不含任何信件內容（N9）。
+
+**收信端（`email-handler`）**
+
+```
+recipient 查 email_addresses（active）→ 命中：既有流程，envelope_to = NULL
+  未命中 → 查 email_aliases（alias_address = recipient）
+    active   → messages.address_id = target、envelope_to = 別名
+               （origin=external、kind=normal、delivery_scope=external）
+    disabled → 550 5.1.1（不建立 messages、不存 R2）
+    查無     → 550 5.1.1
+```
+
+- 別名信一律 `kind='normal'`，**不可**帶 `form_instance_id`（互動式表單只走內部路徑）。
+- 別名 active 但 target 已停用／刪除 → 視為不可投遞，回 550（不寫入不可讀的信箱）。
+
+**回信 From（範圍 A：對外匿名、對內不匿名）**
+
+| 情境 | From |
+|---|---|
+| 回覆 `envelope_to` 有值的信，且寄件者**非** `@atwho.org` | **別名**（例 `luke001@atwho.org`） |
+| 回覆 `@atwho.org` 內部寄件者 | 別名的 target **真實地址** |
+| 手動改 From | 限自己名下（地址或別名） |
+
+- `/api/mail/send` 的 From 驗證已擴充：接受 active 別名（target 屬於 session scope）。
+- 配額一律計入 target 地址；稽核 `mail_sent.detail.via_alias`（布林）。
+- Phase 1 **不支援**以別名主動寄新信（只允許回覆流程自動帶入）；一次性別名／轉寄外部亦不做。
+
+**Migration 與部署**
+
+- `migrations/0010_alias_phase1.sql`：只新增 `alias_names`、`messages.envelope_to`、
+  `messages.reply_to`（Phase 2 預留）、`idx_messages_envelope_to`。
+- 部署順序：**先套 migration → 再部署 API／email-handler／前端**（未套 migration 時
+  別名端點與別名收信會因缺欄位失敗）。
+
+**測試**：T109–T118（`packages/api/test/alias.spec.ts`、`packages/email-handler/test/email-handler.spec.ts`、
+`web/test/alias.spec.ts`、`web/test/aliasManager.dom.spec.tsx`）。
+⚠️ 規格矛盾已回報：docs/25 §3.1 的 SQL 會讓 `alias_names.next_serial` 停在 1，與 T109
+（應為 2）衝突；實作以 T109 與欄位語意（下一個可用號碼）為準，且別名地址含 `@atwho.org`
+（規格範例僅寫 local part）。
 
 ## 3. 通用原則
 

@@ -1,6 +1,7 @@
 import type { CountsResponse, Folder, FolderQuery, Session } from "../api/types";
 import {
   IconArchive,
+  IconAt,
   IconCompose,
   IconInbox,
   IconKey,
@@ -11,8 +12,8 @@ import {
   IconUsers,
 } from "./icons";
 
-/** 主視圖（信件／地址管理／管理主控台頁面） */
-export type AppPage = "mail" | "addresses" | "account" | "invites" | "visitors";
+/** 主視圖（信件／地址管理／別名／管理主控台頁面） */
+export type AppPage = "mail" | "addresses" | "aliases" | "account" | "invites" | "visitors";
 
 interface Props {
   session: Session;
@@ -25,6 +26,8 @@ interface Props {
   onSelectFolder: (folder: Folder) => void;
   onSelectAddress: (id: number | null) => void;
   onOpenAddresses: () => void;
+  /** D25：別名管理（owner 與 mailbox 都可用） */
+  onOpenAliases: () => void;
   /** D7：owner 的帳號設定（自行變更密碼） */
   onOpenAccountSettings: () => void;
   /** D4：邀請碼管理 */
@@ -62,6 +65,7 @@ export function FolderSidebar({
   onSelectFolder,
   onSelectAddress,
   onOpenAddresses,
+  onOpenAliases,
   onOpenAccountSettings,
   onOpenInvites,
   onOpenVisitors,
@@ -111,6 +115,22 @@ export function FolderSidebar({
             </li>
           );
         })}
+      </ul>
+
+      {/* D25：別名管理（owner 與 mailbox 都有；後端依 session scope 回傳可見的別名） */}
+      <div className="sidebar-section">別名</div>
+      <ul className="folder-list">
+        <li>
+          <button
+            type="button"
+            className={`folder-item ${currentPage === "aliases" ? "active" : ""}`}
+            onClick={onOpenAliases}
+            title="管理別名（對外匿名收信）"
+          >
+            <IconAt size={18} />
+            <span className="folder-label">別名管理</span>
+          </button>
+        </li>
       </ul>
 
       {session.kind === "owner" && (

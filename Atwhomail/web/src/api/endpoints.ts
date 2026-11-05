@@ -2,8 +2,10 @@
 import { request, requestBlob, requestText } from "./client";
 import type {
   CountsResponse,
+  CreatedAlias,
   DeletedAddressInfo,
   EmailAddressInfo,
+  EmailAlias,
   FormResponsesResponse,
   FormSendPayload,
   FormSendResult,
@@ -81,6 +83,37 @@ export const changeOwnerPassword = (oldPassword: string, newPassword: string) =>
   request<{ ok: boolean }>("/api/auth/owner-password/self", {
     method: "PATCH",
     json: { old_password: oldPassword, new_password: newPassword },
+  });
+
+// ── D25：別名（docs/25）──
+
+/**
+ * 別名清單（owner：名下全部；mailbox：自己地址的）。
+ * `received_count`／`last_received_at` 由後端以 `messages.envelope_to` 統計。
+ */
+export const listEmailAliases = () => request<{ aliases: EmailAlias[] }>("/api/email-aliases");
+
+/** 建立別名：只提供名字（3–12 字母）與目標地址；流水號由後端自動分配（luke → luke001） */
+export const createEmailAlias = (name: string, targetAddressId: number) =>
+  request<CreatedAlias>("/api/email-aliases", {
+    method: "POST",
+    json: { name, target_address_id: targetAddressId },
+  });
+
+/** 啟用／停用別名（停用後寄到別名的信會回 550，不寫入信箱） */
+export const setEmailAliasStatus = (id: number, status: "active" | "disabled") =>
+  request<{ ok: boolean; id: number; alias_address: string; status: string }>(`/api/email-aliases/${id}`, {
+    method: "PATCH",
+    json: { status },
+  });
+
+/**
+ * 刪除別名＝**軟停用**（後端只設 `status='disabled'`，不刪資料列）。
+ * 保留資料列是為了讓既有信件的 `envelope_to` 與稽核仍可追溯。
+ */
+export const deleteEmailAlias = (id: number) =>
+  request<{ ok: boolean; id: number; alias_address: string; status: string }>(`/api/email-aliases/${id}`, {
+    method: "DELETE",
   });
 
 // ── 信件列表 ──

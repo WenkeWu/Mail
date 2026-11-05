@@ -11,11 +11,11 @@ const E = env as unknown as Env;
 
 const RCPT = "alice@atwho.org";
 
-function buildRaw(withHtml = true, withAttachment = true): string {
+function buildRaw(withHtml = true, withAttachment = true, to = RCPT): string {
   const boundary = "BOUND";
   const parts: string[] = [
     `From: "Sender Name" <ext@example.com>`,
-    `To: ${RCPT}`,
+    `To: ${to}`,
     `Subject: Integration test mail`,
     `Message-ID: <it-1@example.com>`,
     `MIME-Version: 1.0`,
@@ -48,7 +48,18 @@ function buildRaw(withHtml = true, withAttachment = true): string {
   return parts.join("\r\n");
 }
 
-function makeMessage(raw: string, to = RCPT): { to: string; from: string; headers: Headers; raw: ReadableStream<Uint8Array>; rawSize: number } {
+function makeMessage(
+  raw: string,
+  to = RCPT,
+  rejects?: string[]
+): {
+  to: string;
+  from: string;
+  headers: Headers;
+  raw: ReadableStream<Uint8Array>;
+  rawSize: number;
+  setReject?: (reason: string) => void;
+} {
   const bytes = new TextEncoder().encode(raw);
   return {
     to,
@@ -56,7 +67,19 @@ function makeMessage(raw: string, to = RCPT): { to: string; from: string; header
     headers: new Headers(),
     raw: new Response(bytes).body as ReadableStream<Uint8Array>,
     rawSize: bytes.byteLength,
+    ...(rejects ? { setReject: (reason: string) => rejects.push(reason) } : {}),
   };
+}
+
+/** 建立別名（D25）：alias → target；預設目標為 alice(id=1) */
+async function seedAlias(aliasAddress: string, targetId = 1, status = "active"): Promise<void> {
+  const ts = Date.now();
+  await E.DB.prepare(
+    `INSERT INTO email_aliases (alias_address, target_email_address_id, status, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?4)`
+  )
+    .bind(aliasAddress, targetId, status, ts)
+    .run();
 }
 
 async function seedAddress(status = "active"): Promise<void> {
@@ -159,5 +182,65 @@ describe("靜默丟棄（不存在的地址／非 active）", () => {
     await seedAddress();
     await handler.email(makeMessage(buildRaw(), "ALICE@AtWho.Org"), E);
     expect(await E.DB.prepare("SELECT COUNT(*) AS n FROM messages").first<{ n: number }>()).toEqual({ n: 1 });
+  });
+});
+
+describe("D25：別名收信（T114／T115）", () => {
+  const ALIAS = "luke001@atwho.org";
+
+  it("T114：active 別名 → 投遞到 target、envelope_to 正確、kind='normal'、無 form_instance", async () => {
+    await seedAddress();
+    await seedAlias(ALIAS, 1, "active");
+
+    await handler.email(makeMessage(buildRaw(true, true, ALIAS), ALIAS), E);
+
+    const msg = await E.DB.prepare("SELECT * FROM messages WHERE address_id = 1").first<Record<string, unknown>>();
+    expect(msg).not.toBeNull();
+    expect(msg!.address_id).toBe(1); // 目標地址的信箱
+    expect(msg!.owner_user_id).toBe(1);
+    expect(msg!.envelope_to).toBe(ALIAS); // 「寄給 luke001」徽章來源
+    expect(msg!.kind).toBe("normal");
+    expect(msg!.origin).toBe("external");
+    expect(msg!.delivery_scope).toBe("external");
+    expect(msg!.form_instance_id).toBeNull();
+    expect(msg!.subject).toBe("Integration test mail");
+    expect(await countObjects("mail/")).toBe(2);
+    expect(await countObjects("attachments/")).toBe(1);
+  });
+
+  it("T115：停用別名 → 550 5.1.1、不建立 messages、不存 R2", async () => {
+    await seedAddress();
+    await seedAlias(ALIAS, 1, "disabled");
+
+    const rejects: string[] = [];
+    await handler.email(makeMessage(buildRaw(true, true, ALIAS), ALIAS, rejects), E);
+
+    expect(rejects).toHaveLength(1);
+    expect(rejects[0]).toContain("5.1.1");
+    expect(await E.DB.prepare("SELECT COUNT(*) AS n FROM messages").first<{ n: number }>()).toEqual({ n: 0 });
+    expect(await countObjects("mail/")).toBe(0);
+    expect(await countObjects("attachments/")).toBe(0);
+  });
+
+  it("別名 active 但目標地址停用 → 550（不寫入不可讀的信箱）", async () => {
+    await seedAddress("disabled");
+    await seedAlias(ALIAS, 1, "active");
+
+    const rejects: string[] = [];
+    await handler.email(makeMessage(buildRaw(false, false, ALIAS), ALIAS, rejects), E);
+
+    expect(rejects).toHaveLength(1);
+    expect(rejects[0]).toContain("5.1.1");
+    expect(await E.DB.prepare("SELECT COUNT(*) AS n FROM messages").first<{ n: number }>()).toEqual({ n: 0 });
+  });
+
+  it("查無地址／別名 → 550 5.1.1", async () => {
+    await seedAddress();
+    const rejects: string[] = [];
+    await handler.email(makeMessage(buildRaw(false, false), "nobody@atwho.org", rejects), E);
+
+    expect(rejects).toHaveLength(1);
+    expect(rejects[0]).toContain("5.1.1");
+    expect(await E.DB.prepare("SELECT COUNT(*) AS n FROM messages").first<{ n: number }>()).toEqual({ n: 0 });
   });
 });
