@@ -22,18 +22,30 @@ import {
   validatePasswordPolicy,
   signOwnerToken,
   signMailboxToken,
+  signAppToken,
   checkLocked,
   recordFailure,
   clearFailures,
   findOwnerId,
   requireOwner,
   requireSession,
+  requireMailSession,
   resolveScope,
   verifyAccessJwt,
   type AuthEnv,
   type Env,
   type Scope,
 } from "./auth";
+import {
+  APP_ID_RE,
+  AUTH_CODE_TTL_MS,
+  EXCHANGE_LIMIT_PER_MIN,
+  hashAppSecret,
+  normalizeRedirectUris,
+  parseStoredRedirectUris,
+  randomHex,
+  redirectWithCode,
+} from "./apps";
 import { BACKUP_TABLES, clampLimit, formatCursor, parseCursor, type Cursor } from "./backup";
 import { localPartAvailability, suggestAvailableLabels } from "./domains";
 import { turnstileSiteKey, verifyTurnstile } from "./turnstile";
@@ -139,7 +151,7 @@ function normalizeAliasName(raw: unknown): string | null {
 
 /** 取得 session 所屬「帳號」的 user id（別名數量上限以帳號計，不是以單一地址計） */
 async function accountUserIdForScope(db: D1Database, scope: Scope): Promise<number | null> {
-  if (scope.kind === "owner") return scope.userId;
+  if (scope.kind === "owner" || scope.kind === "app") return scope.userId;
   const row = await db
     .prepare("SELECT user_id FROM email_addresses WHERE id = ?1")
     .bind(scope.addressId)
@@ -159,6 +171,12 @@ const SQL_CHUNK = 90;
 const TRASH_EMPTY_MAX = 500;
 const now = () => Date.now();
 
+/**
+ * `requireMailSession` 保證不會是 app scope；handler 內以這個型別取值，
+ * 讓 TypeScript 能安全存取 `addressId`（runtime 仍有 middleware 的 403 防線）。
+ */
+type MailScope = Exclude<Scope, { kind: "app" }>;
+
 function err(c: { json: (x: unknown, s?: number) => Response }, code: string, message: string, status = 400): Response {
   return c.json({ error: { code, message } }, status);
 }
@@ -174,14 +192,17 @@ function validLocalPart(lp: string): boolean {
 
 /** scope → SQL 條件（含 binds） */
 function scopeWhere(scope: Scope, alias = "m"): { sql: string; binds: unknown[] } {
-  return scope.kind === "owner"
-    ? { sql: `${alias}.owner_user_id = ?`, binds: [scope.userId] }
-    : { sql: `${alias}.address_id = ?`, binds: [scope.addressId] };
+  if (scope.kind === "owner") return { sql: `${alias}.owner_user_id = ?`, binds: [scope.userId] };
+  // app scope 沒有信箱範圍（正常情況下已被 requireMailSession 擋下；這裡維持 fail closed）
+  if (scope.kind === "app") return { sql: "1 = 0", binds: [] };
+  return { sql: `${alias}.address_id = ?`, binds: [scope.addressId] };
 }
 
 /** scope 是否可見此訊息列（附件下載用） */
 function scopeAllows(scope: Scope, row: { owner_user_id?: number; address_id?: number }): boolean {
-  return scope.kind === "owner" ? row.owner_user_id === scope.userId : row.address_id === scope.addressId;
+  if (scope.kind === "owner") return row.owner_user_id === scope.userId;
+  if (scope.kind === "app") return false;
+  return row.address_id === scope.addressId;
 }
 
 /** LIKE 搜尋字串：escape \ % _ 後前後加 %（SQL 端需搭配 ESCAPE '\'） */
@@ -665,6 +686,27 @@ async function claimCheckIdMinuteCounter(db: D1Database, ip: string | null, ts: 
 }
 
 /**
+ * D26：固定視窗的每分鐘計數器（沿用 `auth_attempts`）。
+ * `key` 由呼叫端決定（例如 `exchange:<app_id>`）；`updated_at` 落在不同分鐘即重置。
+ * 回傳 `false`＝本分鐘已達上限（呼叫端回 429）。
+ */
+async function claimMinuteCounter(db: D1Database, key: string, limit: number, ts: number): Promise<boolean> {
+  const minuteStart = Math.floor(ts / 60_000) * 60_000;
+  const res = await db
+    .prepare(
+      `INSERT INTO auth_attempts (key, fail_count, locked_until, updated_at)
+       VALUES (?1, 1, 0, ?2)
+       ON CONFLICT(key) DO UPDATE SET
+         fail_count = CASE WHEN auth_attempts.updated_at < ?3 THEN 1 ELSE auth_attempts.fail_count + 1 END,
+         updated_at = ?2
+       WHERE auth_attempts.updated_at < ?3 OR auth_attempts.fail_count < ?4`
+    )
+    .bind(key, ts, minuteStart, limit)
+    .run();
+  return res.meta.changes === 1;
+}
+
+/**
  * Email 冷卻（60 秒）：原子搶佔，成功＝現在可以寄。
  * `locked_until` 在此列代表「下次可寄時間」（不是登入鎖定）。
  */
@@ -1014,6 +1056,438 @@ app.patch("/api/auth/owner-password/self", requireSession, async (c) => {
     userAgent: c.req.header("user-agent") ?? null,
   });
   return c.json({ ok: true });
+});
+
+// ══════════════════════ D26：App Clients 與一次性 code（docs/27）══════════════════════
+
+interface AppClientBaseRow {
+  id: number;
+  app_id: string;
+  name: string;
+  redirect_uris: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface AppClientRow extends AppClientBaseRow {
+  secret_hash: string;
+}
+
+interface AuthCodeRow {
+  id: number;
+  code_hash: string;
+  user_id: number;
+  app_id: string;
+  redirect_uri: string;
+  created_at: number;
+  expires_at: number;
+  consumed_at: number | null;
+}
+
+/** 回應用的 App 物件（**絕不含** `secret_hash`） */
+function appClientJson(row: AppClientBaseRow) {
+  return {
+    id: Number(row.id),
+    app_id: row.app_id,
+    name: row.name,
+    redirect_uris: parseStoredRedirectUris(row.redirect_uris),
+    status: row.status,
+    created_at: Number(row.created_at),
+    updated_at: Number(row.updated_at),
+  };
+}
+
+/** `:id` 可接受數字主鍵或 app_id（方便前端與維運） */
+function loadAppByParam(db: D1Database, raw: string): Promise<AppClientRow | null> {
+  if (/^\d+$/.test(raw)) {
+    return db.prepare("SELECT * FROM app_clients WHERE id = ?1").bind(Number(raw)).first<AppClientRow>();
+  }
+  return db.prepare("SELECT * FROM app_clients WHERE app_id = ?1").bind(raw).first<AppClientRow>();
+}
+
+function loadAppByAppId(db: D1Database, appId: string): Promise<AppClientRow | null> {
+  return db.prepare("SELECT * FROM app_clients WHERE app_id = ?1").bind(appId).first<AppClientRow>();
+}
+
+/**
+ * POST /api/apps — 建立 App client（owner only）
+ *
+ * 回應中的 `app_secret` **只出現這一次**；DB 只存 `SHA-256(secret + JWT_SECRET)`。
+ * 稽核 `app_created` 只記 app_id／名稱／狀態（不記 secret，N7）。
+ */
+app.post("/api/apps", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const body = await c.req
+    .json<{ app_id?: unknown; name?: unknown; redirect_uris?: unknown }>()
+    .catch(() => null);
+  if (!body) return err(c, "INVALID_BODY", "invalid JSON body", 400);
+
+  const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
+  if (!APP_ID_RE.test(appId)) {
+    return err(c, "INVALID_APP_ID", "app_id 需為 2–32 個小寫英數字／連字號，且以字母開頭", 400);
+  }
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name || name.length > 100) return err(c, "INVALID_BODY", "name 必填（≤100 字元）", 400);
+
+  const redirects = normalizeRedirectUris(body.redirect_uris);
+  if (!redirects.ok) return err(c, "INVALID_REDIRECT_URI", redirects.message, 400);
+
+  const existing = await c.env.DB.prepare("SELECT id FROM app_clients WHERE app_id = ?1")
+    .bind(appId)
+    .first();
+  if (existing) return err(c, "APP_EXISTS", "此 app_id 已存在", 409);
+
+  // 32-byte secret（hex）；只在本次回應出現
+  const secret = randomHex(32);
+  const secretHash = await hashAppSecret(secret, c.env.JWT_SECRET);
+  const ts = now();
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO app_clients (app_id, name, secret_hash, redirect_uris, status, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?5)`
+    )
+      .bind(appId, name, secretHash, JSON.stringify(redirects.uris), ts)
+      .run();
+  } catch (e) {
+    // 併發建立同名 app_id：UNIQUE 約束 → 409（不把 DB 錯誤回給客戶端）
+    console.error("[atwhomail-api] app create failed", { app_id: appId, error: String(e) });
+    return err(c, "APP_EXISTS", "此 app_id 已存在", 409);
+  }
+
+  auditAsync(c, {
+    event: "app_created",
+    userId: scope.kind === "owner" ? scope.userId : null,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    // N7／N9：只記 app_id、名稱、狀態；不得記 secret
+    detail: { app_id: appId, name, status: "active" },
+  });
+
+  return c.json({ app_id: appId, app_secret: secret, redirect_uris: redirects.uris }, 201);
+});
+
+/** GET /api/apps — App client 清單（owner only；不含 secret／secret_hash） */
+app.get("/api/apps", requireOwner, async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, app_id, name, redirect_uris, status, created_at, updated_at
+     FROM app_clients ORDER BY id`
+  ).all<AppClientBaseRow>();
+  return c.json({ apps: results.map(appClientJson) });
+});
+
+/** PATCH /api/apps/:id — 更新名稱／狀態／redirect_uris（owner only；schema 未定義 owner 欄位，全站單一 owner） */
+app.patch("/api/apps/:id", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const row = await loadAppByParam(c.env.DB, c.req.param("id"));
+  if (!row) return err(c, "APP_NOT_FOUND", "app not found", 404);
+
+  const body = await c.req
+    .json<{ name?: unknown; status?: unknown; redirect_uris?: unknown }>()
+    .catch(() => null);
+  if (!body) return err(c, "INVALID_BODY", "invalid JSON body", 400);
+
+  let name = row.name;
+  let status = row.status;
+  let redirectsJson = row.redirect_uris;
+  let changed = false;
+
+  if (body.name !== undefined) {
+    if (typeof body.name !== "string") return err(c, "INVALID_BODY", "name 必須是字串", 400);
+    const next = body.name.trim();
+    if (!next || next.length > 100) return err(c, "INVALID_BODY", "name 必填（≤100 字元）", 400);
+    name = next;
+    changed = true;
+  }
+  if (body.status !== undefined) {
+    if (body.status !== "active" && body.status !== "disabled") {
+      return err(c, "INVALID_STATUS", 'status 只能是 "active" 或 "disabled"', 400);
+    }
+    status = body.status;
+    changed = true;
+  }
+  if (body.redirect_uris !== undefined) {
+    const redirects = normalizeRedirectUris(body.redirect_uris);
+    if (!redirects.ok) return err(c, "INVALID_REDIRECT_URI", redirects.message, 400);
+    redirectsJson = JSON.stringify(redirects.uris);
+    changed = true;
+  }
+  if (!changed) {
+    return err(c, "INVALID_BODY", "至少提供 name／status／redirect_uris 其中一項", 400);
+  }
+
+  const ts = now();
+  await c.env.DB.prepare(
+    "UPDATE app_clients SET name = ?1, redirect_uris = ?2, status = ?3, updated_at = ?4 WHERE id = ?5"
+  )
+    .bind(name, redirectsJson, status, ts, row.id)
+    .run();
+
+  auditAsync(c, {
+    event: "app_updated",
+    userId: scope.kind === "owner" ? scope.userId : null,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    // N7／N9：只記 app_id、名稱、狀態；不記 secret／redirect 內容以外的敏感資料
+    detail: { app_id: row.app_id, name, status },
+  });
+
+  return c.json({
+    ok: true,
+    app: appClientJson({
+      id: row.id,
+      app_id: row.app_id,
+      name,
+      redirect_uris: redirectsJson,
+      status,
+      created_at: row.created_at,
+      updated_at: ts,
+    }),
+  });
+});
+
+/**
+ * DELETE /api/apps/:id — **軟停用**（`status='disabled'`，docs/27 §4.1）。
+ * 停用後：app-login 回 `UNKNOWN_APP`、exchange 回 `INVALID_CLIENT`；資料列保留以便稽核。
+ */
+app.delete("/api/apps/:id", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const row = await loadAppByParam(c.env.DB, c.req.param("id"));
+  if (!row) return err(c, "APP_NOT_FOUND", "app not found", 404);
+
+  const ts = now();
+  await c.env.DB.prepare("UPDATE app_clients SET status = 'disabled', updated_at = ?1 WHERE id = ?2")
+    .bind(ts, row.id)
+    .run();
+
+  auditAsync(c, {
+    event: "app_updated",
+    userId: scope.kind === "owner" ? scope.userId : null,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { app_id: row.app_id, name: row.name, status: "disabled" },
+  });
+
+  return c.json({
+    ok: true,
+    app: appClientJson({ ...row, status: "disabled", updated_at: ts }),
+  });
+});
+
+/**
+ * POST /api/auth/app-login — 已登入使用者替指定 App 取得一次性 code（docs/27 §4.2）
+ *
+ * 需既有 session（owner JWT／mailbox JWT／rescue）；**app token 不可再換 code**。
+ * `redirect_uri` 必須與白名單**完全相符**（防開放轉址）。
+ * code 只回在 `redirect` 內，DB 只存 `SHA-256(code + JWT_SECRET)`。
+ */
+app.post("/api/auth/app-login", requireSession, async (c) => {
+  const scope = c.get("scope");
+  if (scope.kind === "app") {
+    return err(c, "SCOPE_NOT_ALLOWED", "app token 不可建立新的授權碼", 403);
+  }
+  const body = await c.req
+    .json<{ app?: unknown; redirect_uri?: unknown }>()
+    .catch(() => null);
+  if (!body) return err(c, "INVALID_BODY", "invalid JSON body", 400);
+
+  const appId = typeof body.app === "string" ? body.app.trim() : "";
+  const redirectUri = typeof body.redirect_uri === "string" ? body.redirect_uri.trim() : "";
+  if (!APP_ID_RE.test(appId)) return err(c, "UNKNOWN_APP", "未知或已停用的 App", 400);
+  if (!redirectUri || redirectUri.length > 2048) {
+    return err(c, "INVALID_REDIRECT_URI", "redirect_uri 不合法", 400);
+  }
+
+  const app = await loadAppByAppId(c.env.DB, appId);
+  if (!app || app.status !== "active") return err(c, "UNKNOWN_APP", "未知或已停用的 App", 400);
+
+  const allowed = parseStoredRedirectUris(app.redirect_uris);
+  if (!allowed.includes(redirectUri)) {
+    return err(c, "INVALID_REDIRECT_URI", "redirect_uri 不在白名單內", 400);
+  }
+
+  const userId = await accountUserIdForScope(c.env.DB, scope);
+  if (userId === null) return err(c, "UNKNOWN_USER", "找不到 session 對應的帳號", 403);
+
+  const code = randomHex(32);
+  const codeHash = await hashAppSecret(code, c.env.JWT_SECRET);
+  const ts = now();
+  await c.env.DB.prepare(
+    `INSERT INTO auth_codes (code_hash, user_id, app_id, redirect_uri, created_at, expires_at, consumed_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)`
+  )
+    .bind(codeHash, userId, appId, redirectUri, ts, ts + AUTH_CODE_TTL_MS)
+    .run();
+
+  auditAsync(c, {
+    event: "app_login",
+    userId,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    // N7／N9：只記 app_id；不記 code／redirect_uri
+    detail: { app_id: appId },
+  });
+
+  return c.json({ redirect: redirectWithCode(redirectUri, code) });
+});
+
+/**
+ * POST /api/auth/exchange — code ＋ app_secret → App JWT（公開，但需有效 client secret）
+ *
+ * 驗證順序：限流 → client（timing-safe）→ redirect 白名單 → code（存在／app／redirect／未使用／未過期）
+ * → 原子消費（影響列數必須為 1）→ 簽 JWT。
+ * 錯誤碼（docs/27 §4.3）：`INVALID_CLIENT`(401)、`INVALID_CODE`(400)、
+ * `CODE_ALREADY_USED`(409)、`INVALID_REDIRECT_URI`(400)。
+ */
+app.post("/api/auth/exchange", async (c) => {
+  const body = await c.req
+    .json<{ app_id?: unknown; app_secret?: unknown; code?: unknown; redirect_uri?: unknown }>()
+    .catch(() => null);
+  if (!body) return err(c, "INVALID_BODY", "invalid JSON body", 400);
+
+  const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
+  const appSecret = typeof body.app_secret === "string" ? body.app_secret : "";
+  const code = typeof body.code === "string" ? body.code.trim() : "";
+  const redirectUri = typeof body.redirect_uri === "string" ? body.redirect_uri.trim() : "";
+
+  // 速率限制：exchange:<app_id> 每分鐘 30 次。格式不符的 app_id 一律歸到 invalid，
+  // 避免攻擊者用任意長字串撐大 auth_attempts key（正常的 app_id 最多 32 字元）。
+  const allowedRequest = await claimMinuteCounter(
+    c.env.DB,
+    `exchange:${APP_ID_RE.test(appId) ? appId : "invalid"}`,
+    EXCHANGE_LIMIT_PER_MIN,
+    now()
+  );
+  if (!allowedRequest) return err(c, "RATE_LIMITED", "交換過於頻繁，請稍後再試", 429);
+
+  if (!appId || !appSecret || !code || !redirectUri) {
+    return err(c, "INVALID_BODY", "app_id／app_secret／code／redirect_uri 必填", 400);
+  }
+  if (appSecret.length > 512) return err(c, "INVALID_CLIENT", "client 驗證失敗", 401);
+  if (code.length > 256 || redirectUri.length > 2048) {
+    return err(c, "INVALID_CODE", "授權碼無效或已過期", 400);
+  }
+
+  const app = await loadAppByAppId(c.env.DB, appId);
+  // 不論 App 是否存在都做一次同長度比較（避免用回應時間判斷 app_id 是否存在）
+  const computed = await hashAppSecret(appSecret, c.env.JWT_SECRET);
+  const expected = app && app.status === "active" ? app.secret_hash : "0".repeat(computed.length);
+  if (!app || app.status !== "active" || !constantTimeEqual(computed, expected)) {
+    return err(c, "INVALID_CLIENT", "client 驗證失敗", 401);
+  }
+
+  const allowedRedirects = parseStoredRedirectUris(app.redirect_uris);
+  if (!allowedRedirects.includes(redirectUri)) {
+    return err(c, "INVALID_REDIRECT_URI", "redirect_uri 不在白名單內", 400);
+  }
+
+  const codeHash = await hashAppSecret(code, c.env.JWT_SECRET);
+  const row = await c.env.DB.prepare(
+    `SELECT id, code_hash, user_id, app_id, redirect_uri, created_at, expires_at, consumed_at
+     FROM auth_codes WHERE code_hash = ?1`
+  )
+    .bind(codeHash)
+    .first<AuthCodeRow>();
+  if (!row) return err(c, "INVALID_CODE", "授權碼無效或已過期", 400);
+  if (row.app_id !== appId) return err(c, "INVALID_CODE", "授權碼無效或已過期", 400);
+  if (row.redirect_uri !== redirectUri) {
+    return err(c, "INVALID_REDIRECT_URI", "redirect_uri 與授權碼不符", 400);
+  }
+  if (row.consumed_at !== null) return err(c, "CODE_ALREADY_USED", "授權碼已使用", 409);
+  const ts = now();
+  if (Number(row.expires_at) <= ts) return err(c, "INVALID_CODE", "授權碼無效或已過期", 400);
+
+  // 一次性消費：只有「目前仍未使用」才更新成功；影響列數必須為 1。
+  const consumed = await c.env.DB.prepare(
+    "UPDATE auth_codes SET consumed_at = ?1 WHERE id = ?2 AND consumed_at IS NULL"
+  )
+    .bind(ts, row.id)
+    .run();
+  if (consumed.meta.changes !== 1) {
+    return err(c, "CODE_ALREADY_USED", "授權碼已使用", 409);
+  }
+
+  const user = await c.env.DB.prepare(
+    "SELECT id, username, display_name, role, status, password_changed_at FROM users WHERE id = ?1"
+  )
+    .bind(row.user_id)
+    .first<{
+      id: number;
+      username: string;
+      display_name: string | null;
+      role: string;
+      status: string;
+      password_changed_at: number | null;
+    }>();
+  // code 已消費；帳號不存在／停權時不簽發 token（不洩漏內部狀態）
+  if (!user || user.status !== "active") {
+    return err(c, "INVALID_CODE", "使用者不存在或已停用", 400);
+  }
+
+  const token = await signAppToken(c.env, {
+    userId: Number(user.id),
+    appId,
+    username: user.username,
+    role: user.role,
+    pca: Number(user.password_changed_at ?? 0),
+  });
+
+  auditAsync(c, {
+    event: "app_exchanged",
+    userId: Number(user.id),
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    // N7／N9：只記 app_id；不記 token／secret／code
+    detail: { app_id: appId },
+  });
+
+  return c.json({
+    token,
+    user: { id: Number(user.id), username: user.username, display_name: user.display_name, role: user.role },
+  });
+});
+
+/**
+ * GET /api/auth/me — 目前使用者身分（D26，docs/27 §4.4）
+ *
+ * 接受 owner／mailbox／app 三種 scope；一律從 `users` 取最新資料。
+ * **不得**回傳 `password_hash`；`contact_email` 屬 D27（目前 schema 尚無此欄位）。
+ */
+app.get("/api/auth/me", requireSession, async (c) => {
+  const scope = c.get("scope");
+  let userId: number | null = null;
+  if (scope.kind === "owner" || scope.kind === "app") {
+    userId = scope.userId;
+  } else {
+    const own = await c.env.DB.prepare(
+      "SELECT user_id FROM email_addresses WHERE id = ?1 AND deleted_at IS NULL"
+    )
+      .bind(scope.addressId)
+      .first<{ user_id: number }>();
+    userId = own ? Number(own.user_id) : null;
+  }
+  if (userId === null) return err(c, "NOT_FOUND", "user not found", 404);
+
+  const user = await c.env.DB.prepare(
+    "SELECT id, username, display_name, role, created_at FROM users WHERE id = ?1"
+  )
+    .bind(userId)
+    .first<{
+      id: number;
+      username: string;
+      display_name: string | null;
+      role: string;
+      created_at: number;
+    }>();
+  if (!user) return err(c, "NOT_FOUND", "user not found", 404);
+
+  return c.json({
+    id: Number(user.id),
+    username: user.username,
+    display_name: user.display_name,
+    role: user.role,
+    created_at: Number(user.created_at),
+  });
 });
 
 // ══════════════════════ Phase 1：邀請碼（owner）══════════════════════
@@ -1703,8 +2177,8 @@ app.post("/api/auth/register-verify", async (c) => {
 });
 
 // ══════════════════════ Phase 1：身分與配額（／api/me）══════════════════════
-app.get("/api/me", requireSession, async (c) => {
-  const scope = c.get("scope");
+app.get("/api/me", requireMailSession, async (c) => {
+  const scope = c.get("scope") as MailScope;
   if (scope.kind === "owner") {
     const user = await c.env.DB.prepare("SELECT username, role FROM users WHERE id = ?1")
       .bind(scope.userId)
@@ -2301,7 +2775,7 @@ app.get("/api/email-addresses", requireOwner, async (c) => {
   return c.json({ addresses: results });
 });
 
-app.get("/api/email-addresses/:id", requireSession, async (c) => {
+app.get("/api/email-addresses/:id", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   // mailbox 只能看自己
@@ -2532,8 +3006,8 @@ app.delete("/api/email-addresses/:id", requireOwner, async (c) => {
 });
 
 /** 密碼設定／重設：owner 免舊密碼；mailbox 本人需舊密碼（05 §2.2） */
-app.patch("/api/email-addresses/:id/password", requireSession, async (c) => {
-  const scope = c.get("scope");
+app.patch("/api/email-addresses/:id/password", requireMailSession, async (c) => {
+  const scope = c.get("scope") as MailScope;
   const id = Number(c.req.param("id"));
   const body = await c.req.json<{ new_password?: string; old_password?: string }>().catch(() => null);
   const pwErr = validatePasswordPolicy(body?.new_password ?? "");
@@ -2580,8 +3054,8 @@ app.patch("/api/email-addresses/:id/password", requireSession, async (c) => {
  *
  * ⚠️ 目標只能是 `email_addresses`（API 限制），**禁止 alias → alias**（docs/25 §4）。
  */
-app.post("/api/email-aliases", requireSession, async (c) => {
-  const scope = c.get("scope");
+app.post("/api/email-aliases", requireMailSession, async (c) => {
+  const scope = c.get("scope") as MailScope;
   const body = await c.req.json<{ name?: unknown; target_address_id?: unknown }>().catch(() => null);
   const name = normalizeAliasName(body?.name);
   if (!name) {
@@ -2675,8 +3149,8 @@ app.post("/api/email-aliases", requireSession, async (c) => {
  * GET /api/email-aliases — 別名清單（owner 看名下全部；mailbox 只看自己地址的）。
  * `received_count` / `last_received_at` 以 `messages.envelope_to` 統計（索引 idx_messages_envelope_to）。
  */
-app.get("/api/email-aliases", requireSession, async (c) => {
-  const scope = c.get("scope");
+app.get("/api/email-aliases", requireMailSession, async (c) => {
+  const scope = c.get("scope") as MailScope;
   const where = scope.kind === "owner" ? "e.user_id = ?1" : "a.target_email_address_id = ?1";
   const bindValue = scope.kind === "owner" ? scope.userId : scope.addressId;
 
@@ -2719,7 +3193,7 @@ app.get("/api/email-aliases", requireSession, async (c) => {
 });
 
 /** 取 session scope 內可見的單一別名（不存在／越權 → null；回應一律 404，不洩漏存在性） */
-async function scopedAlias(db: D1Database, scope: Scope, id: number) {
+async function scopedAlias(db: D1Database, scope: MailScope, id: number) {
   const where = scope.kind === "owner" ? "e.user_id = ?2" : "a.target_email_address_id = ?2";
   const bindValue = scope.kind === "owner" ? scope.userId : scope.addressId;
   return db
@@ -2743,8 +3217,8 @@ async function scopedAlias(db: D1Database, scope: Scope, id: number) {
  * PATCH /api/email-aliases/:id — 啟用／停用（docs/25 §3.2）。
  * 停用後寄到該別名的來信在 email-handler 端回 550 5.1.1（不建立 messages）。
  */
-app.patch("/api/email-aliases/:id", requireSession, async (c) => {
-  const scope = c.get("scope");
+app.patch("/api/email-aliases/:id", requireMailSession, async (c) => {
+  const scope = c.get("scope") as MailScope;
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
 
@@ -2776,8 +3250,8 @@ app.patch("/api/email-aliases/:id", requireSession, async (c) => {
  * DELETE /api/email-aliases/:id — **軟停用**（`status='disabled'`；不刪資料列，docs/25 §3.2）。
  * 與 PATCH disabled 相同語意；保留資料列以維持稽核與歷史 `envelope_to` 對應。
  */
-app.delete("/api/email-aliases/:id", requireSession, async (c) => {
-  const scope = c.get("scope");
+app.delete("/api/email-aliases/:id", requireMailSession, async (c) => {
+  const scope = c.get("scope") as MailScope;
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
 
@@ -2801,7 +3275,7 @@ app.delete("/api/email-aliases/:id", requireSession, async (c) => {
 });
 
 // ══════════════════════ Phase 8：Inbox / Mail（owner 或 mailbox scope）══════════════════════
-app.get("/api/mail/inbox", requireSession, async (c) => {
+app.get("/api/mail/inbox", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const folder = c.req.query("folder") ?? "inbox";
   const allFolders = folder === "all"; // 跨資料夾（搜尋用）
@@ -2889,7 +3363,7 @@ app.get("/api/mail/inbox", requireSession, async (c) => {
  * ⚠️ 必須註冊在 `/api/mail/:id` 之前，否則會被 :id 攔截。
  * sent 為寄件備份（read_at 恆為 NULL）→ 不計未讀。
  */
-app.get("/api/mail/counts", requireSession, async (c) => {
+app.get("/api/mail/counts", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const sw = scopeWhere(scope);
   const { results } = await c.env.DB.prepare(
@@ -2926,7 +3400,7 @@ app.get("/api/mail/counts", requireSession, async (c) => {
   return c.json({ folders, addresses });
 });
 
-app.get("/api/mail/:id", requireSession, async (c) => {
+app.get("/api/mail/:id", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   const sw = scopeWhere(scope);
@@ -3118,12 +3592,14 @@ async function hardDeleteMessages(env: AuthEnv["Bindings"], ids: number[]): Prom
   return deleted;
 }
 
-/** 稽核主體（owner → userId；mailbox → addressId；不含任何信件內容，N9） */
+/** 稽核主體（owner／app → userId；mailbox → addressId；不含任何信件內容，N9） */
 function auditScope(scope: Scope): Pick<AuditEntry, "userId" | "addressId"> {
-  return scope.kind === "owner" ? { userId: scope.userId } : { addressId: scope.addressId };
+  if (scope.kind === "owner") return { userId: scope.userId };
+  if (scope.kind === "app") return { userId: scope.userId };
+  return { addressId: scope.addressId };
 }
 
-app.patch("/api/mail/:id/read", requireSession, async (c) => {
+app.patch("/api/mail/:id/read", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   const body = await c.req.json<{ read?: boolean }>().catch(() => null);
@@ -3135,7 +3611,7 @@ app.patch("/api/mail/:id/read", requireSession, async (c) => {
   return c.json({ id, read: body.read });
 });
 
-app.patch("/api/mail/:id/archive", requireSession, async (c) => {
+app.patch("/api/mail/:id/archive", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   if (!(await scopedMessage(c.env, scope, id))) return err(c, "MAIL_NOT_FOUND", "mail not found", 404);
@@ -3145,7 +3621,7 @@ app.patch("/api/mail/:id/archive", requireSession, async (c) => {
   return c.json({ id, folder: "archive" });
 });
 
-app.patch("/api/mail/:id/folder", requireSession, async (c) => {
+app.patch("/api/mail/:id/folder", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   const body = await c.req.json<{ folder?: string }>().catch(() => null);
@@ -3168,7 +3644,7 @@ app.patch("/api/mail/:id/folder", requireSession, async (c) => {
  * - `mode=hard`：**永久刪除** → R2（raw／html／附件）→ 同一 batch：`form_responses` → `form_instances`
  *   → `attachments` → `messages`；稽核 `mail_purged`（D19-6）。
  */
-app.delete("/api/mail/:id", requireSession, async (c) => {
+app.delete("/api/mail/:id", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   const mode = c.req.query("mode") ?? "soft";
@@ -3209,7 +3685,7 @@ app.delete("/api/mail/:id", requireSession, async (c) => {
  * 撈滿 500 後若還有下一封 → `TRASH_TOO_LARGE`，且**一封都不刪**（與原本 LIMIT 501 語意相同）。
  * ⚠️ 必須註冊在 `/api/mail/:id/*` 之前（literal 優先）。
  */
-app.post("/api/mail/trash/empty", requireSession, async (c) => {
+app.post("/api/mail/trash/empty", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const sw = scopeWhere(scope);
 
@@ -3268,7 +3744,7 @@ app.post("/api/mail/trash/empty", requireSession, async (c) => {
  * ⚠️ **每個 id 都必須通過 scopedMessage 權限檢查；任一不合格 → 404，整批不執行**。
  * 稽核 `mail_batch` 只記 action 與 count（N9）。
  */
-app.post("/api/mail/batch", requireSession, async (c) => {
+app.post("/api/mail/batch", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const body = await c.req.json<{ action?: unknown; ids?: unknown }>().catch(() => null);
   if (!body || typeof body.action !== "string") return err(c, "INVALID_BODY", "body 需 { action, ids }", 400);
@@ -3346,7 +3822,7 @@ app.post("/api/mail/batch", requireSession, async (c) => {
 });
 
 /** POST /api/mail/:id/restore — 從垃圾桶還原到收件匣（僅 `folder='trash'`；docs/19 §2） */
-app.post("/api/mail/:id/restore", requireSession, async (c) => {
+app.post("/api/mail/:id/restore", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id) || id <= 0) return err(c, "MAIL_NOT_FOUND", "mail not found", 404);
@@ -3363,7 +3839,7 @@ app.post("/api/mail/:id/restore", requireSession, async (c) => {
 });
 
 // ══════════════════════ Phase 9b：HTML body ══════════════════════
-app.get("/api/mail/:id/html", requireSession, async (c) => {
+app.get("/api/mail/:id/html", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   const sw = scopeWhere(scope);
@@ -3393,7 +3869,7 @@ app.get("/api/mail/:id/html", requireSession, async (c) => {
  * 否則由 R2 的 raw .eml 以 postal-mime 解析（HTML-only 信件亦會自動轉出 text）。
  * R2 遺失／解析失敗 → 退回 preview，不回 500。scope 同其他信件端點（越權 404）。
  */
-app.get("/api/mail/:id/text", requireSession, async (c) => {
+app.get("/api/mail/:id/text", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id) || id <= 0) return err(c, "MAIL_NOT_FOUND", "mail not found", 404);
@@ -3423,7 +3899,7 @@ app.get("/api/mail/:id/text", requireSession, async (c) => {
 });
 
 // ══════════════════════ Phase 9：Attachment ══════════════════════
-app.get("/api/mail/:id/attachments", requireSession, async (c) => {
+app.get("/api/mail/:id/attachments", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   if (!(await scopedMessage(c.env, scope, id))) return err(c, "MAIL_NOT_FOUND", "mail not found", 404);
@@ -3435,7 +3911,7 @@ app.get("/api/mail/:id/attachments", requireSession, async (c) => {
   return c.json({ message_id: id, attachments: atts.results });
 });
 
-app.get("/api/attachments/:id", requireSession, async (c) => {
+app.get("/api/attachments/:id", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   const row = await c.env.DB.prepare(
@@ -3465,8 +3941,8 @@ app.get("/api/attachments/:id", requireSession, async (c) => {
 });
 
 // ══════════════════════ Phase 10：寄信 ══════════════════════
-app.post("/api/mail/send", requireSession, async (c) => {
-  const scope = c.get("scope");
+app.post("/api/mail/send", requireMailSession, async (c) => {
+  const scope = c.get("scope") as MailScope;
   const body = await c.req
     .json<{
       from?: string;
@@ -3852,6 +4328,7 @@ async function formRecipientVia(
   if (scope.kind === "mailbox") {
     return row.recipient_address_id === scope.addressId ? "mailbox" : null;
   }
+  if (scope.kind !== "owner") return null; // D26：app token 不得填表單
   if (scope.via !== "jwt") return null; // rescue token：fail closed
   const owned = await db
     .prepare("SELECT id FROM email_addresses WHERE id = ?1 AND user_id = ?2")
@@ -3904,8 +4381,8 @@ const FORM_NOT_FOUND_MESSAGE = "form not found";
  *  - schema 先過白名單驗證，才寫入 form_templates
  *  - 稽核 `form_sent`：只記 id／數量／欄位數，不含主旨、地址、內文或 schema（N9）
  */
-app.post("/api/forms/send", requireSession, async (c) => {
-  const scope = c.get("scope");
+app.post("/api/forms/send", requireMailSession, async (c) => {
+  const scope = c.get("scope") as MailScope;
   const body = await c.req
     .json<{
       from?: string;
@@ -4206,7 +4683,7 @@ app.post("/api/forms/send", requireSession, async (c) => {
  * ④ origin 與 delivery_scope 皆 internal。
  * ⚠️ 任何一項失敗（含 rescue token）一律 **404**（不洩漏表單是否存在；docs/18 §4）。
  */
-app.get("/api/forms/:id", requireSession, async (c) => {
+app.get("/api/forms/:id", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id) || id <= 0) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
@@ -4249,7 +4726,7 @@ app.get("/api/forms/:id", requireSession, async (c) => {
  * 驗證順序：收件人四道鎖（失敗 404）→ 狀態（已送出／撤回／逾期）→ payload 依 schema 驗證。
  * ⚠️ 稽核 `form_submitted` 只記 id，**絕不**記錄 payload（N9）。
  */
-app.post("/api/forms/:id/responses", requireSession, async (c) => {
+app.post("/api/forms/:id/responses", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id) || id <= 0) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
@@ -4332,7 +4809,7 @@ app.post("/api/forms/:id/responses", requireSession, async (c) => {
  *
  * 回傳同一 `template_id` 的所有實例（一次寄送＝一批），讓寄件人看到所有收件人的狀態與回覆。
  */
-app.get("/api/forms/:id/responses", requireSession, async (c) => {
+app.get("/api/forms/:id/responses", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id) || id <= 0) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);
@@ -4406,7 +4883,7 @@ app.get("/api/forms/:id/responses", requireSession, async (c) => {
  *
  * 撤回後收件人的 GET 立即失敗（404）→ 前端自動降為靜態文字；POST 回覆則回 FORM_CLOSED。
  */
-app.post("/api/forms/:id/revoke", requireSession, async (c) => {
+app.post("/api/forms/:id/revoke", requireMailSession, async (c) => {
   const scope = c.get("scope");
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id) || id <= 0) return err(c, "FORM_NOT_FOUND", FORM_NOT_FOUND_MESSAGE, 404);

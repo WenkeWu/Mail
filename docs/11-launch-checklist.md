@@ -21,6 +21,7 @@
 | 別名 Phase 1（D25） | 🟡 程式完成、**未部署** | 別名建立／列表／停用＋收信轉投＋回覆自動 From（範圍 A）；migration `0010` 本地測試已套用、**遠端待 owner**（見 §2-19） |
 | ID 撞二級網域（D20） | 🟡 程式完成、**未部署** | `check-id` 端點＋`register-request`／`register-verify` 複驗；DoH 26 TLD、fail-open、90／7 天快取；migration `0011` 本地測試已套用、**遠端待 owner**（見 §2-20） |
 | Turnstile 防機器人（D23） | 🟡 程式完成、**金鑰未提供／未部署** | `register-request` 選填 `turnstile_token`；secret 未設定自動跳過、site key 空字串不顯示 widget；無 migration（見 §2-21） |
+| App 登入代理（D26） | 🟡 程式完成、**未部署** | `auth.atwho.org` 薄代理（`atwhomail-auth`）＋ App Clients／`app-login`／`exchange`／`auth/me`；migration `0012` 本地測試已套用、**遠端待 owner**（見 §2-22） |
 
 ### 1.1 2026-10-05 收發信現況稽核（公開 DNS + CF API 實測）
 
@@ -620,6 +621,56 @@
       - [ ] **未執行**：本階段未部署、未對 production D1／R2 寫入、**未新增任何 secret 值**
             （`TURNSTILE_SECRET_KEY` 由 owner 之後以 `wrangler secret put` 設定）。
 
+- [ ] **22. `auth.atwho.org` 薄代理 ＋ App code 交換（docs/27 D26；2026-11-05 程式完成，未部署）**
+
+      **前置（owner）**：
+      1. 確認 `atwho.org` zone 內沒有既有的 `auth` 記錄衝突（`custom_domain` 由 Wrangler 建立／綁定）。
+      2. **不需要**新增 secret／KV／D1 binding：`atwhomail-auth` 是純代理；App secret 由 API 執行時產生，
+         DB 只存 `SHA-256(secret + JWT_SECRET)`。`JWT_SECRET` 沿用 API Worker 既有 secret。
+
+      **部署順序（缺一不可）**：
+      1. 先套 migration（**由 owner 執行**；實作 agent 不得執行遠端 migration，N10）：
+         ```powershell
+         cd D:\Mail\Atwhomail
+         pnpm --filter @atwhomail/api exec wrangler d1 migrations apply mail-d1 --remote
+         ```
+         預期新增：`app_clients`、`auth_codes`（＋`idx_auth_codes_exp`）。
+         套用後抽驗：
+         `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('app_clients','auth_codes');` → 2 列。
+      2. 部署 **API Worker**（`pnpm --filter @atwhomail/api run deploy`）：
+         新增 `/api/apps*`、`/api/auth/app-login`、`/api/auth/exchange`、`/api/auth/me`；
+         `requireMailSession` 對 app token 回 403 `SCOPE_NOT_ALLOWED`。
+      3. 部署 **新 Worker**（`pnpm --filter @atwhomail/auth run deploy`，name `atwhomail-auth`）；
+         自訂網域 `auth.atwho.org` 由 `wrangler.jsonc` 的 `routes[].custom_domain` 綁定。
+      4. 重新 build／deploy **前端**（`cd web; pnpm run build` → Pages）：
+         `app.` 的 App 登入轉交＋`mail.` 的「應用程式（App Clients）」管理頁。
+         ⚠️ **前端必須重新部署**：只部署 API 看不到新 UI／轉交流程。
+
+      **驗收**：
+      - [ ] `curl https://auth.atwho.org/api/auth/registration-mode` → 200（與 API 回應相同）。
+      - [ ] `curl https://auth.atwho.org/api/mail/inbox` → **404 `NOT_FOUND`**（代理只轉 `/api/auth/*`）。
+      - [ ] 管理頁建立 App：secret 只顯示一次；`SELECT secret_hash FROM app_clients` 與 secret 不同，
+            且資料表沒有明碼 secret 欄位。
+      - [ ] 以 owner／mailbox session 呼叫 `app-login` → `{redirect}` 含 64-hex code；
+            `redirect_uri` 不在白名單 → 400 `INVALID_REDIRECT_URI`。
+      - [ ] `exchange`（正確 secret＋code）→ 200；JWT `scope='app'`、`aud=<app_id>`、`sub=<users.id>`。
+      - [ ] 同一 code 第二次 exchange → **409 `CODE_ALREADY_USED`**；過期（>60 秒）→ **400 `INVALID_CODE`**；
+            錯 secret → **401 `INVALID_CLIENT`**。
+      - [ ] App token 呼叫 `GET /api/auth/me` → 200（不含 `password_hash`）；
+            呼叫 `GET /api/mail/inbox` → **403 `SCOPE_NOT_ALLOWED`**。
+      - [ ] 同一 App 每分鐘第 31 次 exchange → **429 `RATE_LIMITED`**（`auth_attempts` key `exchange:<app_id>`）。
+      - [ ] `registration_audit` 有 `app_created`／`app_updated`／`app_login`／`app_exchanged`，
+            detail **不含** secret／token／code。
+      - [ ] 既有 T1–T150 零回歸；新增 T151–T160 全綠（`pnpm test`）。
+
+      **回退**：
+      前端可先回上一版（轉交／管理 UI 消失）；API 回上一版即停止簽發 App token；
+      `atwhomail-auth` 可先移除 route 或部署上一版（本階段為新 Worker，無舊版則直接刪除即可）。
+      migration 0012 為純新增表，保留不影響既有流程。
+
+      - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入、
+            **未新增任何 secret 值**。
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -628,6 +679,10 @@
 | `POST /api/auth/login` | 公開 **＋需 Cloudflare Access JWT**（`ACCESS_MAIL_AUD` 設定後生效；5 次失敗鎖 15 分） | 管理員 session（階段 2／D2） |
 | `POST /api/auth/mailbox-login` | 公開（5 次失敗鎖 15 分） | 信箱 session（**不受 Access 影響**）；錯誤碼：401 `INVALID_CREDENTIALS`／403 `ADDRESS_DISABLED`／403 `ACCOUNT_SUSPENDED`（**先驗密碼再判狀態**，階段 5／D8） |
 | `PATCH /api/auth/owner-password/self` | owner session ＋ 舊密碼 | owner 自助改密碼（階段 2／D7） |
+| `POST /api/auth/app-login` | owner／mailbox session（rescue 亦可） | **D26**：替指定 App 產生 60 秒一次性 code → `{redirect}`；app 必須 active、`redirect_uri` **完全相符**白名單。app token → 403 `SCOPE_NOT_ALLOWED` |
+| `POST /api/auth/exchange` | 公開，但需 `app_secret` | **D26**：App 後端以 secret＋code 換 JWT（`scope='app'`、`aud=app_id`、`sub=users.id`）；一次性、60 秒；限流 30/分/app。錯誤：401 `INVALID_CLIENT`／400 `INVALID_CODE`／409 `CODE_ALREADY_USED`／400 `INVALID_REDIRECT_URI` |
+| `GET /api/auth/me` | owner／mailbox／**app** session | **D26**：目前使用者身分（id／username／display_name／role／created_at；**不含** `password_hash`） |
+| `/api/apps*` | owner 或 rescue | **D26**：App Client 管理。`POST` 回一次性 `app_secret`；`GET` 不含 secret；`PATCH` 更新名稱／狀態／redirect_uris；`DELETE` 軟停用。稽核 `app_created`／`app_updated`（不記 secret） |
 | `POST /api/auth/register` | **公開**（行為依 `REGISTRATION_MODE`；預設 `invite` 需邀請碼） | 訪客註冊（Phase 1）→ mailbox session。**D21**：`email_verify` → 403 `REGISTRATION_EMAIL_VERIFY_REQUIRED`（改走下方兩端點）；`closed` → 403 `REGISTRATION_CLOSED` |
 | `GET /api/auth/registration-mode` | 公開 | **D21**：目前註冊模式 `{mode}`（僅供前端表單顯示；權限仍由後端強制）。**D22**：管理端於 `email_verify` 時據此顯示「一般註冊連結」卡片。**D23**：另回 `turnstileSiteKey`（未設／空字串 → `null`；僅供前端顯示 widget） |
 | `POST /api/auth/register-request` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：寄 6 位數驗證碼到指定 Email（寄件者 `noreply@atwho.org`；DB 只存 SHA-256；15 分鐘）。限流：IP 5/時、20/日；Email 60 秒/封、5/日。**D20**：ID 撞二級網域 → 422 `ID_MATCHES_DOMAIN`（含建議）、保留字 → 422 `ID_RESERVED`、重複 → 409 `ID_TAKEN`。**D23**：secret 已設定時需有效 `turnstile_token`（400 `TURNSTILE_FAILED`；siteverify 網路失敗 → fail-open） |
@@ -636,6 +691,7 @@
 | `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（**預設只回遮罩碼**；`?reveal=1` 額外回全碼並寫稽核）／撤銷 |
 | `GET /api/me` | owner 或 mailbox | 身分與寄信配額（供前端顯示） |
 | **（session 檢查）** | owner 或 mailbox | `401 TOKEN_STALE`：**查不到列**（帳號／地址已被刪除，階段 6／D10）或密碼已變更；rescue 不受影響（N5） |
+| **（app scope 邊界）** | — | **D26**：`scope='app'` 可用於 `GET /api/auth/me`；但 `/api/mail/*`、`/api/attachments/*`、`/api/email-aliases*`、`/api/forms/*`、`/api/me` 一律 **403 `SCOPE_NOT_ALLOWED`** |
 | `DELETE /api/users/:id` | owner 或 rescue（**僅 `role='visitor'`**） | **永久刪除訪客**（帳號／地址／所有信件與附件／別名／登入計數；稽核保留，階段 6／D9）；對 owner → 403 `FORBIDDEN`。**D16**：一併清除該用戶相關的 `form_responses`／`form_instances`（`form_templates` 保留）|
 | `PATCH /api/users/:id/status` | owner 或 rescue | 停權／復權（立即生效：**含既有 session 立即 403**，階段 5／D8-4；來信仍照收） |
 | `GET /api/users?role=visitor` | owner 或 rescue | 訪客清單（**只回數量與時間**：信件數／最近活動，N9） |

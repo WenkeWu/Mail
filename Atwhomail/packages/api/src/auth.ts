@@ -67,7 +67,14 @@ export interface Env {
 
 export type Scope =
   | { kind: "owner"; userId: number; via: "jwt" | "rescue" }
-  | { kind: "mailbox"; addressId: number; email: string };
+  | { kind: "mailbox"; addressId: number; email: string }
+  /**
+   * D26（docs/27 §4.5）：第三方 App 的使用者層級 token。
+   * `userId` 來自 `sub`；`appId` 來自 `aud`（簽發時為 app_clients.app_id）。
+   * ⚠️ 此 scope **不得**用於 `/api/mail/*` → `requireMailSession` 一律 403 `SCOPE_NOT_ALLOWED`
+   *    （`requireSession` 僅用於 `/api/auth/me` 等身分查詢端點）。
+   */
+  | { kind: "app"; userId: number; appId: string };
 
 export type AuthEnv = { Bindings: Env; Variables: { scope: Scope } };
 
@@ -135,6 +142,36 @@ export async function signMailboxToken(env: Env, addressId: number, email: strin
   return sign({ scope: "mailbox", sub: addressId, email, pca, iat, exp: iat + JWT_TTL_SEC }, env.JWT_SECRET, "HS256");
 }
 
+/**
+ * D26（docs/27 §4.3）：App token — `{ scope:'app', aud:app_id, sub:user_id, username, role, pca, iat, exp }`。
+ *
+ * - `aud` 固定為 `app_clients.app_id`（其他 App 可用來確認 token 是發給自己的）
+ * - `sub` 是 **users.id**（不是 email_addresses.id）→ `/api/auth/me` 直接查 users
+ * - TTL 與既有 owner／mailbox token 相同（`JWT_TTL_SEC`）
+ * - 仍附帶 `pca`（密碼版本）：密碼變更後舊 App token 立即失效（與既有 session 語意一致）
+ */
+export async function signAppToken(
+  env: Env,
+  input: { userId: number; appId: string; username: string; role: string; pca: number }
+): Promise<string> {
+  if (!env.JWT_SECRET) throw new Error("JWT_SECRET not configured");
+  const iat = Math.floor(Date.now() / 1000);
+  return sign(
+    {
+      scope: "app",
+      aud: input.appId,
+      sub: input.userId,
+      username: input.username,
+      role: input.role,
+      pca: input.pca,
+      iat,
+      exp: iat + JWT_TTL_SEC,
+    },
+    env.JWT_SECRET,
+    "HS256"
+  );
+}
+
 async function parseBearer(env: Env, token: string): Promise<SessionInfo | null> {
   if (!env.JWT_SECRET) return null;
   try {
@@ -142,16 +179,23 @@ async function parseBearer(env: Env, token: string): Promise<SessionInfo | null>
       scope?: string;
       sub?: number;
       email?: string;
+      aud?: unknown;
       iat?: number;
       pca?: number;
     };
     const iat = typeof p.iat === "number" ? p.iat : 0;
-    const pca = typeof p.pca === "number" ? p.pca : -1;
+    // 舊版 owner／mailbox token 一定帶 pca；缺漏視為 -1（立即失效）。
+    // ⚠️ App token 的文件範例（docs/27 §4.3）未列 pca；缺漏時視為 0（= 從未改密碼），
+    //    若使用者之後改過密碼（DB pca > 0）仍會因版本落後而失效。
+    const pca = typeof p.pca === "number" ? p.pca : p.scope === "app" ? 0 : -1;
     if (p.scope === "owner" && typeof p.sub === "number") {
       return { scope: { kind: "owner", userId: p.sub, via: "jwt" }, iat, pca };
     }
     if (p.scope === "mailbox" && typeof p.sub === "number" && typeof p.email === "string") {
       return { scope: { kind: "mailbox", addressId: p.sub, email: p.email }, iat, pca };
+    }
+    if (p.scope === "app" && typeof p.sub === "number" && typeof p.aud === "string") {
+      return { scope: { kind: "app", userId: p.sub, appId: p.aud }, iat, pca };
     }
     return null;
   } catch {
@@ -175,7 +219,8 @@ const STALE_NOT_FOUND = "session 已失效，請重新登入";
 const STALE_PASSWORD_CHANGED = "session 已失效（密碼已變更），請重新登入";
 
 async function loadSessionState(env: Env, scope: Scope): Promise<SessionState | null> {
-  if (scope.kind === "owner") {
+  // owner 與 app 都是「使用者層級」（sub = users.id）；app 沒有 address_id
+  if (scope.kind === "owner" || scope.kind === "app") {
     const row = await env.DB.prepare("SELECT password_changed_at AS pca, status AS user_status FROM users WHERE id = ?1")
       .bind(scope.userId)
       .first<{ pca: number | null; user_status: string | null }>();
@@ -456,36 +501,58 @@ export const requireOwner: MiddlewareHandler<AuthEnv> = async (c, next) => {
 };
 
 /**
- * 需登入（owner 或 mailbox）─ 信件類端點用，於 handler 內依 scope 過濾。
+ * session 後段檢查（`requireSession`／`requireMailSession` 共用）。
  *
- * **D8-4（docs/16 §3）：停權／停用必須立即生效。** 原本停權後既有 JWT 仍能讀信直到 24h
- * 過期；這裡在驗 session 後補上狀態檢查（**與 TOKEN_STALE 共用同一次索引查詢**）：
+ * **D8-4（docs/16 §3）：停權／停用必須立即生效。**
  *   - 使用者（`users.status`）必須為 `active` → 否則 `403 ACCOUNT_SUSPENDED`
  *   - mailbox session 的地址（`email_addresses.status`）亦必須為 `active` → 否則 `403 ADDRESS_DISABLED`
- * 只讀狀態、**不寫入任何資料**，也不觸碰 `can_send` 語意（寄信權限仍由 `send` handler 判定）。
- *
- * **D10（docs/16 §3）：查不到列即失效。** 帳號或地址已被刪除（`loadSessionState` 回 `null`）→
- * `401 TOKEN_STALE`「session 已失效，請重新登入」（**不是** 500，也不是放行）。
- *
- * ⚠️ rescue（`x-admin-token`）不受影響（N5）：救援通道語意不變（於下方提前返回）。
+ * **D10（docs/16 §3）：查不到列即失效。** → `401 TOKEN_STALE`（不是 500，也不是放行）。
+ * ⚠️ rescue（`x-admin-token`）不受影響（N5）：救援通道語意不變。
  */
-export const requireSession: MiddlewareHandler<AuthEnv> = async (c, next) => {
-  const s = await resolveSession(c);
-  if (!s) return c.json({ error: { code: "UNAUTHORIZED", message: "needs session" } }, 401);
-  if (s.scope.kind === "owner" && s.scope.via === "rescue") {
-    c.set("scope", s.scope);
-    await next();
-    return;
-  }
+async function enforceSessionState(c: Context<AuthEnv>, s: SessionInfo): Promise<Response | null> {
+  if (s.scope.kind === "owner" && s.scope.via === "rescue") return null;
   const state = await loadLiveState(c, s);
   if (state instanceof Response) return state; // 401 TOKEN_STALE（查不到列／密碼已變更）
   if (state.userStatus !== "active") {
     return c.json({ error: { code: "ACCOUNT_SUSPENDED", message: "此帳號已停權，請聯絡管理者" } }, 403);
   }
-  // 地址狀態只對 mailbox session 有意義（owner session 沒有 addressId）
+  // 地址狀態只對 mailbox session 有意義（owner／app session 沒有 addressId）
   if (s.scope.kind === "mailbox" && state.addressStatus !== "active") {
     return c.json({ error: { code: "ADDRESS_DISABLED", message: "此地址已停用，請聯絡管理者" } }, 403);
   }
+  return null;
+}
+
+/**
+ * 需登入（owner、mailbox 或 app）─ 身分類端點用（例如 `GET /api/auth/me`）。
+ *
+ * D26（docs/27 §4.5）：接受 `scope='app'`，驗簽後視為使用者層級。
+ * ⚠️ 信件類端點請用 `requireMailSession`（app token 一律 403 `SCOPE_NOT_ALLOWED`）。
+ */
+export const requireSession: MiddlewareHandler<AuthEnv> = async (c, next) => {
+  const s = await resolveSession(c);
+  if (!s) return c.json({ error: { code: "UNAUTHORIZED", message: "needs session" } }, 401);
+  const denied = await enforceSessionState(c, s);
+  if (denied) return denied;
+  c.set("scope", s.scope);
+  await next();
+};
+
+/**
+ * 需登入（owner 或 mailbox）─ **信件／地址／別名／表單類**端點用，於 handler 內依 scope 過濾。
+ *
+ * D26（docs/27 §4.5）：`scope='app'` **不得**用於 `/api/mail/*`（也不能用於其他信件相關端點）
+ * → 在查 DB 前直接 `403 SCOPE_NOT_ALLOWED`（不驗證 token 新鮮度，避免多一次查詢）。
+ * 其餘行為與 `requireSession` 完全相同（D8-4／D10／rescue 語意不變）。
+ */
+export const requireMailSession: MiddlewareHandler<AuthEnv> = async (c, next) => {
+  const s = await resolveSession(c);
+  if (!s) return c.json({ error: { code: "UNAUTHORIZED", message: "needs session" } }, 401);
+  if (s.scope.kind === "app") {
+    return c.json({ error: { code: "SCOPE_NOT_ALLOWED", message: "app token 不可使用此端點" } }, 403);
+  }
+  const denied = await enforceSessionState(c, s);
+  if (denied) return denied;
   c.set("scope", s.scope);
   await next();
 };

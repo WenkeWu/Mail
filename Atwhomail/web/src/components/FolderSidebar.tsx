@@ -1,5 +1,6 @@
 import type { CountsResponse, Folder, FolderQuery, Session } from "../api/types";
 import {
+  IconApps,
   IconArchive,
   IconAt,
   IconCompose,
@@ -13,7 +14,7 @@ import {
 } from "./icons";
 
 /** 主視圖（信件／地址管理／別名／管理主控台頁面） */
-export type AppPage = "mail" | "addresses" | "aliases" | "account" | "invites" | "visitors";
+export type AppPage = "mail" | "addresses" | "aliases" | "account" | "invites" | "visitors" | "apps";
 
 interface Props {
   session: Session;
@@ -34,6 +35,8 @@ interface Props {
   onOpenInvites: () => void;
   /** D5：訪客管理／停權／配額 */
   onOpenVisitors: () => void;
+  /** D26：App Clients（第三方 App 的登入整合） */
+  onOpenApps: () => void;
   /**
    * 管理主控台（帳號設定／邀請碼／訪客管理）的顯示開關
    * （`mail.`／localhost 顯示；`app.` 不顯示 —— 僅 UI 收斂，權限仍由後端判定）
@@ -69,6 +72,7 @@ export function FolderSidebar({
   onOpenAccountSettings,
   onOpenInvites,
   onOpenVisitors,
+  onOpenApps,
   showAdminConsole,
   onCompose,
   open,
@@ -195,6 +199,17 @@ export function FolderSidebar({
                   >
                     <IconUsers size={18} />
                     <span className="folder-label">訪客管理</span>
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    className={`folder-item ${currentPage === "apps" ? "active" : ""}`}
+                    onClick={onOpenApps}
+                    title="第三方 App 的登入整合（app_secret 只顯示一次）"
+                  >
+                    <IconApps size={18} />
+                    <span className="folder-label">應用程式</span>
                   </button>
                 </li>
                 <li>

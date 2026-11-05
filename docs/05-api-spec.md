@@ -19,6 +19,13 @@
 | Auth | POST | `/api/auth/register-request` | **寄送 6 位數 Email 驗證碼**（公開；僅 `email_verify` 模式，docs/21 D21；D23：可選 `turnstile_token`） |
 | Auth | POST | `/api/auth/register-verify` | **驗碼＋建立訪客帳號＋回 mailbox session**（公開；僅 `email_verify` 模式，docs/21 D21） |
 | Auth | PATCH | `/api/auth/owner-password/self` | **owner 本人變更自己的密碼**（session ＋ 舊密碼；docs/16 D7） |
+| Auth | POST | `/api/auth/app-login` | **D26**：已登入使用者替指定 App 產生 60 秒一次性 code（需 owner／mailbox session；`app`／`redirect_uri` 白名單） |
+| Auth | POST | `/api/auth/exchange` | **D26**：App 後端以 `app_secret` ＋ `code` 換取 App JWT（公開，需 secret；限流 30/分/app） |
+| Auth | GET | `/api/auth/me` | **D26**：目前使用者身分（owner／mailbox／app token 皆可；不含 `password_hash`） |
+| App | POST | `/api/apps` | **D26**：建立 App Client（owner；secret 只回一次，DB 只存雜湊） |
+| App | GET | `/api/apps` | **D26**：App Client 清單（owner；不含 secret） |
+| App | PATCH | `/api/apps/:id` | **D26**：更新名稱／狀態／redirect_uris（owner） |
+| App | DELETE | `/api/apps/:id` | **D26**：軟停用 App（`status='disabled'`；owner） |
 | Auth | PATCH | `/api/email-addresses/:id/password` | 重設地址密碼（owner 或本人） |
 | Invite | POST | `/api/invites` | 產生邀請碼（owner / x-admin-token） |
 | Invite | GET | `/api/invites` | 列出邀請碼（只回遮罩碼；`?reveal=1` 回全碼並寫稽核，docs/16 D4） |
@@ -1263,6 +1270,122 @@ T146＝既有 T1–T138 全套零回歸；前端 `web/test/idCheck.dom.spec.tsx`
 → 回到「無 Turnstile」狀態（前端不需重新 build）。
 
 **測試**：T147–T150（`packages/api/test/turnstile.spec.ts`）；前端 `web/test/turnstile.dom.spec.tsx`。
+
+### 2.27 D26：`auth.atwho.org` 薄代理 ＋ App code 交換（2026-11-05）
+
+> 設計：`docs/27`。**migration `0012_app_clients.sql`**（只新增 `app_clients`／`auth_codes`）；
+> 新增 Worker **`atwhomail-auth`**（自訂網域 `auth.atwho.org`）＋ API／前端需部署（見 docs/11 §2-22）。
+> **本階段不新增任何 secret／KV**：App secret 由 API 執行時產生，DB 只存雜湊。
+
+**架構**
+
+```
+其他 App → https://app.atwho.org/?app=<app_id>&redirect_uri=<https://app.example.com/cb>
+        → 使用者以既有流程登入
+        → POST https://auth.atwho.org/api/auth/app-login（Bearer session）
+        → { redirect: "<redirect_uri>?code=…" }      ← code 60 秒、一次性
+其他 App 後端 → POST https://auth.atwho.org/api/auth/exchange
+        { app_id, app_secret, code, redirect_uri }
+        → { token, user }                             ← JWT scope='app'、aud=app_id
+```
+
+`atwhomail-auth` 是**純薄代理**：只轉 `/api/auth/*` 到 `https://atwhomail-api.ulhome.workers.dev`，
+其他路徑回 `404 { error: { code: "NOT_FOUND" } }`；保留 method／headers（含 `authorization`、
+`cookie`、`cf-connecting-ip`）／body／status，並加上 `X-Forwarded-Host: auth.atwho.org`
+（僅記錄用，**不是**授權依據；docs/16 N3）。**代理本身不做任何認證邏輯。**
+
+**資料表（migration 0012）**
+
+| 表 | 重點 |
+|---|---|
+| `app_clients` | `app_id` UNIQUE（`^[a-z][a-z0-9-]{1,31}$`）、`name`、`secret_hash`、`redirect_uris`（JSON array）、`status`（active／disabled） |
+| `auth_codes` | `code_hash` UNIQUE、`user_id`、`app_id`、`redirect_uri`、`expires_at`（60 秒）、`consumed_at` |
+
+- **DB 不存明碼**：`secret_hash = SHA-256(secret + JWT_SECRET)`、`code_hash = SHA-256(code + JWT_SECRET)`。
+- 時間皆為 epoch ms（UTC）。
+
+**App Client 管理（owner only；`requireOwner`）**
+
+| 端點 | 說明 |
+|---|---|
+| `POST /api/apps` | body `{app_id, name, redirect_uris: string[]}` → **201** `{app_id, app_secret, redirect_uris}`。`app_secret` 為 32-byte（hex，64 字元）且**只回這次**。`redirect_uris` 需 1–10 個絕對 https 網址（本機開發允許 `http://localhost`／`127.0.0.1`） |
+| `GET /api/apps` | `{apps:[{id, app_id, name, redirect_uris, status, created_at, updated_at}]}`（**不含** secret／secret_hash） |
+| `PATCH /api/apps/:id` | `{name?, status?, redirect_uris?}`；`:id` 可用數字主鍵或 app_id |
+| `DELETE /api/apps/:id` | **軟停用**（`status='disabled'`）；資料列保留，可再 PATCH 啟用 |
+
+- 錯誤：`400 INVALID_APP_ID`／`INVALID_REDIRECT_URI`／`INVALID_STATUS`／`INVALID_BODY`、
+  `409 APP_EXISTS`、`404 APP_NOT_FOUND`。
+- 稽核：`app_created`／`app_updated`，detail 只記 `{app_id, name, status}`（**不記 secret**，N7／N9）。
+
+**`POST /api/auth/app-login`（需 session；owner／mailbox／rescue）**
+
+```jsonc
+{ "app": "mycrm", "redirect_uri": "https://crm.example.com/cb" }
+→ 200 { "redirect": "https://crm.example.com/cb?code=<64 hex>" }
+```
+
+- `app` 必須存在且 `status='active'` → 否則 **400 `UNKNOWN_APP`**。
+- `redirect_uri` 必須與白名單**完全相符**（不做前綴／正規化）→ 否則 **400 `INVALID_REDIRECT_URI`**。
+- owner → `sub=users.id`；mailbox → 以該地址的 `user_id`；**app token → 403 `SCOPE_NOT_ALLOWED`**
+  （App 不得再換新的 code）。
+- code 為 32-byte（hex），有效期 **60 秒**；寫入 `auth_codes`（只存 hash）。
+- 稽核：`app_login`（app_id、user_id；不記 code／redirect_uri）。
+
+**`POST /api/auth/exchange`（公開，但需 App secret）**
+
+```jsonc
+{ "app_id": "mycrm", "app_secret": "…", "code": "…", "redirect_uri": "…" }
+→ 200 {
+  "token": "<JWT HS256>",
+  "user": { "id": 2, "username": "itag", "display_name": null, "role": "owner" }
+}
+```
+
+- `app_id` 必須存在且 active；`SHA-256(app_secret + JWT_SECRET)` 與 `secret_hash` 以**常數時間比較**
+  → 失敗一律 **401 `INVALID_CLIENT`**。
+- `redirect_uri` 必須在 App 白名單且與 code 記錄相符 → 否則 **400 `INVALID_REDIRECT_URI`**。
+- code 必須存在、`app_id` 相同、未使用、未過期（`expires_at > now`）→ 否則 **400 `INVALID_CODE`**。
+- 消費為原子操作：`UPDATE auth_codes SET consumed_at=? WHERE id=? AND consumed_at IS NULL`；
+  影響列數不是 1 → **409 `CODE_ALREADY_USED`**。
+- 簽發 JWT：`{ scope:"app", aud:<app_id>, sub:<users.id>, username, role, pca, iat, exp }`；
+  TTL 與既有 owner／mailbox token 相同（24h）。`pca` 使密碼變更後舊 App token 立即失效
+  （缺 `pca` 的舊格式 App token 視為 0；使用者改過密碼仍會失效）。
+- 錯誤碼：`401 INVALID_CLIENT`／`400 INVALID_CODE`／`409 CODE_ALREADY_USED`／
+  `400 INVALID_REDIRECT_URI`／`429 RATE_LIMITED`。
+- 速率限制：`exchange:<app_id>` **每分鐘 30 次**（沿用 `auth_attempts`；跨視窗自動重置）。
+- 稽核：`app_exchanged`（app_id、user_id；不記 token／secret／code）。
+
+**`GET /api/auth/me`（`requireSession`，含 app scope）**
+
+```jsonc
+→ 200 { "id": 2, "username": "itag", "display_name": null, "role": "owner", "created_at": 1793… }
+```
+
+- owner／app → `sub` 直接是 `users.id`；mailbox → 由地址查出 `user_id`。
+- 一律回 `users` 最新資料；**不得**含 `password_hash`。`contact_email` 屬 D27（目前 schema 尚無此欄位）。
+- 帳號不存在／已刪除 → `404 NOT_FOUND`；停權由 `requireSession` 回 `403 ACCOUNT_SUSPENDED`。
+
+**Session 解析與 scope 邊界**
+
+- `resolveSession`／`resolveScope` 接受 `scope='app'`（驗簽後視為使用者層級）。
+- **`scope='app'` 不可用於信件相關端點**：`/api/mail/*`、`/api/attachments/*`、`/api/email-aliases*`、
+  `/api/forms/*`、`/api/me` 等改用 `requireMailSession` → 一律 **403 `SCOPE_NOT_ALLOWED`**。
+- `requireOwner` 端點對 app token 仍回 `403 FORBIDDEN`（owner scope required）。
+
+**前端（`app.atwho.org`／`mail.atwho.org`）**
+
+- `app.` 的登入頁會讀 `?app=` ＋ `?redirect_uri=`；登入成功（或已有 session）後自動呼叫
+  `app-login` → 僅以**後端回傳的 `redirect`** 執行 `location.assign`。
+- 參數不完整／格式錯誤／app-login 失敗 → 顯示錯誤，**不導向**；可重試或「以 AtWhoMail 繼續」。
+- 完全沒帶 `app`／`redirect_uri` → 行為與 D26 之前完全相同；既有 `?register=1`／`?invite=` 不受影響。
+- `mail.` 管理主控台新增「應用程式（App Clients）」：列表／新增（secret **只顯示一次**＋複製）／停用／啟用。
+
+**測試**：T151–T160（`packages/api/test/app-auth.spec.ts`、`packages/auth/test/proxy.spec.ts`；
+前端 `web/test/appLogin.spec.ts`、`web/test/appHandoff.dom.spec.tsx`、`web/test/appClients.dom.spec.tsx`）。
+
+**部署順序（docs/11 §2-22）**：migration 0012 → API → `atwhomail-auth` → 前端。
+**回退**：前端先回上一版（App 轉交／管理 UI 消失）；API 回上一版即停止簽發 App token；
+migration 0012 為純新增表，可保留。
 
 ## 3. 通用原則
 

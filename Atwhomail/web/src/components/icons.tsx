@@ -163,6 +163,16 @@ export const IconKey = ({ size }: IconProps) => (
   </Svg>
 );
 
+/** D26：App Clients（應用程式方塊） */
+export const IconApps = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <rect x="3" y="3" width="7" height="7" rx="1" />
+    <rect x="14" y="3" width="7" height="7" rx="1" />
+    <rect x="3" y="14" width="7" height="7" rx="1" />
+    <rect x="14" y="14" width="7" height="7" rx="1" />
+  </Svg>
+);
+
 export const IconLogout = ({ size }: IconProps) => (
   <Svg size={size}>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />

@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "atwhomail-auth",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "observability": {
+    "enabled": true
+  },
+  "routes": [
+    {
+      "pattern": "auth.atwho.org",
+      "custom_domain": true
+    }
+  ]
+  // D26（docs/27 §2）：純薄代理，只轉 /api/auth/* 到 atwhomail-api。
+  // ⚠️ 不新增任何 secret／KV／D1 binding；授權一律由 API Worker 的 D1 session 判定。
+  // ⚠️ 上游固定為 https://atwhomail-api.ulhome.workers.dev（程式常數 UPSTREAM_ORIGIN）。
+}

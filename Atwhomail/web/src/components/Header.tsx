@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import type { Session } from "../api/types";
-import { IconAt, IconCompose, IconKey, IconLogout, IconMail, IconMenu, IconSearch, IconTicket, IconUsers } from "./icons";
+import { IconApps, IconAt, IconCompose, IconKey, IconLogout, IconMail, IconMenu, IconSearch, IconTicket, IconUsers } from "./icons";
 
 interface Props {
   session: Session;
@@ -18,6 +18,8 @@ interface Props {
   onOpenInvites: () => void;
   /** D5：訪客管理（清單／停權／配額） */
   onOpenVisitors: () => void;
+  /** D26：App Clients（第三方 App 登入整合） */
+  onOpenApps: () => void;
   /**
    * 管理主控台（帳號設定／邀請碼／訪客管理）的顯示開關
    * （`mail.`／localhost 顯示；`app.` 不顯示 —— 僅 UI 收斂，權限仍由後端判定）
@@ -41,6 +43,7 @@ export function Header({
   onOpenAccountSettings,
   onOpenInvites,
   onOpenVisitors,
+  onOpenApps,
   showAdminConsole,
   onLogout,
   onToggleSidebar,
@@ -162,6 +165,15 @@ export function Header({
                   }}
                 >
                   <IconUsers size={16} /> 訪客管理
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onOpenApps();
+                  }}
+                >
+                  <IconApps size={16} /> 應用程式（App Clients）
                 </button>
                 <button
                   type="button"

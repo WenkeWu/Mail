@@ -39,6 +39,7 @@ import { joinRecipients, quoteText, withPrefix } from "../lib/recipients";
 import { AccountSettings } from "./AccountSettings";
 import { AddressManager } from "./AddressManager";
 import { AliasManager } from "./AliasManager";
+import { AppClientsManager } from "./AppClientsManager";
 import { ComposeWindow, type Draft, type DraftMode } from "./ComposeWindow";
 import { FolderSidebar, type AppPage } from "./FolderSidebar";
 import { Header } from "./Header";
@@ -670,6 +671,7 @@ export function AppShell({
         onOpenAccountSettings={() => setPage("account")}
         onOpenInvites={() => setPage("invites")}
         onOpenVisitors={() => setPage("visitors")}
+        onOpenApps={() => setPage("apps")}
         onOpenAliases={() => setPage("aliases")}
         showAdminConsole={canUseAdminConsole}
         onLogout={onLogout}
@@ -701,6 +703,8 @@ export function AppShell({
         <InviteManager onBack={() => setPage("mail")} onToast={showToast} />
       ) : page === "visitors" && canUseAdminConsole ? (
         <VisitorManager onBack={() => setPage("mail")} onToast={showToast} />
+      ) : page === "apps" && canUseAdminConsole ? (
+        <AppClientsManager onBack={() => setPage("mail")} onToast={showToast} />
       ) : (
         <>
           <FolderSidebar
@@ -717,6 +721,7 @@ export function AppShell({
             onOpenAccountSettings={() => setPage("account")}
             onOpenInvites={() => setPage("invites")}
             onOpenVisitors={() => setPage("visitors")}
+            onOpenApps={() => setPage("apps")}
             showAdminConsole={canUseAdminConsole}
             onCompose={openCompose}
             open={sidebarOpen}

@@ -226,8 +226,7 @@ export interface MeResponse {
   addresses: MeAddress[];
 }
 
-/** 邀請碼（GET /api/invites；`code` 全碼僅在 `?reveal=1` 時出現，docs/16 D4） */
-export interface Invite {
+/** 邀請碼（GET /api/invites；`code` 全碼僅在 `?reveal=1` 時出現，docs/16 D4） */export interface Invite {
   id: number;
   /** 前 4 碼 + "…"（預設列表即為此遮罩） */
   masked_code: string;
@@ -344,4 +343,25 @@ export interface FormSendResult {
   message_id: string;
   sent_message_id: number;
   instances: Array<{ id: number; recipient: string }>;
+}
+
+// ── D26：App Clients（docs/27） ──
+
+/** `GET /api/apps` 的單筆 App（**不含** secret／secret_hash） */
+export interface AppClient {
+  id: number;
+  app_id: string;
+  name: string;
+  /** redirect_uri 白名單（完全相符比對） */
+  redirect_uris: string[];
+  status: "active" | "disabled";
+  created_at: number;
+  updated_at: number;
+}
+
+/** `POST /api/apps` 的回應：`app_secret` **只會出現這一次** */
+export interface CreatedAppClient {
+  app_id: string;
+  app_secret: string;
+  redirect_uris: string[];
 }

@@ -1,8 +1,10 @@
 /** endpoints.ts — 每個 API 端點的型別化包裝（契約見 docs/05、docs/12） */
 import { request, requestBlob, requestText } from "./client";
 import type {
+  AppClient,
   CountsResponse,
   CreatedAlias,
+  CreatedAppClient,
   DeletedAddressInfo,
   EmailAddressInfo,
   EmailAlias,
@@ -36,8 +38,15 @@ export function mailboxLogin(email: string, password: string) {
   );
 }
 
-/** 訪客註冊（Phase 1：需邀請碼；成功即回 mailbox session） */
-export function register(payload: {
+/**
+ * D26（docs/27 §5）：登入成功後替指定 App 取得一次性 code。
+ * 回應的 `redirect` 已含 `?code=…`，前端直接 `location.assign(redirect)`；
+ * 失敗（app 不存在／redirect_uri 不在白名單）→ 顯示錯誤，**不導向**。
+ */
+export const appLogin = (payload: { app: string; redirect_uri: string }) =>
+  request<{ redirect: string }>("/api/auth/app-login", { method: "POST", json: payload });
+
+/** 訪客註冊（Phase 1：需邀請碼；成功即回 mailbox session） */export function register(payload: {
   invite_code: string;
   username: string;
   password: string;
@@ -346,3 +355,25 @@ export const revokeForm = (instanceId: number) =>
     `/api/forms/${instanceId}/revoke`,
     { method: "POST" }
   );
+
+// ── D26：App Clients（owner；mail. 管理主控台，docs/27 §6） ──
+
+/** App client 清單（**不含** secret／secret_hash） */
+export const listApps = () => request<{ apps: AppClient[] }>("/api/apps");
+
+/**
+ * 建立 App client。回應的 `app_secret` **只會出現這一次**（DB 只存雜湊），
+ * UI 必須立即顯示並提供複製，關閉後不得再嘗試取得。
+ */
+export const createApp = (payload: { app_id: string; name: string; redirect_uris: string[] }) =>
+  request<CreatedAppClient>("/api/apps", { method: "POST", json: payload });
+
+/** 更新名稱／狀態／redirect_uris（至少一項） */
+export const updateApp = (
+  id: number,
+  payload: { name?: string; status?: "active" | "disabled"; redirect_uris?: string[] }
+) => request<{ ok: boolean; app: AppClient }>(`/api/apps/${id}`, { method: "PATCH", json: payload });
+
+/** 軟停用（`status='disabled'`；資料列保留，可再 PATCH 啟用） */
+export const disableApp = (id: number) =>
+  request<{ ok: boolean; app: AppClient }>(`/api/apps/${id}`, { method: "DELETE" });
