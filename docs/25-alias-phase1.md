@@ -51,14 +51,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_envelope_to ON messages(envelope_to);
 1. 驗證 `name`：長度 3–12、`/^[a-z]+$/i`、非保留字 → 否則 `400 INVALID_ALIAS_NAME`
 2. 驗證 `target_address_id` 屬於 session scope 且 `status='active'` → 否則 `403 TARGET_NOT_ALLOWED`
 3. 數量上限：該帳號既有別名 ≤ **50** → `409 ALIAS_LIMIT_REACHED`
-4. 取流水號（原子）：
+4. 取流水號（原子；`next_serial` 語意 = **下一個可用號碼**）：
    ```sql
-   INSERT INTO alias_names(name, next_serial, created_at) VALUES(?, 1, ?)
+   INSERT INTO alias_names(name, next_serial, created_at) VALUES(?, 2, ?)
      ON CONFLICT(name) DO UPDATE SET next_serial = next_serial + 1
      RETURNING next_serial;
    ```
-   （首次插入回 1；之後回遞增值 → 別名序號 = 回傳值）
-5. `alias_address = name + '0' + zeroPad3(serial)` → 例 `luke001`
+   本次使用的序號 = 回傳值 − 1（首次回 2 → 用 1；第二次回 3 → 用 2）
+5. `alias_address = name + zeroPad3(serial)` → 例 serial=1 → `luke001`（**不再額外加 0**；補零的 `00` 就是 owner 說的「0」）
 6. `INSERT INTO email_aliases(alias_address, target_email_address_id, status, created_at, updated_at)`
 7. 回應 `201 { id, alias_address, target_address_id, status }`
 8. 稽核 `alias_created`（只記 alias_address 與 target ✅ N9）
@@ -118,7 +118,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_envelope_to ON messages(envelope_to);
 
 ## 7. 測試 T109–T118
 
-- **T109** 建立別名：`luke` → `luke001`，DB 寫入正確、`alias_names.next_serial=2`
+- **T109** 建立別名：`luke` → `luke001`，DB 寫入正確、`alias_names.next_serial=2`（= 下一個可用）
 - **T110** 同名第二個 → `luke002`（不同使用者 ✅）
 - **T111** 名字驗證：長度 <3／>12、含數字、含符號、保留字 → 全部 `400 INVALID_ALIAS_NAME`
 - **T112** 目標地址不屬於自己 → `403 TARGET_NOT_ALLOWED`
