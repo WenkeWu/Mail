@@ -316,7 +316,21 @@ ALTER TABLE messages ADD COLUMN envelope_to TEXT;  -- 別名
 ALTER TABLE messages ADD COLUMN reply_to    TEXT;  -- 反向別名（僅外部）
 ```
 
-### 5.4 限制與配套
+### 5.4 別名命名規則（owner 2026-11-04 定案）
+
+| 規則 | 值 |
+|---|---|
+| 使用者輸入的名字 | **3–12 個英文字母**（`a–z`，儲存一律小寫）|
+| 數字 | ❌ 不可（保留給流水號，避免 `luke2` vs `luke002` 混淆）|
+| 特殊字元 | ❌ 不可（`- _ . +`、空白）|
+| 保留字 | `admin`／`postmaster`／`abuse`／`root`／`noreply`／`mailerdaemon`／`hostmaster`／`webmaster`／`support` |
+| 系統附加 | **固定 `0` ＋ 3 位流水號**（`001`–`999`），由系統分配、不可自選 |
+| 別名總長 | ≤ **16** 字元 |
+| 範例 | `luke` → `luke001@atwho.org`；同名的第二人 → `luke002@atwho.org` |
+
+實作規格：`docs/25-alias-phase1.md`（D25）。
+
+### 5.5 限制與配套
 
 * 別名數量 ≤ **50／帳號**
 * 以別名寄信**計入目標地址**的每日（20）／每小時（10）／暖機（24h 5 封）配額
