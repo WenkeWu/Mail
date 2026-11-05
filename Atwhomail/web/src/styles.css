@@ -1447,6 +1447,17 @@ select {
   background: var(--purple-soft);
 }
 
+/* D23：Turnstile widget（theme auto；大小由 Cloudflare iframe 決定） */
+.login-form .turnstile-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-form .turnstile-widget .login-hint {
+  margin: 0;
+}
+
 .login-notice {
   background: #fff7e0;
   border: 1px solid #f0d9a0;

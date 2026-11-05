@@ -14,9 +14,9 @@
 | Auth | POST | `/api/auth/login` | Owner（username + 密碼）登入 |
 | Auth | POST | `/api/auth/mailbox-login` | 信箱帳號（email address + 密碼）登入 |
 | Auth | POST | `/api/auth/register` | **訪客註冊（公開）** → mailbox session；行為依 `REGISTRATION_MODE`（`invite` 預設＝邀請碼／`email_verify`＝改走下方兩端點／`closed`＝關閉，docs/21 D21） |
-| Auth | GET | `/api/auth/registration-mode` | **目前註冊模式**（公開；`{mode}`，僅影響前端表單顯示，docs/21 D21） |
+| Auth | GET | `/api/auth/registration-mode` | **目前註冊模式**（公開；`{mode, turnstileSiteKey}`，僅影響前端表單顯示，docs/21 D21／docs/23 D23） |
 | Auth | POST | `/api/auth/check-id` | **ID 即時可用性檢查**（公開；`{label}` → `{available, reason, tldHit?, suggestions?}`；同 IP 20 次/分，docs/20 D20） |
-| Auth | POST | `/api/auth/register-request` | **寄送 6 位數 Email 驗證碼**（公開；僅 `email_verify` 模式，docs/21 D21） |
+| Auth | POST | `/api/auth/register-request` | **寄送 6 位數 Email 驗證碼**（公開；僅 `email_verify` 模式，docs/21 D21；D23：可選 `turnstile_token`） |
 | Auth | POST | `/api/auth/register-verify` | **驗碼＋建立訪客帳號＋回 mailbox session**（公開；僅 `email_verify` 模式，docs/21 D21） |
 | Auth | PATCH | `/api/auth/owner-password/self` | **owner 本人變更自己的密碼**（session ＋ 舊密碼；docs/16 D7） |
 | Auth | PATCH | `/api/email-addresses/:id/password` | 重設地址密碼（owner 或本人） |
@@ -1213,6 +1213,56 @@ recipient 查 email_addresses（active）→ 命中：既有流程，envelope_to
 
 **測試**：T139–T146（`packages/api/test/domain-check.spec.ts`；
 T146＝既有 T1–T138 全套零回歸；前端 `web/test/idCheck.dom.spec.tsx`）。
+
+### 2.26 D23：Cloudflare Turnstile 防機器人（2026-11-05）
+
+> 設計：`docs/23`。**無 migration**；後端 API／前端需部署（見 docs/11 §2-21）。
+> ⚠️ 本階段金鑰尚未提供：`TURNSTILE_SECRET_KEY` 未設定 → 後端**跳過驗證**（只記一次 warning）；
+> `TURNSTILE_SITE_KEY` 空字串 → 前端不載入腳本、不顯示 widget。**設定金鑰後即生效**。
+
+**環境變數**
+
+| 名稱 | 類型 | 說明 |
+|---|---|---|
+| `TURNSTILE_SITE_KEY` | Worker var（公開，`wrangler.jsonc`；預設 `""`）| 前端 widget 的 site key。空字串＝未啟用 |
+| `TURNSTILE_SECRET_KEY` | Worker **secret**（`wrangler secret put`，**不得**進 repo）| 後端 siteverify。未設定／空字串＝跳過驗證 |
+
+**`GET /api/auth/registration-mode`（公開）**
+
+```http
+→ 200 { "mode": "email_verify", "turnstileSiteKey": "0x4AAAA…" }
+→ 200 { "mode": "email_verify", "turnstileSiteKey": null }   // 未設定／空字串
+```
+`turnstileSiteKey` 只影響前端顯示；是否驗證仍由後端依 secret 判定（N3）。
+
+**`POST /api/auth/register-request`（公開；僅 `email_verify` 模式）**
+
+```http
+{ "email": "me@example.com", "local_part": "friend01",
+  "turnstile_token": "<widget token>" }   // D23；選填（secret 未設定時可省略）
+```
+- 檢查順序：模式 → IP 限流 → **Turnstile**（secret 已設定時）→ Email／ID 驗證 → D20 ID 可用性 → …
+- `TURNSTILE_SECRET_KEY` 未設定 → **跳過**（行為同 D21；只記一次 warning，不洗版）。
+- 已設定 → `POST https://challenges.cloudflare.com/turnstile/v0/siteverify`
+  （form-urlencoded：`secret`、`response`、`remoteip`）。
+  - `success !== true` → **400 `TURNSTILE_FAILED`**「機器人驗證未通過，請重試」；
+    **不寄碼、不建立 `email_verifications` 紀錄**。
+  - 網路／HTTP／逾時／解析失敗 → **fail-open**（放行）＋ warning（可用性優先，比照 docs/20 DoH）。
+- 稽核：`register_rejected` 的 `reason` 增加 `turnstile_failed`（detail **只記** `{ reason }`）。
+
+**前端（`LoginPage`）**
+
+- `registrationMode.turnstileSiteKey` 非空 → 動態載入
+  `https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit`，
+  以 `theme: "auto"` 顯示 widget；token 有效才可送出「寄送驗證碼」。
+- token 過期／失敗 → 顯示提示並停用送出；每次送出後重新取得 token（Turnstile token 一次性，
+  包含「重新寄送驗證碼」）。
+- site key 為空 → 不載入腳本、不顯示 widget（行為同 D21）。
+
+**回退**：`wrangler secret delete TURNSTILE_SECRET_KEY` ＋ 清空 `TURNSTILE_SITE_KEY` 並重新部署 API
+→ 回到「無 Turnstile」狀態（前端不需重新 build）。
+
+**測試**：T147–T150（`packages/api/test/turnstile.spec.ts`）；前端 `web/test/turnstile.dom.spec.tsx`。
 
 ## 3. 通用原則
 

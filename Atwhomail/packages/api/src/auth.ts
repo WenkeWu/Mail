@@ -53,6 +53,16 @@ export interface Env {
    * D21 起保留相容（既有 invite 流程行為不變）；新流程／前端設定端點一併視為 `closed`。
    */
   REGISTRATION_DISABLED?: string;
+  /**
+   * D23（docs/23）：Cloudflare Turnstile **site key**（公開、非機密；放 `vars`）。
+   * 未設定／空字串 → 前端不載入腳本、不顯示 widget（行為同 D21）。
+   */
+  TURNSTILE_SITE_KEY?: string;
+  /**
+   * D23：Cloudflare Turnstile **secret key**（機密；`wrangler secret put TURNSTILE_SECRET_KEY`）。
+   * 未設定／空字串 → `register-request` 跳過 siteverify（只記一次 warning；回退用）。
+   */
+  TURNSTILE_SECRET_KEY?: string;
 }
 
 export type Scope =

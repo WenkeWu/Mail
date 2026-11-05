@@ -36,6 +36,7 @@ import {
 } from "./auth";
 import { BACKUP_TABLES, clampLimit, formatCursor, parseCursor, type Cursor } from "./backup";
 import { localPartAvailability, suggestAvailableLabels } from "./domains";
+import { turnstileSiteKey, verifyTurnstile } from "./turnstile";
 import {
   buildFormStaticText,
   sanitizeDisplayText,
@@ -1270,17 +1271,18 @@ app.post("/api/auth/register", async (c) => {
 // ══════════════════════ D21：Email 驗證碼註冊（公開，docs/21）══════════════════════
 
 /**
- * GET /api/auth/registration-mode — 公開（docs/21 §6）。
+ * GET /api/auth/registration-mode — 公開（docs/21 §6；D23 增加 `turnstileSiteKey`）。
  *
- * 前端用它決定註冊表單要顯示「邀請碼」還是「Email 驗證碼」。
- * ⚠️ 只影響 UI；真正的模式判定仍在各註冊端點由後端強制（前端不可信）。
+ * 前端用它決定註冊表單要顯示「邀請碼」還是「Email 驗證碼」，
+ * 以及是否載入 Turnstile widget（`turnstileSiteKey` 非 null 時）。
+ * ⚠️ 只影響 UI；真正的模式判定與機器人驗證仍在各註冊端點由後端強制（前端不可信）。
  * 舊版 `REGISTRATION_DISABLED=true` 一律回 `closed`（與既有 kill switch 相容）。
  */
 app.get("/api/auth/registration-mode", (c) => {
   const mode = registrationMode(c.env);
   const effective: RegistrationMode =
     mode === "closed" || legacyRegistrationDisabled(c.env) ? "closed" : mode;
-  return c.json({ mode: effective });
+  return c.json({ mode: effective, turnstileSiteKey: turnstileSiteKey(c.env) });
 });
 
 /**
@@ -1325,8 +1327,12 @@ app.post("/api/auth/check-id", async (c) => {
 /**
  * POST /api/auth/register-request — 寄送 6 位數 Email 驗證碼（docs/21 §4／§5）。
  *
- * 流程：模式檢查 → IP 限流（5/小時、20/日）→ Email／ID 驗證（格式／保留字／既有地址）
- *      → Email 寄送限制（60 秒冷卻、每日 5 封）→ 產生並儲存雜湊 → 寄信 → 稽核。
+ * 流程：模式檢查 → IP 限流（5/小時、20/日）→ **D23 Turnstile**（secret 未設定則跳過）
+ *      → Email／ID 驗證（格式／保留字／既有地址）→ Email 寄送限制（60 秒冷卻、每日 5 封）
+ *      → 產生並儲存雜湊 → 寄信 → 稽核。
+ *
+ * D23：body 可帶 `turnstile_token`。secret 已設定且 `success !== true` → 400 `TURNSTILE_FAILED`，
+ * **不寄碼、不建立 `email_verifications`**；siteverify 網路失敗 → fail-open（放行＋warning）。
  *
  * 回應 `200 { sent: true, expiresIn: 900 }`。
  * ⚠️ Email **只收到 6 位數＋15 分鐘說明**，不含任何個資（docs/21 §5）。
@@ -1366,9 +1372,27 @@ app.post("/api/auth/register-request", async (c) => {
     });
   }
 
-  const body = await c.req.json<{ email?: unknown; local_part?: unknown }>().catch(() => null);
+  const body = await c.req
+    .json<{ email?: unknown; local_part?: unknown; turnstile_token?: unknown }>()
+    .catch(() => null);
   const email = normalizeEmailAddress(body?.email);
   const localPart = typeof body?.local_part === "string" ? body.local_part.trim().toLowerCase() : "";
+
+  // D23：機器人驗證（放在 Email／ID 檢查之前，避免無效 token 浪費 DoH／DB 查詢）。
+  // - secret 未設定 → `ok`（跳過；turnstile.ts 只記一次 warning）
+  // - siteverify 網路失敗 → `unavailable`（fail-open；warning 已在模組內記錄）
+  // - `success !== true` → 拒絕；稽核只記 reason（不含 token／Email／ID）
+  const turnstileToken = typeof body?.turnstile_token === "string" ? body.turnstile_token : undefined;
+  const turnstile = await verifyTurnstile(c.env, turnstileToken, ip);
+  if (turnstile === "failed") {
+    auditAsync(c, {
+      event: "register_rejected",
+      ip,
+      userAgent,
+      detail: { reason: "turnstile_failed" },
+    });
+    return err(c, "TURNSTILE_FAILED", "機器人驗證未通過，請重試", 400);
+  }
 
   if (!email) {
     return auditRegistrationRejected(c, {

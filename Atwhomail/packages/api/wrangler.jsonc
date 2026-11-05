@@ -49,7 +49,15 @@
     //   closed        一律關閉註冊（新舊流程皆 403 REGISTRATION_CLOSED）
     // 切換後重新部署 API；前端會讀取 GET /api/auth/registration-mode 自動切換表單（無需重新 build）。
     // ⚠️ 非機密，可放 vars。
-    "REGISTRATION_MODE": "email_verify"
+    "REGISTRATION_MODE": "email_verify",
+
+    // D23（docs/23）：Cloudflare Turnstile 公開 site key（非機密）。
+    //   空字串＝**未啟用** → 前端不載入腳本、不顯示 widget（行為同 D21）。
+    //   填入 site key 並重新部署 API 後，`GET /api/auth/registration-mode` 會回傳
+    //   `turnstileSiteKey: "<key>"`，前端即自動顯示 widget（前端不需重新 build）。
+    // ⚠️ Secret key 是機密，**不得**寫在本檔；請用：
+    //   pnpm --filter @atwhomail/api exec wrangler secret put TURNSTILE_SECRET_KEY
+    "TURNSTILE_SITE_KEY": ""
   }
   // Phase 11 加入：vars / secrets（JWT_SECRET 等，用 .dev.vars 與 wrangler secret put）
 }

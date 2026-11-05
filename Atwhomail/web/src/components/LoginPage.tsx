@@ -13,6 +13,7 @@ import type { IdCheckResult, RegistrationMode, Session } from "../api/types";
 import type { LoginMode } from "../lib/hostMode";
 import { clearRegistrationParams, parseRegistrationQuery } from "../lib/registrationLinks";
 import { IconMail } from "./icons";
+import { TurnstileWidget } from "./TurnstileWidget";
 
 interface Props {
   notice: string | null;
@@ -54,6 +55,7 @@ const REGISTER_HINTS: Record<string, string> = {
   REGISTRATION_INVITE_ONLY: "目前為邀請碼註冊模式，請使用邀請碼。",
   REGISTRATION_EMAIL_VERIFY_REQUIRED: "請改用 Email 驗證碼完成註冊。",
   EMAIL_SEND_FAILED: "驗證碼寄送失敗，請稍後再試。",
+  TURNSTILE_FAILED: "請重新完成下方的機器人驗證後再試。",
 };
 
 type Tab = "mailbox" | "owner" | "register";
@@ -120,6 +122,12 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
   const [regMode, setRegMode] = useState<RegistrationMode | null>(null);
   const [regEmail, setRegEmail] = useState("");
   const [regLocalPart, setRegLocalPart] = useState("");
+  // D23：Turnstile（site key 由 registration-mode 取得；未設定 → null＝不顯示 widget）
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
+  const turnstileRequired = regMode === "email_verify" && turnstileSiteKey !== null;
+  const turnstileReady = !turnstileRequired || turnstileToken !== null;
   // D20：ID 即時檢查（debounce 500ms；只影響顯示，後端仍會複驗）
   const [idCheck, setIdCheck] = useState<IdCheckResult | null>(null);
   const [idChecking, setIdChecking] = useState(false);
@@ -133,16 +141,21 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
   const emailInputRef = useRef<HTMLInputElement | null>(null);
 
   // D21：註冊模式由後端決定（`REGISTRATION_MODE`；前端無法從建置期得知）。
-  // 取不到／舊後端 → 回退 invite，維持既有行為。
+  // D23：同一端點回傳 `turnstileSiteKey`；非 null 才載入 Turnstile widget。
+  // 取不到／舊後端 → 回退 invite（無 widget），維持既有行為。
   useEffect(() => {
     if (!showRegister || mode === "admin") return;
     let alive = true;
     getRegistrationMode()
       .then((r) => {
-        if (alive) setRegMode(r.mode);
+        if (!alive) return;
+        setRegMode(r.mode);
+        setTurnstileSiteKey(r.turnstileSiteKey ?? null);
       })
       .catch(() => {
-        if (alive) setRegMode("invite");
+        if (!alive) return;
+        setRegMode("invite");
+        setTurnstileSiteKey(null);
       });
     return () => {
       alive = false;
@@ -229,9 +242,18 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
       setError("請填寫 Email 與想要的 ID");
       return;
     }
+    // D23：已啟用 Turnstile → token 有效才可寄碼（後端仍會複驗，前端不可信）
+    if (turnstileRequired && !turnstileToken) {
+      setError("請先完成機器人驗證");
+      return;
+    }
     setSendingCode(true);
     try {
-      await registerRequest({ email: mail, local_part: name });
+      await registerRequest({
+        email: mail,
+        local_part: name,
+        ...(turnstileRequired && turnstileToken ? { turnstile_token: turnstileToken } : {}),
+      });
       setCodeSent(true);
       setVerificationCode("");
       setResendIn(60);
@@ -239,6 +261,12 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
       setError(registerErrorText(err));
     } finally {
       setSendingCode(false);
+      // Turnstile token 是一次性的（送出後即被 siteverify 消耗）：重新取得，
+      // 讓「重新寄送驗證碼」與失敗重試都使用新 token。
+      if (turnstileRequired) {
+        setTurnstileToken(null);
+        setTurnstileResetKey((key) => key + 1);
+      }
     }
   };
 
@@ -322,6 +350,12 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
       : busy
         ? "登入中…"
         : "登入";
+
+  /** D23：site key 非空且為 email_verify 模式才顯示（未設定 → 完全不載入腳本） */
+  const turnstileWidget =
+    regMode === "email_verify" && turnstileSiteKey !== null ? (
+      <TurnstileWidget siteKey={turnstileSiteKey} onToken={setTurnstileToken} resetKey={turnstileResetKey} />
+    ) : null;
 
   return (
     <div className="login-page">
@@ -468,12 +502,13 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                       />
                     </label>
                     <p className="login-hint">驗證碼已寄至 {regEmail.trim()}，15 分鐘內有效。</p>
+                    {turnstileWidget}
                     <div className="register-actions">
                       <button
                         type="button"
                         className="btn-secondary"
                         onClick={() => void sendCode()}
-                        disabled={resendIn > 0 || sendingCode || busy}
+                        disabled={resendIn > 0 || sendingCode || busy || !turnstileReady}
                       >
                         {sendingCode ? "寄送中…" : resendIn > 0 ? `重新寄送（${resendIn}s）` : "重新寄送驗證碼"}
                       </button>
@@ -495,14 +530,17 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                 )}
 
                 {!codeSent && (
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={() => void sendCode()}
-                    disabled={sendingCode || busy}
-                  >
-                    {sendingCode ? "寄送中…" : "寄送驗證碼"}
-                  </button>
+                  <>
+                    {turnstileWidget}
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => void sendCode()}
+                      disabled={sendingCode || busy || !turnstileReady}
+                    >
+                      {sendingCode ? "寄送中…" : "寄送驗證碼"}
+                    </button>
+                  </>
                 )}
               </>
             ) : (

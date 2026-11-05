@@ -390,17 +390,30 @@ describe("T99：REGISTRATION_MODE 分流", { timeout: 30_000 }, () => {
   });
 
   it("GET /api/auth/registration-mode 反映 REGISTRATION_MODE（含舊 REGISTRATION_DISABLED）", async () => {
+    // D23：回應固定包含 turnstileSiteKey（未設定 → null，見 turnstile.spec.ts T150）
     E.REGISTRATION_MODE = "email_verify";
-    expect(await json(await get("/api/auth/registration-mode"))).toEqual({ mode: "email_verify" });
+    expect(await json(await get("/api/auth/registration-mode"))).toEqual({
+      mode: "email_verify",
+      turnstileSiteKey: null,
+    });
 
     E.REGISTRATION_MODE = "closed";
-    expect(await json(await get("/api/auth/registration-mode"))).toEqual({ mode: "closed" });
+    expect(await json(await get("/api/auth/registration-mode"))).toEqual({
+      mode: "closed",
+      turnstileSiteKey: null,
+    });
 
     E.REGISTRATION_MODE = "invite";
-    expect(await json(await get("/api/auth/registration-mode"))).toEqual({ mode: "invite" });
+    expect(await json(await get("/api/auth/registration-mode"))).toEqual({
+      mode: "invite",
+      turnstileSiteKey: null,
+    });
 
     E.REGISTRATION_DISABLED = "true";
-    expect(await json(await get("/api/auth/registration-mode"))).toEqual({ mode: "closed" });
+    expect(await json(await get("/api/auth/registration-mode"))).toEqual({
+      mode: "closed",
+      turnstileSiteKey: null,
+    });
   });
 });
 

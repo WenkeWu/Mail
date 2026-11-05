@@ -15,7 +15,7 @@ import type {
   MailDetail,
   MailListResponse,
   MeResponse,
-  RegistrationMode,
+  RegistrationModeResponse,
   SendPayload,
   SendResult,
   VisitorUser,
@@ -51,8 +51,9 @@ export function register(payload: {
 
 // ── D21：Email 驗證碼註冊（docs/21）──
 
-/** 目前註冊模式（公開端點；僅影響表單顯示） */
-export const getRegistrationMode = () => request<{ mode: RegistrationMode }>("/api/auth/registration-mode");
+/** 目前註冊模式＋Turnstile site key（公開端點；僅影響表單顯示） */
+export const getRegistrationMode = () =>
+  request<RegistrationModeResponse>("/api/auth/registration-mode");
 
 /**
  * D20：即時檢查 ID 是否可用（公開；同 IP 每分鐘 20 次）。
@@ -64,8 +65,15 @@ export const checkId = (label: string) =>
     json: { label },
   });
 
-/** 寄送 6 位數驗證碼（模式必須為 email_verify，否則後端回 403） */
-export const registerRequest = (payload: { email: string; local_part: string }) =>
+/**
+ * 寄送 6 位數驗證碼（模式必須為 email_verify，否則後端回 403）。
+ * D23：後端啟用 Turnstile 時需帶 `turnstile_token`（未啟用則可省略）。
+ */
+export const registerRequest = (payload: {
+  email: string;
+  local_part: string;
+  turnstile_token?: string;
+}) =>
   request<{ sent: true; expiresIn: number }>("/api/auth/register-request", {
     method: "POST",
     json: payload,

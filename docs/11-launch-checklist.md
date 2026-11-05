@@ -20,6 +20,7 @@
 | 訪客註冊（Phase 1） | 🟡 程式完成、**未部署** | 邀請碼註冊＋配額／限流／停權＋稽核；migration 0006 本地已套用、**遠端待 owner**（見 §2-8） |
 | 別名 Phase 1（D25） | 🟡 程式完成、**未部署** | 別名建立／列表／停用＋收信轉投＋回覆自動 From（範圍 A）；migration `0010` 本地測試已套用、**遠端待 owner**（見 §2-19） |
 | ID 撞二級網域（D20） | 🟡 程式完成、**未部署** | `check-id` 端點＋`register-request`／`register-verify` 複驗；DoH 26 TLD、fail-open、90／7 天快取；migration `0011` 本地測試已套用、**遠端待 owner**（見 §2-20） |
+| Turnstile 防機器人（D23） | 🟡 程式完成、**金鑰未提供／未部署** | `register-request` 選填 `turnstile_token`；secret 未設定自動跳過、site key 空字串不顯示 widget；無 migration（見 §2-21） |
 
 ### 1.1 2026-10-05 收發信現況稽核（公開 DNS + CF API 實測）
 
@@ -565,6 +566,60 @@
 
       - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入。
 
+- [ ] **21. Cloudflare Turnstile 防機器人（docs/23 D23；2026-11-05 程式完成，金鑰未提供、未部署）**
+
+      **前置（owner 於 Cloudflare Dashboard）**：
+      1. **Turnstile → Add widget**
+         - Widget name：`atwhomail-register`
+         - Hostnames：`app.atwho.org`、`mail.atwho.org`
+         - Widget Mode：**Managed**（建議）
+      2. 建立後複製 **Site Key**（公開）與 **Secret Key**（機密）。
+      3. Secret Key 寫入 Worker secret（**不要**寫進 repo／`wrangler.jsonc`／任何文件）：
+         ```powershell
+         cd D:\Mail\Atwhomail
+         pnpm --filter @atwhomail/api exec wrangler secret put TURNSTILE_SECRET_KEY
+         ```
+      4. Site Key 填入 `packages/api/wrangler.jsonc` 的 `vars.TURNSTILE_SITE_KEY`
+         （目前預設 `""`＝未啟用；此值**非機密**）。
+
+      **部署／啟用順序（設定金鑰後即生效）**：
+      1. 部署 **API Worker**（`pnpm --filter @atwhomail/api run deploy`）：
+         含 `turnstile_token` 驗證與 `registration-mode.turnstileSiteKey`。
+      2. 重新 build／deploy **前端**（`cd web; pnpm run build` → Pages）：
+         含 widget 載入與顯示邏輯。**這一步只需做一次**；之後改 site key 不需再 build 前端。
+      3. **設定金鑰後即生效**：
+         - 設定 `TURNSTILE_SECRET_KEY` secret（不必改 vars／不必重新部署）→ 後端**下一個請求**
+           即開始驗證。
+         - 填入 `TURNSTILE_SITE_KEY` 並部署 API 後 → `GET /api/auth/registration-mode` 立即回傳
+           該 key；已部署的前端重新載入即顯示 widget。
+      4. 只想先顯示前端 widget、暫不啟用後端驗證也可以：secret 未設定時後端仍跳過驗證
+         （不會因缺 token 而擋下）。
+
+      **驗收**：
+      - [ ] **secret 未設定**：`POST /api/auth/register-request`（不帶 token）→ 200 並寄碼；
+            log 只有**一次** `TURNSTILE_SECRET_KEY 未設定` warning（不隨每個請求洗版）。
+      - [ ] **secret 已設定＋token 無效** → **400 `TURNSTILE_FAILED`**「機器人驗證未通過，請重試」；
+            `email_verifications` **無新列**、**沒有寄出**驗證碼信；
+            `registration_audit` 有 `register_rejected`，detail 只有 `reason=turnstile_failed`。
+      - [ ] **secret 已設定＋token 有效** → 200 並寄碼。
+      - [ ] `GET /api/auth/registration-mode`：site key 已設 → `turnstileSiteKey` 為字串；
+            未設／空字串 → `null`。
+      - [ ] 前端：site key 已設 → 註冊表單出現 widget（theme auto），完成驗證前
+            「寄送驗證碼」停用；token 過期顯示提示；site key 未設 → 完全沒有 widget／腳本。
+      - [ ] 暫時封鎖 `challenges.cloudflare.com`（或 Turnstile 故障）→ 註冊仍可完成
+            （**fail-open**）＋ log 有 `Turnstile siteverify unavailable` warning。
+      - [ ] 既有 T1–T146 零回歸（`pnpm test` 全綠）。
+
+      **回退**：
+      ```powershell
+      pnpm --filter @atwhomail/api exec wrangler secret delete TURNSTILE_SECRET_KEY
+      # 再把 wrangler.jsonc 的 TURNSTILE_SITE_KEY 改回 "" 並重新部署 API
+      ```
+      → 後端跳過驗證、前端不顯示 widget（回到 D21 行為；前端不需重新 build）。
+
+      - [ ] **未執行**：本階段未部署、未對 production D1／R2 寫入、**未新增任何 secret 值**
+            （`TURNSTILE_SECRET_KEY` 由 owner 之後以 `wrangler secret put` 設定）。
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -574,8 +629,8 @@
 | `POST /api/auth/mailbox-login` | 公開（5 次失敗鎖 15 分） | 信箱 session（**不受 Access 影響**）；錯誤碼：401 `INVALID_CREDENTIALS`／403 `ADDRESS_DISABLED`／403 `ACCOUNT_SUSPENDED`（**先驗密碼再判狀態**，階段 5／D8） |
 | `PATCH /api/auth/owner-password/self` | owner session ＋ 舊密碼 | owner 自助改密碼（階段 2／D7） |
 | `POST /api/auth/register` | **公開**（行為依 `REGISTRATION_MODE`；預設 `invite` 需邀請碼） | 訪客註冊（Phase 1）→ mailbox session。**D21**：`email_verify` → 403 `REGISTRATION_EMAIL_VERIFY_REQUIRED`（改走下方兩端點）；`closed` → 403 `REGISTRATION_CLOSED` |
-| `GET /api/auth/registration-mode` | 公開 | **D21**：目前註冊模式 `{mode}`（僅供前端表單顯示；權限仍由後端強制）。**D22**：管理端於 `email_verify` 時據此顯示「一般註冊連結」卡片 |
-| `POST /api/auth/register-request` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：寄 6 位數驗證碼到指定 Email（寄件者 `noreply@atwho.org`；DB 只存 SHA-256；15 分鐘）。限流：IP 5/時、20/日；Email 60 秒/封、5/日。**D20**：ID 撞二級網域 → 422 `ID_MATCHES_DOMAIN`（含建議）、保留字 → 422 `ID_RESERVED`、重複 → 409 `ID_TAKEN` |
+| `GET /api/auth/registration-mode` | 公開 | **D21**：目前註冊模式 `{mode}`（僅供前端表單顯示；權限仍由後端強制）。**D22**：管理端於 `email_verify` 時據此顯示「一般註冊連結」卡片。**D23**：另回 `turnstileSiteKey`（未設／空字串 → `null`；僅供前端顯示 widget） |
+| `POST /api/auth/register-request` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：寄 6 位數驗證碼到指定 Email（寄件者 `noreply@atwho.org`；DB 只存 SHA-256；15 分鐘）。限流：IP 5/時、20/日；Email 60 秒/封、5/日。**D20**：ID 撞二級網域 → 422 `ID_MATCHES_DOMAIN`（含建議）、保留字 → 422 `ID_RESERVED`、重複 → 409 `ID_TAKEN`。**D23**：secret 已設定時需有效 `turnstile_token`（400 `TURNSTILE_FAILED`；siteverify 網路失敗 → fail-open） |
 | `POST /api/auth/register-verify` | 公開（**僅 `REGISTRATION_MODE=email_verify`**） | **D21**：驗碼（一次性／5 次上限）→ 建立 visitor＋address（暖機 24h）→ 回 mailbox token。**D20**：ID 撞二級網域 → 422 `ID_MATCHES_DOMAIN`、保留字 → 422 `ID_RESERVED`、重複 → 409 `ID_TAKEN` |
 | `POST /api/auth/check-id` | 公開（**D20**） | ID 即時可用性：`{label}` → `{available, reason, tldHit?, suggestions?}`；保留字／封鎖清單／既有地址／二級網域（26 TLD，fail-open）。限流：同 IP 20 次/分 → 429 `RATE_LIMITED` |
 | `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（**預設只回遮罩碼**；`?reveal=1` 額外回全碼並寫稽核）／撤銷 |

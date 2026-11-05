@@ -154,6 +154,16 @@ export interface DeletedAddressInfo {
 /** D21：註冊模式（`GET /api/auth/registration-mode`；僅影響表單顯示，權限仍由後端判定） */
 export type RegistrationMode = "invite" | "email_verify" | "closed";
 
+/** D21／D23：`GET /api/auth/registration-mode` 的回應 */
+export interface RegistrationModeResponse {
+  mode: RegistrationMode;
+  /**
+   * D23：Cloudflare Turnstile site key（公開）。
+   * `null`／空字串 → 前端不載入腳本、不顯示 widget（行為同 D21）。
+   */
+  turnstileSiteKey: string | null;
+}
+
 /** D20：ID 可用性（`POST /api/auth/check-id`） */
 export type IdCheckReason = "OK" | "MATCHES_DOMAIN" | "RESERVED" | "TAKEN";
 
