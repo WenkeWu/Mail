@@ -61,7 +61,7 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
         if (!cancelled) setData(res);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setLoadError(e instanceof ApiError ? e.message : "無法載入個人設定");
+        if (!cancelled) setLoadError(e instanceof ApiError ? e.message : "無法載入個人設置");
       });
     return () => {
       cancelled = true;
