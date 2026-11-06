@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import { getForm, submitFormResponse } from "../api/endpoints";
 import type { AttachmentMeta, BodyState, FormView, MailDetail } from "../api/types";
+import { useI18n } from "../i18n";
 import { avatarHue, avatarText, displaySender, formatBytes, formatFullDate } from "../lib/format";
+import { FOLDER_LABEL } from "../lib/labels";
 import {
   CATEGORY_LABEL,
   CATEGORY_TITLE,
@@ -74,6 +76,7 @@ export function ReadingPane({
   onHardDelete,
   onDownloadAttachment,
 }: Props) {
+  const { t } = useI18n();
   // docs/18 P2：互動式表單。收件人 GET 成功才渲染；任何失敗 → 靜態文字（不報錯、不洩漏）。
   // 寄件備份（folder=sent）不嘗試以收件人身分取表單，改顯示下方的表單管理面板。
   const [formState, setFormState] = useState<FormState>({ kind: "idle" });
@@ -121,7 +124,7 @@ export function ReadingPane({
       ) {
         setFormState({ kind: "fallback" });
       } else {
-        setFormError(e instanceof ApiError ? e.message : "送出失敗，請稍後再試");
+        setFormError(e instanceof ApiError ? e.message : t("送出失敗，請稍後再試"));
       }
     } finally {
       setFormSubmitting(false);
@@ -133,7 +136,7 @@ export function ReadingPane({
       <section className="reading-pane empty">
         <div className="empty-state">
           <IconMailOpen size={44} />
-          <p>選擇一封信件開始閱讀</p>
+          <p>{t("選擇一封信件開始閱讀")}</p>
         </div>
       </section>
     );
@@ -151,17 +154,17 @@ export function ReadingPane({
   return (
     <section className="reading-pane">
       <div className="reading-toolbar">
-        <button type="button" className="icon-btn back-btn" onClick={onClose} aria-label="返回列表">
+        <button type="button" className="icon-btn back-btn" onClick={onClose} aria-label={t("返回列表")}>
           <IconBack size={20} />
         </button>
         <div className="toolbar-group">
-          <button type="button" className="icon-btn" onClick={onReply} title="回覆">
+          <button type="button" className="icon-btn" onClick={onReply} title={t("回覆")}>
             <IconReply size={18} />
           </button>
-          <button type="button" className="icon-btn" onClick={onReplyAll} title="全部回覆">
+          <button type="button" className="icon-btn" onClick={onReplyAll} title={t("全部回覆")}>
             <IconReplyAll size={18} />
           </button>
-          <button type="button" className="icon-btn" onClick={onForward} title="轉寄">
+          <button type="button" className="icon-btn" onClick={onForward} title={t("轉寄")}>
             <IconForward size={18} />
           </button>
         </div>
@@ -170,7 +173,7 @@ export function ReadingPane({
             type="button"
             className="icon-btn"
             onClick={() => onToggleRead(unread)}
-            title={unread ? "標為已讀" : "標為未讀"}
+            title={unread ? t("標為已讀") : t("標為未讀")}
           >
             <IconMailOpen size={18} />
           </button>
@@ -178,25 +181,25 @@ export function ReadingPane({
             /* docs/19 D19-3：垃圾桶內的單封操作（還原／永久刪除） */
             <>
               <button type="button" className="btn-secondary reading-action" onClick={onRestore}>
-                還原
+                {t("還原")}
               </button>
               <button type="button" className="btn-danger reading-action" onClick={onHardDelete}>
-                永久刪除
+                {t("永久刪除")}
               </button>
             </>
           ) : (
             <>
               {detail.folder === "spam" ? (
-                <button type="button" className="icon-btn" onClick={() => onMove("inbox")} title="移至收件匣">
+                <button type="button" className="icon-btn" onClick={() => onMove("inbox")} title={t("移至收件匣")}>
                   <IconInbox size={18} />
                 </button>
               ) : (
-                <button type="button" className="icon-btn" onClick={onArchive} title="封存">
+                <button type="button" className="icon-btn" onClick={onArchive} title={t("封存")}>
                   <IconArchive size={18} />
                 </button>
               )}
               {detail.folder !== "spam" && (
-                <button type="button" className="icon-btn" onClick={() => onMove("spam")} title="標為垃圾郵件">
+                <button type="button" className="icon-btn" onClick={() => onMove("spam")} title={t("標為垃圾郵件")}>
                   <IconSpam size={18} />
                 </button>
               )}
@@ -204,8 +207,8 @@ export function ReadingPane({
                 type="button"
                 className="icon-btn danger"
                 onClick={onDelete}
-                title="刪除（移至垃圾桶）"
-                aria-label="刪除"
+                title={t("刪除（移至垃圾桶）")}
+                aria-label={t("刪除")}
               >
                 <IconTrash size={18} />
               </button>
@@ -216,7 +219,7 @@ export function ReadingPane({
 
       <div className="reading-scroll">
         <header className="reading-head">
-          <h1 className="reading-subject">{detail.subject || "(無主旨)"}</h1>
+          <h1 className="reading-subject">{detail.subject || t("(無主旨)")}</h1>
           <div className="reading-sender">
             <span className="avatar" style={{ background: `hsl(${hue} 58% 46%)` }}>
               {avatarText(detail.from)}
@@ -224,13 +227,13 @@ export function ReadingPane({
             <div className="sender-lines">
               <div className="sender-name">{displaySender(detail.from)}</div>
               <div className="sender-meta">
-                <span className={`mail-kind-badge kind-${category}`} title={CATEGORY_TITLE[category]}>
-                  {CATEGORY_LABEL[category]}
+                <span className={`mail-kind-badge kind-${category}`} title={t(CATEGORY_TITLE[category])}>
+                  {t(CATEGORY_LABEL[category])}
                 </span>
                 {/* D25：這封信是寄給哪個別名（envelope_to） */}
                 {detail.envelope_to && (
-                  <span className="alias-badge" title={`此信寄給別名 ${detail.envelope_to}`}>
-                    寄給 {detail.envelope_to}
+                  <span className="alias-badge" title={t("此信寄給別名 {alias}", { alias: detail.envelope_to })}>
+                    {t("寄給 {alias}", { alias: detail.envelope_to })}
                   </span>
                 )}
                 <span>{formatFullDate(detail.received_at)}</span>
@@ -238,40 +241,41 @@ export function ReadingPane({
               {detail.origin === "external" && (
                 <div
                   className={`sender-auth ${authFailure ? "has-failure" : ""}`}
-                  title="寄件者驗證結果僅供顯示，不會授權或改變郵件分類"
+                  title={t("寄件者驗證結果僅供顯示，不會授權或改變郵件分類")}
                 >
                   {authBadges.map((badge) => (
                     <span key={badge.method} className={`auth-chip auth-${badge.tone}`}>
-                      {badge.label}
+                      {t(badge.label)}
                     </span>
                   ))}
-                  {authFailure && <span className="auth-warning">⚠️ 寄件者驗證失敗，請留意釣魚</span>}
+                  {authFailure && <span className="auth-warning">{t("⚠️ 寄件者驗證失敗，請留意釣魚")}</span>}
                 </div>
               )}
-              {detail.suspicious_form_claim && <p className="mail-warning">{SUSPICIOUS_FORM_NOTE}</p>}
+              {detail.suspicious_form_claim && <p className="mail-warning">{t(SUSPICIOUS_FORM_NOTE)}</p>}
               <details className="recipients">
                 <summary>
-                  寄給 {toLine.length > 60 ? `${toLine.slice(0, 60)}…` : toLine || "我"}
-                  {detail.cc.length > 0 ? "（含副本）" : ""}
+                  {t("寄給 {recipients}", { recipients: toLine.length > 60 ? `${toLine.slice(0, 60)}…` : toLine || t("我") })}
+                  {detail.cc.length > 0 ? t("（含副本）") : ""}
                 </summary>
                 <div className="recipients-detail">
                   <div>
-                    <strong>寄件者：</strong>
+                    <strong>{t("寄件者：")}</strong>
                     {detail.from}
                   </div>
                   <div>
-                    <strong>收件者：</strong>
+                    <strong>{t("收件者：")}</strong>
                     {toLine || "—"}
                   </div>
                   {ccLine && (
                     <div>
-                      <strong>副本：</strong>
+                      <strong>{t("副本：")}</strong>
                       {ccLine}
                     </div>
                   )}
                   <div>
-                    <strong>資料夾：</strong>
-                    {detail.folder} · 信件 ID {detail.id}
+                    <strong>{t("資料夾：")}</strong>
+                    {t(FOLDER_LABEL[detail.folder as keyof typeof FOLDER_LABEL] ?? detail.folder)} ·{" "}
+                    {t("信件 ID {id}", { id: detail.id })}
                   </div>
                 </div>
               </details>
@@ -293,7 +297,7 @@ export function ReadingPane({
                 className="attachment-chip"
                 onClick={() => onDownloadAttachment(att)}
                 disabled={downloadingId === att.id}
-                title={`下載 ${att.filename}`}
+                title={t("下載 {filename}", { filename: att.filename })}
               >
                 <IconFile size={18} />
                 <span className="att-name">{att.filename}</span>
@@ -308,7 +312,7 @@ export function ReadingPane({
           {formState.kind === "loading" ? (
             <div className="list-state">
               <div className="spinner" />
-              <p>載入表單…</p>
+              <p>{t("載入表單…")}</p>
             </div>
           ) : formState.kind === "ready" ? (
             <div className="form-pane">
@@ -321,20 +325,20 @@ export function ReadingPane({
             </div>
           ) : formState.kind === "submitted" ? (
             <div className="form-success" role="status">
-              <strong>已送出回覆</strong>
-              <p>寄件人現在可以查看你的回覆。</p>
+              <strong>{t("已送出回覆")}</strong>
+              <p>{t("寄件人現在可以查看你的回覆。")}</p>
             </div>
           ) : loading || body.kind === "loading" ? (
             <div className="list-state">
               <div className="spinner" />
-              <p>載入內容…</p>
+              <p>{t("載入內容…")}</p>
             </div>
           ) : body.kind === "html" ? (
             <HtmlBody html={body.html} />
           ) : body.kind === "text" ? (
             <PlainTextBody text={body.text} />
           ) : (
-            <p className="muted">（此信沒有可顯示的內文）</p>
+            <p className="muted">{t("（此信沒有可顯示的內文）")}</p>
           )}
         </div>
       </div>

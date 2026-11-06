@@ -1,4 +1,5 @@
 import type { CountsResponse, Folder, FolderQuery, Session } from "../api/types";
+import { useI18n } from "../i18n";
 import {
   IconApps,
   IconArchive,
@@ -81,27 +82,28 @@ export function FolderSidebar({
   quotaLine = null,
   composeBlockedReason = null,
 }: Props) {
+  const { t } = useI18n();
   // D29：public（app.atwho.org）只留下收件匣／寄件備份／垃圾桶
   const folderItems = publicMode
     ? FOLDER_ITEMS.filter((item) => item.key === "inbox" || item.key === "sent" || item.key === "trash")
     : FOLDER_ITEMS;
   return (
-    <nav className={`sidebar ${open ? "open" : ""}`} aria-label="資料夾">
+    <nav className={`sidebar ${open ? "open" : ""}`} aria-label={t("資料夾")}>
       <button
         type="button"
         className="btn-compose sidebar-compose"
         onClick={onCompose}
         disabled={composeBlockedReason !== null}
-        title={composeBlockedReason ?? "撰寫新信"}
+        title={composeBlockedReason ?? t("撰寫新信")}
       >
         <IconCompose size={18} />
-        撰寫
+        {t("撰寫")}
       </button>
       {quotaLine && (
         <p className={`quota-line ${quotaLine.sent >= quotaLine.limit || !quotaLine.canSend ? "exhausted" : ""}`}>
           {quotaLine.canSend
-            ? `今日寄信 ${quotaLine.sent} / ${quotaLine.limit}`
-            : "寄信權限已關閉"}
+            ? t("今日寄信 {sent} / {limit}", { sent: quotaLine.sent, limit: quotaLine.limit })
+            : t("寄信權限已關閉")}
         </p>
       )}
 
@@ -118,7 +120,7 @@ export function FolderSidebar({
                 onClick={() => onSelectFolder(key)}
               >
                 <Icon size={18} />
-                <span className="folder-label">{label}</span>
+                <span className="folder-label">{t(label)}</span>
                 {unread > 0 && <span className="badge">{unread > 99 ? "99+" : unread}</span>}
                 {unread === 0 && (c?.total ?? 0) > 0 && <span className="count-muted">{c?.total}</span>}
               </button>
@@ -130,18 +132,18 @@ export function FolderSidebar({
       {/* D29：別名管理已併入「個人設置」，不再有獨立入口 */}
       {session.kind === "owner" && !publicMode && (
         <>
-          <div className="sidebar-section">我的信箱</div>
+          <div className="sidebar-section">{t("我的信箱")}</div>
           <ul className="folder-list">
             <li>
               <button
                 type="button"
                 className={`folder-item ${currentPage === "mail" && addressFilter === null ? "active" : ""}`}
                 onClick={() => onSelectAddress(null)}
-                title="你名下所有地址的信件（不含其他使用者）"
+                title={t("你名下所有地址的信件（不含其他使用者）")}
               >
                 <IconUsers size={18} />
                 {/* 文案修正（docs/16 §3 D5）：語意是「你名下全部地址」，不是全站所有使用者 */}
-                <span className="folder-label">我的全部信箱</span>
+                <span className="folder-label">{t("我的全部信箱")}</span>
               </button>
             </li>
             {(counts?.addresses ?? []).map((a) => (
@@ -166,7 +168,7 @@ export function FolderSidebar({
                 onClick={onOpenAddresses}
               >
                 <IconUsers size={18} />
-                <span className="folder-label">地址管理</span>
+                <span className="folder-label">{t("地址管理")}</span>
               </button>
             </li>
             {/* D4／D5／D7：管理主控台（僅 mail.／localhost 顯示；app. 不顯示） */}
@@ -179,7 +181,7 @@ export function FolderSidebar({
                     onClick={onOpenInvites}
                   >
                     <IconTicket size={18} />
-                    <span className="folder-label">邀請碼管理</span>
+                    <span className="folder-label">{t("邀請碼管理")}</span>
                   </button>
                 </li>
                 <li>
@@ -189,7 +191,7 @@ export function FolderSidebar({
                     onClick={onOpenVisitors}
                   >
                     <IconUsers size={18} />
-                    <span className="folder-label">訪客管理</span>
+                    <span className="folder-label">{t("訪客管理")}</span>
                   </button>
                 </li>
                 <li>
@@ -197,10 +199,10 @@ export function FolderSidebar({
                     type="button"
                     className={`folder-item ${currentPage === "apps" ? "active" : ""}`}
                     onClick={onOpenApps}
-                    title="第三方 App 的登入整合（app_secret 只顯示一次）"
+                    title={t("第三方 App 的登入整合（app_secret 只顯示一次）")}
                   >
                     <IconApps size={18} />
-                    <span className="folder-label">應用程式</span>
+                    <span className="folder-label">{t("應用程式")}</span>
                   </button>
                 </li>
               </>
@@ -218,7 +220,7 @@ export function FolderSidebar({
             onClick={onOpenSettings}
           >
             <IconSettings size={18} />
-            <span className="folder-label">個人設置</span>
+            <span className="folder-label">{t("個人設置")}</span>
           </button>
         </li>
       </ul>

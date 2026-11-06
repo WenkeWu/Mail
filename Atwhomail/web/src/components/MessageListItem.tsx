@@ -1,6 +1,7 @@
 import { memo } from "react";
 import type { MouseEvent } from "react";
 import type { MailListItem } from "../api/types";
+import { useI18n } from "../i18n";
 import { avatarHue, avatarText, displaySender, relativeTime } from "../lib/format";
 import { CATEGORY_LABEL, CATEGORY_TITLE, mailCategory } from "../lib/mailCategory";
 import { FOLDER_LABEL } from "../lib/labels";
@@ -26,6 +27,7 @@ export const MessageListItem = memo(function MessageListItem({
   onSelect,
   onToggleSelect,
 }: Props) {
+  const { t } = useI18n();
   const hue = avatarHue(item.from);
   // 寄件備份的 read_at 恆為 NULL，但不該顯示成未讀
   const unread = !item.read && item.folder !== "sent";
@@ -36,7 +38,7 @@ export const MessageListItem = memo(function MessageListItem({
       <input
         type="checkbox"
         className="mail-row-checkbox"
-        aria-label={`選取信件：${item.subject || "(無主旨)"}`}
+        aria-label={t("選取信件：{subject}", { subject: item.subject || t("(無主旨)") })}
         checked={selected}
         // 選取狀態由 React state 控制；切換語意統一在 onClick（含 Shift 範圍連選）
         onChange={() => {}}
@@ -60,28 +62,28 @@ export const MessageListItem = memo(function MessageListItem({
         <span className="mail-row-main">
           <span className="mail-row-top">
             <span className="mail-sender">{displaySender(item.from)}</span>
-            <span className={`mail-kind-badge kind-${category}`} title={CATEGORY_TITLE[category]}>
-              {CATEGORY_LABEL[category]}
+            <span className={`mail-kind-badge kind-${category}`} title={t(CATEGORY_TITLE[category])}>
+              {t(CATEGORY_LABEL[category])}
             </span>
             {/* D25：寄給別名的信件顯示來源別名（envelope_to） */}
             {item.envelope_to && (
-              <span className="alias-badge" title={`此信寄給別名 ${item.envelope_to}`}>
-                寄給 {item.envelope_to}
+              <span className="alias-badge" title={t("此信寄給別名 {alias}", { alias: item.envelope_to })}>
+                {t("寄給 {alias}", { alias: item.envelope_to })}
               </span>
             )}
             <span className="mail-time">{relativeTime(item.received_at)}</span>
           </span>
           <span className="mail-subject">
-            {item.subject || "(無主旨)"}
+            {item.subject || t("(無主旨)")}
             {item.has_attachments && (
-              <span className="clip" aria-label="含附件">
+              <span className="clip" aria-label={t("含附件")}>
                 <IconPaperclip size={13} />
               </span>
             )}
           </span>
           <span className="mail-preview">{item.text_preview ?? ""}</span>
         </span>
-        {showFolder && <span className="folder-chip">{FOLDER_LABEL[item.folder]}</span>}
+        {showFolder && <span className="folder-chip">{t(FOLDER_LABEL[item.folder])}</span>}
       </button>
     </li>
   );

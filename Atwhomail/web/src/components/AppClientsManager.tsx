@@ -14,6 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import { createApp, disableApp, listApps, updateApp } from "../api/endpoints";
 import type { AppClient, CreatedAppClient } from "../api/types";
+import { getFormatLocale, useI18n } from "../i18n";
 import { IconBack, IconRefresh } from "./icons";
 import { Modal } from "./Modal";
 
@@ -25,7 +26,7 @@ interface Props {
 function formatTime(ts: number): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("zh-TW", {
+  return d.toLocaleString(getFormatLocale(), {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -44,6 +45,7 @@ function parseRedirectInput(value: string): string[] {
 }
 
 export function AppClientsManager({ onBack, onToast }: Props) {
+  const { t } = useI18n();
   const [apps, setApps] = useState<AppClient[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -62,9 +64,9 @@ export function AppClientsManager({ onBack, onToast }: Props) {
       setApps(res.apps);
       setError(null);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "載入 App Clients 失敗");
+      setError(e instanceof ApiError ? e.message : t("載入 App Clients 失敗"));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void reload();
@@ -82,7 +84,7 @@ export function AppClientsManager({ onBack, onToast }: Props) {
     const name = newName.trim();
     const redirects = parseRedirectInput(newRedirects);
     if (!appId || !name || redirects.length === 0) {
-      onToast("請填寫 App ID、名稱與至少一個 redirect_uri", "error");
+      onToast(t("請填寫 App ID、名稱與至少一個 redirect_uri"), "error");
       return;
     }
     setCreating(true);
@@ -90,10 +92,10 @@ export function AppClientsManager({ onBack, onToast }: Props) {
       const res = await createApp({ app_id: appId, name, redirect_uris: redirects });
       setShowCreate(false);
       setCreated(res);
-      onToast(`已建立 ${res.app_id}；請立即複製 secret（只顯示一次）`);
+      onToast(t("已建立 {appId}；請立即複製 secret（只顯示一次）", { appId: res.app_id }));
       await reload();
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "建立 App 失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("建立 App 失敗"), "error");
     } finally {
       setCreating(false);
     }
@@ -105,10 +107,14 @@ export function AppClientsManager({ onBack, onToast }: Props) {
       // 停用走 DELETE（後端軟停用）；啟用走 PATCH status='active'
       if (status === "disabled") await disableApp(app.id);
       else await updateApp(app.id, { status: "active" });
-      onToast(`${app.app_id} 已${status === "active" ? "啟用" : "停用"}`);
+      onToast(
+        status === "active"
+          ? t("{appId} 已啟用", { appId: app.app_id })
+          : t("{appId} 已停用", { appId: app.app_id })
+      );
       await reload();
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "更新失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("更新失敗"), "error");
     } finally {
       setBusyId(null);
     }
@@ -118,35 +124,32 @@ export function AppClientsManager({ onBack, onToast }: Props) {
     if (!created) return;
     try {
       await navigator.clipboard.writeText(created.app_secret);
-      onToast("已複製 secret");
+      onToast(t("已複製 secret"));
     } catch {
-      onToast("複製失敗，請手動選取 secret", "error");
+      onToast(t("複製失敗，請手動選取 secret"), "error");
     }
   };
 
   return (
     <section className="address-page">
       <div className="page-head">
-        <button type="button" className="icon-btn" onClick={onBack} aria-label="返回">
+        <button type="button" className="icon-btn" onClick={onBack} aria-label={t("返回")}>
           <IconBack size={20} />
         </button>
-        <h1>應用程式（App Clients）</h1>
+        <h1>{t("應用程式（App Clients）")}</h1>
         <button type="button" className="btn-secondary" onClick={openCreate}>
-          新增 App
+          {t("新增 App")}
         </button>
-        <button type="button" className="icon-btn" title="重新整理" onClick={() => void reload()}>
+        <button type="button" className="icon-btn" title={t("重新整理")} onClick={() => void reload()}>
           <IconRefresh size={18} />
         </button>
       </div>
 
       <p className="muted small">
-        其他 App 可導向{" "}
-        <code>https://app.atwho.org/?app=&lt;app_id&gt;&amp;redirect_uri=&lt;回呼網址&gt;</code>
-        ；登入後由 <code>https://auth.atwho.org/api/auth/exchange</code> 以{" "}
-        <code>app_secret</code> 換取使用者 token。redirect_uri 必須<strong>完全相符</strong>白名單。
+        {t("其他 App 可導向 https://app.atwho.org/?app=<app_id>&redirect_uri=<回呼網址>；登入後由 https://auth.atwho.org/api/auth/exchange 以 app_secret 換取使用者 token。redirect_uri 必須完全相符白名單。")}
       </p>
       <p className="warn-text">
-        ⚠️ <code>app_secret</code> 只會在建立時顯示一次；伺服器只保存雜湊，無法再取回。
+        {t("⚠️ app_secret 只會在建立時顯示一次；伺服器只保存雜湊，無法再取回。")}
       </p>
 
       <div className="address-table-wrap">
@@ -157,17 +160,17 @@ export function AppClientsManager({ onBack, onToast }: Props) {
             <div className="spinner" />
           </div>
         ) : apps.length === 0 ? (
-          <div className="list-state">尚無 App Client</div>
+          <div className="list-state">{t("尚無 App Client")}</div>
         ) : (
           <table className="address-table">
             <thead>
               <tr>
                 <th>App ID</th>
-                <th>名稱</th>
-                <th>狀態</th>
+                <th>{t("名稱")}</th>
+                <th>{t("狀態")}</th>
                 <th>Redirect URIs</th>
-                <th>建立時間</th>
-                <th>操作</th>
+                <th>{t("建立時間")}</th>
+                <th>{t("操作")}</th>
               </tr>
             </thead>
             <tbody>
@@ -179,7 +182,7 @@ export function AppClientsManager({ onBack, onToast }: Props) {
                     <td>{a.name}</td>
                     <td>
                       <span className={`status-pill ${disabled ? "disabled" : "active"}`}>
-                        {disabled ? "已停用" : "啟用中"}
+                        {disabled ? t("已停用") : t("啟用中")}
                       </span>
                     </td>
                     <td>
@@ -199,7 +202,7 @@ export function AppClientsManager({ onBack, onToast }: Props) {
                         disabled={busyId === a.id}
                         onClick={() => void setStatus(a, disabled ? "active" : "disabled")}
                       >
-                        {disabled ? "啟用" : "停用"}
+                        {disabled ? t("啟用") : t("停用")}
                       </button>
                     </td>
                   </tr>
@@ -211,28 +214,28 @@ export function AppClientsManager({ onBack, onToast }: Props) {
       </div>
 
       {showCreate && (
-        <Modal title="新增 App Client" onClose={() => setShowCreate(false)}>
+        <Modal title={t("新增 App Client")} onClose={() => setShowCreate(false)}>
           <label className="field-row">
-            <span>App ID（小寫英數字／連字號，以字母開頭）</span>
+            <span>{t("App ID（小寫英數字／連字號，以字母開頭）")}</span>
             <input
               type="text"
               value={newAppId}
               onChange={(e) => setNewAppId(e.target.value)}
-              placeholder="例如 mycrm"
+              placeholder={t("例如 mycrm")}
               autoFocus
             />
           </label>
           <label className="field-row">
-            <span>名稱</span>
+            <span>{t("名稱")}</span>
             <input
               type="text"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              placeholder="例如 My CRM"
+              placeholder={t("例如 My CRM")}
             />
           </label>
           <label className="field-row">
-            <span>Redirect URIs（每行一個；必須 https，完整相符）</span>
+            <span>{t("Redirect URIs（每行一個；必須 https，完整相符）")}</span>
             <textarea
               rows={4}
               value={newRedirects}
@@ -241,23 +244,23 @@ export function AppClientsManager({ onBack, onToast }: Props) {
             />
           </label>
           <p className="muted small">
-            App ID 建立後不可修改；redirect_uri 可之後用 PATCH 更新。secret 將於建立成功後顯示一次。
+            {t("App ID 建立後不可修改；redirect_uri 可之後用 PATCH 更新。secret 將於建立成功後顯示一次。")}
           </p>
           <div className="modal-actions">
             <button type="button" className="btn-secondary" onClick={() => setShowCreate(false)}>
-              取消
+              {t("取消")}
             </button>
             <button type="button" className="btn-primary" disabled={creating} onClick={() => void submitCreate()}>
-              {creating ? "建立中…" : "建立"}
+              {creating ? t("建立中…") : t("建立")}
             </button>
           </div>
         </Modal>
       )}
 
       {created && (
-        <Modal title={`${created.app_id} 的 App Secret（只顯示一次）`} onClose={() => setCreated(null)}>
+        <Modal title={t("{appId} 的 App Secret（只顯示一次）", { appId: created.app_id })} onClose={() => setCreated(null)}>
           <p className="warn-text">
-            ⚠️ 請立即複製並保存。關閉此視窗後<strong>無法</strong>再次取得；若遺失只能停用後重新建立。
+            {t("⚠️ 請立即複製並保存。關閉此視窗後無法再次取得；若遺失只能停用後重新建立。")}
           </p>
           <code className="app-secret mono">{created.app_secret}</code>
           <p className="muted small">
@@ -271,10 +274,10 @@ export function AppClientsManager({ onBack, onToast }: Props) {
           </p>
           <div className="modal-actions">
             <button type="button" className="btn-secondary" onClick={() => setCreated(null)}>
-              我已保存，關閉
+              {t("我已保存，關閉")}
             </button>
             <button type="button" className="btn-primary" onClick={() => void copySecret()}>
-              複製 secret
+              {t("複製 secret")}
             </button>
           </div>
         </Modal>

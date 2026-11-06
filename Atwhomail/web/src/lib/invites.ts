@@ -5,6 +5,7 @@
  * 「已用盡」「已過期」是**推導**出來的狀態 → 放在這裡當純函式，UI 與測試共用同一份判定。
  * ⚠️ 純顯示用：真正的拒絕判定在後端 `POST /api/auth/register`（前端推導不影響權限）。
  */
+import { getFormatLocale, tGlobal } from "../i18n";
 
 /** UI 狀態：有效／已撤銷／已用盡／已過期 */
 export type InviteState = "active" | "revoked" | "exhausted" | "expired";
@@ -37,8 +38,8 @@ export const INVITE_STATE_LABEL: Record<InviteState, string> = {
 
 /** 到期時間顯示：null = 不過期 */
 export function formatExpiry(expiresAt: number | null): string {
-  if (expiresAt === null) return "不過期";
-  return new Date(expiresAt).toLocaleString("zh-TW", {
+  if (expiresAt === null) return tGlobal("不過期");
+  return new Date(expiresAt).toLocaleString(getFormatLocale(), {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

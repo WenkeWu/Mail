@@ -135,6 +135,9 @@ export const registerVerify = (payload: {
 /** 目前 session 的身分與寄信配額（Phase 1） */
 export const getMe = () => request<MeResponse>("/api/me");
 
+/** D32：Cloudflare `CF-IPCountry` 的國別（公開端點；無值／XX／T1 → null） */
+export const getGeo = () => request<{ country: string | null }>("/api/geo");
+
 /**
  * owner 本人變更自己的密碼（D7，docs/16 §3；需舊密碼）
  * 成功後所有既有 JWT 立即失效（`password_changed_at`）→ 前端須重新登入

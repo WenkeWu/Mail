@@ -9,6 +9,7 @@ import {
   setVisitorAddressStatus,
 } from "../api/endpoints";
 import type { VisitorUser } from "../api/types";
+import { getFormatLocale, useI18n } from "../i18n";
 import {
   ADDRESS_DISABLE_WARNING,
   USER_DELETE_LABEL,
@@ -50,7 +51,7 @@ function formatActivity(ts: number | null): string {
   if (!ts) return "—";
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("zh-TW", {
+  return d.toLocaleString(getFormatLocale(), {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -68,6 +69,7 @@ interface EditState {
 }
 
 export function VisitorManager({ onBack, onToast }: Props) {
+  const { t } = useI18n();
   const [visitors, setVisitors] = useState<VisitorUser[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -82,9 +84,9 @@ export function VisitorManager({ onBack, onToast }: Props) {
       setVisitors(res.users);
       setError(null);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "載入訪客清單失敗");
+      setError(e instanceof ApiError ? e.message : t("載入訪客清單失敗"));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void reload();
@@ -95,11 +97,15 @@ export function VisitorManager({ onBack, onToast }: Props) {
     setBusyId(user.id);
     try {
       await setUserStatus(user.id, status);
-      onToast(`${user.username} 已${status === "active" ? "復權" : "停權"}`);
+      onToast(
+        status === "active"
+          ? t("{username} 已復權", { username: user.username })
+          : t("{username} 已停權", { username: user.username })
+      );
       setConfirm(null);
       await reload();
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "操作失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("操作失敗"), "error");
     } finally {
       setBusyId(null);
     }
@@ -111,11 +117,15 @@ export function VisitorManager({ onBack, onToast }: Props) {
     setBusyId(user.id);
     try {
       await setVisitorAddressStatus(user.address.id, status);
-      onToast(`${user.address.email} 已${status === "active" ? "啟用" : "停用"}`);
+      onToast(
+        status === "active"
+          ? t("{email} 已啟用", { email: user.address.email })
+          : t("{email} 已停用", { email: user.address.email })
+      );
       setConfirm(null);
       await reload();
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "操作失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("操作失敗"), "error");
     } finally {
       setBusyId(null);
     }
@@ -129,11 +139,11 @@ export function VisitorManager({ onBack, onToast }: Props) {
     setBusyId(user.id);
     try {
       await deleteVisitor(user.id);
-      onToast(`${user.username} 已永久刪除`);
+      onToast(t("{username} 已永久刪除", { username: user.username }));
       setConfirm(null);
       await reload();
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "刪除失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("刪除失敗"), "error");
     } finally {
       setBusyId(null);
     }
@@ -153,7 +163,7 @@ export function VisitorManager({ onBack, onToast }: Props) {
     if (!edit) return;
     const quota = Number(edit.quota);
     if (!Number.isInteger(quota) || quota < 1 || quota > 200) {
-      onToast("每日配額需為 1–200 的整數", "error");
+      onToast(t("每日配額需為 1–200 的整數"), "error");
       return;
     }
     setBusyId(edit.user.id);
@@ -165,7 +175,7 @@ export function VisitorManager({ onBack, onToast }: Props) {
           await setUserWarmup(edit.user.id, edit.warmupExempt);
         } catch (e) {
           if (e instanceof ApiError && e.code === "MIGRATION_REQUIRED") {
-            onToast("配額已更新；暖機豁免需要先套用 migration 0007", "error");
+            onToast(t("配額已更新；暖機豁免需要先套用 migration 0007"), "error");
             setEdit(null);
             await reload();
             return;
@@ -173,11 +183,11 @@ export function VisitorManager({ onBack, onToast }: Props) {
           throw e;
         }
       }
-      onToast(`${edit.user.username} 的寄信設定已更新`);
+      onToast(t("{username} 的寄信設定已更新", { username: edit.user.username }));
       setEdit(null);
       await reload();
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "更新失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("更新失敗"), "error");
     } finally {
       setBusyId(null);
     }
@@ -186,22 +196,21 @@ export function VisitorManager({ onBack, onToast }: Props) {
   return (
     <section className="address-page">
       <div className="page-head">
-        <button type="button" className="icon-btn" onClick={onBack} aria-label="返回">
+        <button type="button" className="icon-btn" onClick={onBack} aria-label={t("返回")}>
           <IconBack size={20} />
         </button>
-        <h1>訪客管理</h1>
-        <button type="button" className="icon-btn" title="重新整理" onClick={() => void reload()}>
+        <h1>{t("訪客管理")}</h1>
+        <button type="button" className="icon-btn" title={t("重新整理")} onClick={() => void reload()}>
           <IconRefresh size={18} />
         </button>
       </div>
 
       <p className="muted small">
-        只顯示帳號狀態、配額與<strong>數量／時間</strong>（信件數、最近活動）。
-        基於權限邊界（N9），管理者看不到訪客信件的主旨、寄件者或內文。
+        {t("只顯示帳號狀態、配額與數量／時間（信件數、最近活動）。基於權限邊界（N9），管理者看不到訪客信件的主旨、寄件者或內文。")}
       </p>
 
       {/* D11-4：一頁一行的定位說明（訪客管理＝別人用邀請碼註冊的帳號） */}
-      <p className="muted small">{VISITOR_MANAGER_HINT}</p>
+      <p className="muted small">{t(VISITOR_MANAGER_HINT)}</p>
 
       <div className="address-table-wrap">
         {error ? (
@@ -211,19 +220,19 @@ export function VisitorManager({ onBack, onToast }: Props) {
             <div className="spinner" />
           </div>
         ) : visitors.length === 0 ? (
-          <div className="list-state">尚無訪客帳號</div>
+          <div className="list-state">{t("尚無訪客帳號")}</div>
         ) : (
           <table className="address-table">
             <thead>
               <tr>
-                <th>帳號</th>
-                <th>地址</th>
-                <th>狀態</th>
-                <th>配額</th>
-                <th>今日已寄</th>
-                <th>信件數</th>
-                <th>最近活動</th>
-                <th>操作</th>
+                <th>{t("帳號")}</th>
+                <th>{t("地址")}</th>
+                <th>{t("狀態")}</th>
+                <th>{t("配額")}</th>
+                <th>{t("今日已寄")}</th>
+                <th>{t("信件數")}</th>
+                <th>{t("最近活動")}</th>
+                <th>{t("操作")}</th>
               </tr>
             </thead>
             <tbody>
@@ -234,17 +243,17 @@ export function VisitorManager({ onBack, onToast }: Props) {
                 return (
                   <tr key={u.id} className={suspended || addressOff ? "row-dim" : ""}>
                     <td className="mono">{u.username}</td>
-                    <td className="mono">{a?.email ?? <span className="muted">（無地址）</span>}</td>
+                    <td className="mono">{a?.email ?? <span className="muted">{t("（無地址）")}</span>}</td>
                     <td>
                       <span className={`status-pill ${suspended ? "suspended" : "active"}`}>
-                        {suspended ? "已停權" : "正常"}
+                        {suspended ? t("已停權") : t("正常")}
                       </span>
                       {a && (
                         <span className={`status-pill ${addressOff ? "disabled" : "active"} pill-inline`}>
-                          {addressOff ? "地址停用" : "地址啟用"}
+                          {addressOff ? t("地址停用") : t("地址啟用")}
                         </span>
                       )}
-                      {a?.can_send === 0 && <span className="status-pill disabled pill-inline">禁止寄信</span>}
+                      {a?.can_send === 0 && <span className="status-pill disabled pill-inline">{t("禁止寄信")}</span>}
                     </td>
                     <td>{a ? a.daily_send_quota : "—"}</td>
                     <td>{a ? a.sent_today : "—"}</td>
@@ -272,7 +281,7 @@ export function VisitorManager({ onBack, onToast }: Props) {
                         </button>
                       )}
                       <button type="button" disabled={!a || busyId === u.id} onClick={() => openEdit(u)}>
-                        寄信設定
+                        {t("寄信設定")}
                       </button>
                       {/* D9：永久刪除（danger）；二次確認見下方 Modal */}
                       <button
@@ -282,7 +291,7 @@ export function VisitorManager({ onBack, onToast }: Props) {
                         title={userDeleteTooltip()}
                         onClick={() => setConfirm({ user: u, action: "delete" })}
                       >
-                        {USER_DELETE_LABEL}
+                        {t(USER_DELETE_LABEL)}
                       </button>
                     </td>
                   </tr>
@@ -293,61 +302,63 @@ export function VisitorManager({ onBack, onToast }: Props) {
         )}
       </div>
       <p className="muted small">
-        <strong>停權帳號</strong>＝凍結該訪客<strong>全部地址</strong>：立即無法登入與寄信，但
-        <strong>來信仍會照收並保留</strong>。<strong>停用地址</strong>＝僅該一個地址，且
-        <strong>連收信都停止</strong>——停用期間的來信會被直接丟棄，不會保留。
+        {t("停權帳號＝凍結該訪客全部地址：立即無法登入與寄信，但來信仍會照收並保留。停用地址＝僅該一個地址，且連收信都停止——停用期間的來信會被直接丟棄，不會保留。")}
       </p>
 
       {confirm && (
         <Modal
           title={
             confirm.action === "suspend"
-              ? "停權／復權"
+              ? t("停權／復權")
               : confirm.action === "delete"
-                ? "刪除訪客（無法復原）"
-                : "停用／啟用地址"
+                ? t("刪除訪客（無法復原）")
+                : t("停用／啟用地址")
           }
           onClose={() => setConfirm(null)}
         >
           {confirm.action === "suspend" ? (
             <>
               <p>
-                確定要{confirm.user.status === "active" ? "停權" : "復權"}{" "}
-                <strong>{confirm.user.username}</strong> 嗎？
+                {confirm.user.status === "active"
+                  ? t("確定要停權 {username} 嗎？", { username: confirm.user.username })
+                  : t("確定要復權 {username} 嗎？", { username: confirm.user.username })}
               </p>
               {confirm.user.status === "active" ? (
-                <p className="warn-text">⚠️ {USER_SUSPEND_WARNING}</p>
+                <p className="warn-text">⚠️ {t(USER_SUSPEND_WARNING)}</p>
               ) : (
-                <p className="muted small">復權後，此人名下所有地址恢復可登入與寄信（收信狀態不變）。</p>
+                <p className="muted small">{t("復權後，此人名下所有地址恢復可登入與寄信（收信狀態不變）。")}</p>
               )}
               <div className="modal-actions">
                 <button type="button" className="btn-secondary" onClick={() => setConfirm(null)}>
-                  取消
+                  {t("取消")}
                 </button>
                 <button
                   type="button"
                   className={confirm.user.status === "active" ? "btn-danger" : "btn-primary"}
                   onClick={() => void applyUserStatus(confirm.user, confirm.user.status === "active" ? "suspended" : "active")}
                 >
-                  確定{confirm.user.status === "active" ? "停權" : "復權"}
+                  {confirm.user.status === "active" ? t("確定停權") : t("確定復權")}
                 </button>
               </div>
             </>
           ) : confirm.action === "delete" ? (
             <>
               <p>
-                確定要<strong>永久刪除</strong>訪客 <strong>{confirm.user.username}</strong>
-                {confirm.user.address ? `（${confirm.user.address.email}）` : ""} 嗎？
+                {t("確定要永久刪除訪客 {username}{email} 嗎？", {
+                  username: confirm.user.username,
+                  email: confirm.user.address ? `（${confirm.user.address.email}）` : "",
+                })}
               </p>
               {/* D9：刪除是不可逆的完整清除，警語必須逐字顯示，並導向「停權」 */}
-              <p className="warn-text">⚠️ {USER_DELETE_WARNING}</p>
+              <p className="warn-text">⚠️ {t(USER_DELETE_WARNING)}</p>
               <p className="muted small">
-                將一併清除該訪客的 {confirm.user.mail_count} 封信件與其附件，並立即讓其現有登入失效；
-                註冊與管理稽核紀錄會保留。此動作<strong>沒有</strong>復原方式。
+                {t("將一併清除該訪客的 {count} 封信件與其附件，並立即讓其現有登入失效；註冊與管理稽核紀錄會保留。此動作沒有復原方式。", {
+                  count: confirm.user.mail_count,
+                })}
               </p>
               <div className="modal-actions">
                 <button type="button" className="btn-secondary" onClick={() => setConfirm(null)}>
-                  取消
+                  {t("取消")}
                 </button>
                 <button
                   type="button"
@@ -355,27 +366,28 @@ export function VisitorManager({ onBack, onToast }: Props) {
                   disabled={busyId === confirm.user.id}
                   onClick={() => void deleteUser(confirm.user)}
                 >
-                  {busyId === confirm.user.id ? "刪除中…" : "確定永久刪除"}
+                  {busyId === confirm.user.id ? t("刪除中…") : t("確定永久刪除")}
                 </button>
               </div>
             </>
           ) : (
             <>
               <p>
-                確定要{confirm.user.address?.status === "active" ? "停用" : "啟用"}{" "}
-                <strong>{confirm.user.address?.email}</strong> 嗎？
+                {confirm.user.address?.status === "active"
+                  ? t("確定要停用 {email} 嗎？", { email: confirm.user.address?.email ?? "" })
+                  : t("確定要啟用 {email} 嗎？", { email: confirm.user.address?.email ?? "" })}
               </p>
               {confirm.user.address?.status === "active" ? (
                 // D8-3：地址停用是**不可逆的收信中斷**（信在 SMTP 階段即被丟棄），必須明寫後果
-                <p className="warn-text">⚠️ {ADDRESS_DISABLE_WARNING}</p>
+                <p className="warn-text">⚠️ {t(ADDRESS_DISABLE_WARNING)}</p>
               ) : (
                 <p className="muted small">
-                  啟用後該地址恢復收信與登入；停用期間已被丟棄的來信無法找回。
+                  {t("啟用後該地址恢復收信與登入；停用期間已被丟棄的來信無法找回。")}
                 </p>
               )}
               <div className="modal-actions">
                 <button type="button" className="btn-secondary" onClick={() => setConfirm(null)}>
-                  取消
+                  {t("取消")}
                 </button>
                 <button
                   type="button"
@@ -387,7 +399,7 @@ export function VisitorManager({ onBack, onToast }: Props) {
                     )
                   }
                 >
-                  確定{confirm.user.address?.status === "active" ? "停用" : "啟用"}
+                  {confirm.user.address?.status === "active" ? t("確定停用") : t("確定啟用")}
                 </button>
               </div>
             </>
@@ -396,9 +408,9 @@ export function VisitorManager({ onBack, onToast }: Props) {
       )}
 
       {edit && (
-        <Modal title={`${edit.user.username} 的寄信設定`} onClose={() => setEdit(null)}>
+        <Modal title={t("{username} 的寄信設定", { username: edit.user.username })} onClose={() => setEdit(null)}>
           <label className="field-row">
-            <span>每日寄信配額（1–200）</span>
+            <span>{t("每日寄信配額（1–200）")}</span>
             <input
               type="number"
               min={1}
@@ -413,7 +425,7 @@ export function VisitorManager({ onBack, onToast }: Props) {
               checked={edit.canSend}
               onChange={(e) => setEdit({ ...edit, canSend: e.target.checked })}
             />
-            <span>允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）</span>
+            <span>{t("允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）")}</span>
           </label>
           <label className="field-row checkbox-row">
             <input
@@ -421,18 +433,17 @@ export function VisitorManager({ onBack, onToast }: Props) {
               checked={edit.warmupExempt}
               onChange={(e) => setEdit({ ...edit, warmupExempt: e.target.checked })}
             />
-            <span>暖機豁免（跳過註冊後 24 小時的 5 封上限）</span>
+            <span>{t("暖機豁免（跳過註冊後 24 小時的 5 封上限）")}</span>
           </label>
           <p className="warn-text">
-            ⚠️ 暖機豁免會讓新帳號<strong>立刻</strong>能寄到每日配額上限，可能影響寄信聲譽（新網域尤其敏感）。
-            豁免後仍受<strong>每日配額</strong>與每小時限流約束，不是無上限；此外需要 migration 0007 已套用。
+            {t("⚠️ 暖機豁免會讓新帳號立刻能寄到每日配額上限，可能影響寄信聲譽（新網域尤其敏感）。豁免後仍受每日配額與每小時限流約束，不是無上限；此外需要 migration 0007 已套用。")}
           </p>
           <div className="modal-actions">
             <button type="button" className="btn-secondary" onClick={() => setEdit(null)}>
-              取消
+              {t("取消")}
             </button>
             <button type="button" className="btn-primary" onClick={() => void submitEdit()} disabled={busyId === edit.user.id}>
-              {busyId === edit.user.id ? "套用中…" : "套用"}
+              {busyId === edit.user.id ? t("套用中…") : t("套用")}
             </button>
           </div>
         </Modal>

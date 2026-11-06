@@ -7,6 +7,7 @@
 import { useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { resetPassword } from "../api/endpoints";
+import { useI18n } from "../i18n";
 import { IconMail } from "./icons";
 
 interface Props {
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export function ResetPasswordPage({ token, onDone }: Props) {
+  const { t } = useI18n();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
@@ -25,15 +27,15 @@ export function ResetPasswordPage({ token, onDone }: Props) {
     if (busy) return;
     setError(null);
     if (password !== confirm) {
-      setError("兩次輸入的密碼不一致");
+      setError(t("兩次輸入的密碼不一致"));
       return;
     }
     setBusy(true);
     try {
       await resetPassword(token, password);
-      onDone("密碼已重設，請用新密碼登入。");
+      onDone(t("密碼已重設，請用新密碼登入。"));
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "重設失敗，請稍後再試");
+      setError(err instanceof ApiError ? err.message : t("重設失敗，請稍後再試"));
     } finally {
       setBusy(false);
     }
@@ -48,26 +50,26 @@ export function ResetPasswordPage({ token, onDone }: Props) {
           </span>
           <div>
             <h1>AtWhoMail</h1>
-            <p>設定新密碼</p>
+            <p>{t("設定新密碼")}</p>
           </div>
         </div>
 
         <form onSubmit={submit} className="login-form">
-          <p className="login-hint">重設連結 30 分鐘內有效，且只能使用一次。</p>
+          <p className="login-hint">{t("重設連結 30 分鐘內有效，且只能使用一次。")}</p>
           <label>
-            新密碼
+            {t("新密碼")}
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="至少 8 個字元"
+              placeholder={t("至少 8 個字元")}
               autoComplete="new-password"
               autoFocus
               required
             />
           </label>
           <label>
-            確認新密碼
+            {t("確認新密碼")}
             <input
               type="password"
               value={confirm}
@@ -78,7 +80,7 @@ export function ResetPasswordPage({ token, onDone }: Props) {
           </label>
           {error && <p className="login-error">{error}</p>}
           <button type="submit" className="btn-primary" disabled={busy}>
-            {busy ? "設定中…" : "設定新密碼"}
+            {busy ? t("設定中…") : t("設定新密碼")}
           </button>
         </form>
       </div>

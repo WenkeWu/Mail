@@ -3,7 +3,7 @@
  *
  * 只 mock `fetch`（網路邊界），元件、驗證、表單與 DOM 事件都是真的。
  * API 規則本身在 `packages/api/test/alias.spec.ts`；
- * 這裡確認 UI 接上「建立／變更暱稱別名」、「Token 系統管理」與「停用」。
+ * 這裡確認 UI 接上「建立／變更暱稱別名」、「隱身代號系統管理」與「停用」。
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -90,9 +90,9 @@ afterEach(() => {
 });
 
 describe("AliasManager（D25／D31）", () => {
-  it("空狀態說明暱稱需自行建立、Token 由系統產生", async () => {
+  it("空狀態說明暱稱需自行建立、隱身代號由系統產生", async () => {
     renderManager();
-    expect(await screen.findByText(/尚未建立暱稱別名。Token 會在帳號建立時自動產生/)).toBeTruthy();
+    expect(await screen.findByText(/尚未建立暱稱別名。隱身代號會在帳號建立時自動產生/)).toBeTruthy();
   });
 
   it("名字即時驗證：少於 3 個字母 → 顯示錯誤且不送出 POST", async () => {
@@ -168,10 +168,10 @@ describe("AliasManager（D25／D31）", () => {
     );
   });
 
-  it("Token 列標示「Token」、只有複製按鈕，沒有停用／刪除", async () => {
+  it("隱身代號列標示「隱身代號」、只有複製按鈕，沒有停用／刪除", async () => {
     renderManager({ aliases: [NAMED_ALIAS, TOKEN_ALIAS] });
     const row = (await screen.findByText(TOKEN_ALIAS.alias_address)).closest("tr")!;
-    expect(within(row).getByText("Token")).toBeTruthy();
+    expect(within(row).getByText("隱身代號")).toBeTruthy();
     expect(within(row).getByRole("button", { name: "複製" })).toBeTruthy();
     expect(within(row).queryByRole("button", { name: "停用" })).toBeNull();
     expect(within(row).queryByRole("button", { name: "刪除（停用）" })).toBeNull();

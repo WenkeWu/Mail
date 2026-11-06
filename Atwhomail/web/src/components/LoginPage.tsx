@@ -12,10 +12,12 @@ import {
   userLogin,
 } from "../api/endpoints";
 import type { IdCheckResult, RegistrationMode, Session } from "../api/types";
+import { useI18n } from "../i18n";
 import type { LoginMode } from "../lib/hostMode";
 import { buildGoogleStartUrl } from "../lib/oauth";
 import { clearRegistrationParams, parseRegistrationQuery } from "../lib/registrationLinks";
 import { IconMail } from "./icons";
+import { LocaleSelectors } from "./LocaleSelectors";
 import { TurnstileWidget } from "./TurnstileWidget";
 
 interface Props {
@@ -70,16 +72,17 @@ const TAB_LABEL: Record<Tab, string> = {
 };
 
 /** 組出「server 訊息（提示）」；沒有提示就只顯示 server 訊息 */
-function registerErrorText(err: unknown): string {
+function registerErrorText(err: unknown, t: (key: string) => string): string {
   if (err instanceof ApiError) {
     const hint = REGISTER_HINTS[err.code];
-    return hint ? `${err.message}（${hint}）` : err.message;
+    return hint ? `${err.message}（${t(hint)}）` : err.message;
   }
-  return "註冊失敗，請稍後再試";
+  return t("註冊失敗，請稍後再試");
 }
 
 /** 登入頁：Model C 的兩種身分（信箱／管理員）＋ 訪客註冊（D21：Email 驗證碼／邀請碼） */
 export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }: Props) {
+  const { t } = useI18n();
   /**
    * 分頁清單依模式決定（docs/16 D1；僅顯示面）：
    * - admin（mail.）→ 只有管理員登入
@@ -221,7 +224,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
           if (!alive) return;
           setIdCheck(null);
           if (err instanceof ApiError && err.code === "RATE_LIMITED") {
-            setError("ID 檢查過於頻繁，請稍後再試。");
+            setError(t("ID 檢查過於頻繁，請稍後再試。"));
           }
         })
         .finally(() => {
@@ -255,7 +258,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
     setError(null);
     const identifier = forgotEmail.trim();
     if (!identifier) {
-      setError("請輸入 Email 或使用者名稱");
+      setError(t("請輸入 Email 或使用者名稱"));
       return;
     }
     setBusy(true);
@@ -263,7 +266,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
       await forgotPassword(identifier);
       setForgotSent(true);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "寄送失敗，請稍後再試");
+      setError(err instanceof ApiError ? err.message : t("寄送失敗，請稍後再試"));
     } finally {
       setBusy(false);
     }
@@ -276,12 +279,12 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
     const mail = regEmail.trim().toLowerCase();
     const name = regLocalPart.trim().toLowerCase();
     if (!mail || !name) {
-      setError("請填寫 Email 與想要的 ID");
+      setError(t("請填寫 Email 與想要的 ID"));
       return;
     }
     // D23：已啟用 Turnstile → token 有效才可寄碼（後端仍會複驗，前端不可信）
     if (turnstileRequired && !turnstileToken) {
-      setError("請先完成機器人驗證");
+      setError(t("請先完成機器人驗證"));
       return;
     }
     setSendingCode(true);
@@ -295,7 +298,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
       setVerificationCode("");
       setResendIn(60);
     } catch (err) {
-      setError(registerErrorText(err));
+      setError(registerErrorText(err, t));
     } finally {
       setSendingCode(false);
       // Turnstile token 是一次性的（送出後即被 siteverify 消耗）：重新取得，
@@ -316,14 +319,13 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
     if (tab === "register" && regMode === "email_verify" && !codeSent) {
       await sendCode();
       return;
-    }
-    if (tab === "register" && (regMode === null || regMode === "closed")) return;
+    }    if (tab === "register" && (regMode === null || regMode === "closed")) return;
 
     setBusy(true);
     try {
       if (tab === "register") {
         if (newPassword !== confirmPassword) {
-          setError("兩次輸入的密碼不一致");
+          setError(t("兩次輸入的密碼不一致"));
           return;
         }
         if (regMode === "email_verify") {
@@ -331,7 +333,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
           const name = regLocalPart.trim().toLowerCase();
           const code = verificationCode.trim();
           if (!mail || !name || !/^\d{6}$/.test(code) || !newPassword) {
-            setError("請填寫 Email、ID、6 位數驗證碼與密碼");
+            setError(t("請填寫 Email、ID、6 位數驗證碼與密碼"));
             return;
           }
           const res = await registerVerify({ email: mail, local_part: name, code, password: newPassword });
@@ -342,7 +344,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
         const code = inviteCode.trim();
         const name = newUsername.trim().toLowerCase();
         if (!code || !name || !newPassword) {
-          setError("請填寫邀請碼、使用者名稱與密碼");
+          setError(t("請填寫邀請碼、使用者名稱與密碼"));
           return;
         }
         const res = await register({ invite_code: code, username: name, password: newPassword });
@@ -369,7 +371,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
             onLogin({ kind: "mailbox", token: res.token, addressId: res.address.id, email: res.address.email });
           } else {
             // 無可用地址的 visitor（OAuth 首登一定配發地址；理論上不會發生）
-            setError("此帳號尚未配置信箱地址，請聯絡管理者。");
+            setError(t("此帳號尚未配置信箱地址，請聯絡管理者。"));
           }
         }
       } else {
@@ -380,9 +382,9 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
       if (err instanceof ApiError) {
         if (err.code === "NO_PASSWORD_SET") setNoPasswordSet(true);
         const hint = tab === "register" ? REGISTER_HINTS[err.code] : undefined;
-        setError(hint ? `${err.message}（${hint}）` : err.message);
+        setError(hint ? `${err.message}（${t(hint)}）` : err.message);
       } else {
-        setError(tab === "register" ? "註冊失敗，請稍後再試" : "登入失敗，請稍後再試");
+        setError(tab === "register" ? t("註冊失敗，請稍後再試") : t("登入失敗，請稍後再試"));
       }
     } finally {
       setBusy(false);
@@ -395,17 +397,17 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
       ? regMode === "email_verify"
         ? codeSent
           ? busy
-            ? "註冊中…"
-            : "完成註冊並登入"
+            ? t("註冊中…")
+            : t("完成註冊並登入")
           : null
         : regMode === null || regMode === "closed"
           ? null
-          : "註冊並登入"
+          : t("註冊並登入")
       : forgotOpen
         ? null
         : busy
-          ? "登入中…"
-          : "登入";
+          ? t("登入中…")
+          : t("登入");
 
   /** D23：site key 非空且為 email_verify 模式才顯示（未設定 → 完全不載入腳本） */
   const turnstileWidget =
@@ -422,21 +424,23 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
           </span>
           <div>
             <h1>AtWhoMail</h1>
-            <p>{mode === "admin" ? "管理員入口" : "虛擬地址收發信"}</p>
+            <p>{mode === "admin" ? t("管理員入口") : t("虛擬地址收發信")}</p>
           </div>
         </div>
 
+        <LocaleSelectors className="login-locale" />
+
         <div className="login-tabs" role="tablist">
-          {tabList.map((t) => (
+          {tabList.map((tabKey) => (
             <button
-              key={t}
+              key={tabKey}
               type="button"
               role="tab"
-              aria-selected={tab === t}
-              className={tab === t ? "active" : ""}
-              onClick={() => switchTab(t)}
+              aria-selected={tab === tabKey}
+              className={tab === tabKey ? "active" : ""}
+              onClick={() => switchTab(tabKey)}
             >
-              {TAB_LABEL[t]}
+              {t(TAB_LABEL[tabKey])}
             </button>
           ))}
         </div>
@@ -446,13 +450,13 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
         <form onSubmit={submit} className="login-form">
           {tab === "register" ? (
             regMode === null ? (
-              <p className="login-hint">正在載入註冊設定…</p>
+              <p className="login-hint">{t("正在載入註冊設定…")}</p>
             ) : regMode === "closed" ? (
-              <p className="login-hint">目前未開放註冊。</p>
+              <p className="login-hint">{t("目前未開放註冊。")}</p>
             ) : regMode === "email_verify" ? (
               <>
                 <label>
-                  Email（收取驗證碼）
+                  {t("Email（收取驗證碼）")}
                   <input
                     ref={emailInputRef}
                     type="email"
@@ -466,13 +470,13 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                   />
                 </label>
                 <label>
-                  想要的 ID
+                  {t("想要的 ID")}
                   <div className="suffix-input">
                     <input
                       type="text"
                       value={regLocalPart}
                       onChange={(e) => setRegLocalPart(e.target.value)}
-                      placeholder="例如 friend01"
+                      placeholder={t("例如 friend01")}
                       autoComplete="username"
                       disabled={codeSent}
                       required={!codeSent}
@@ -483,25 +487,25 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                 {!codeSent && regLocalPart.trim() !== "" && (
                   <div className="id-check" aria-live="polite">
                     {idChecking ? (
-                      <span className="id-check-pending">檢查中…</span>
+                      <span className="id-check-pending">{t("檢查中…")}</span>
                     ) : idCheck?.available ? (
-                      <span className="id-check-ok">✅ 可用</span>
+                      <span className="id-check-ok">{t("✅ 可用")}</span>
                     ) : idCheck?.reason === "MATCHES_DOMAIN" ? (
                       <span className="id-check-bad">
-                        ❌ 已被{" "}
                         {idCheck.tldHit
-                          ? `${regLocalPart.trim().toLowerCase()}.${idCheck.tldHit}`
-                          : "現有"}{" "}
-                        網域使用
+                          ? t("❌ 已被 {domain} 網域使用", {
+                              domain: `${regLocalPart.trim().toLowerCase()}.${idCheck.tldHit}`,
+                            })
+                          : t("❌ 已被現有網域使用")}
                       </span>
                     ) : idCheck?.reason === "RESERVED" ? (
-                      <span className="id-check-warn">⚠️ 保留字，請換一個</span>
+                      <span className="id-check-warn">{t("⚠️ 保留字，請換一個")}</span>
                     ) : idCheck?.reason === "TAKEN" ? (
-                      <span className="id-check-warn">⚠️ 已有人使用</span>
+                      <span className="id-check-warn">{t("⚠️ 已有人使用")}</span>
                     ) : null}
                     {idCheck && !idCheck.available && (idCheck.suggestions?.length ?? 0) > 0 && (
                       <div className="id-suggestions">
-                        <span>建議：</span>
+                        <span>{t("建議：")}</span>
                         {idCheck.suggestions!.map((suggestion) => (
                           <button
                             key={suggestion}
@@ -520,18 +524,18 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                   </div>
                 )}
                 <label>
-                  密碼
+                  {t("密碼")}
                   <input
                     type="password"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="至少 10 個字元、非純數字"
+                    placeholder={t("至少 10 個字元、非純數字")}
                     autoComplete="new-password"
                     required
                   />
                 </label>
                 <label>
-                  確認密碼
+                  {t("確認密碼")}
                   <input
                     type="password"
                     value={confirmPassword}
@@ -544,7 +548,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                 {codeSent && (
                   <>
                     <label>
-                      驗證碼（6 位數）
+                      {t("驗證碼（6 位數）")}
                       <input
                         type="text"
                         className="code-input"
@@ -557,7 +561,9 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                         required
                       />
                     </label>
-                    <p className="login-hint">驗證碼已寄至 {regEmail.trim()}，15 分鐘內有效。</p>
+                    <p className="login-hint">
+                      {t("驗證碼已寄至 {email}，15 分鐘內有效。", { email: regEmail.trim() })}
+                    </p>
                     {turnstileWidget}
                     <div className="register-actions">
                       <button
@@ -566,7 +572,11 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                         onClick={() => void sendCode()}
                         disabled={resendIn > 0 || sendingCode || busy || !turnstileReady}
                       >
-                        {sendingCode ? "寄送中…" : resendIn > 0 ? `重新寄送（${resendIn}s）` : "重新寄送驗證碼"}
+                        {sendingCode
+                          ? t("寄送中…")
+                          : resendIn > 0
+                            ? t("重新寄送（{seconds}s）", { seconds: resendIn })
+                            : t("重新寄送驗證碼")}
                       </button>
                       <button
                         type="button"
@@ -579,7 +589,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                         }}
                         disabled={busy}
                       >
-                        修改 Email／ID
+                        {t("修改 Email／ID")}
                       </button>
                     </div>
                   </>
@@ -594,7 +604,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                       onClick={() => void sendCode()}
                       disabled={sendingCode || busy || !turnstileReady}
                     >
-                      {sendingCode ? "寄送中…" : "寄送驗證碼"}
+                      {sendingCode ? t("寄送中…") : t("寄送驗證碼")}
                     </button>
                   </>
                 )}
@@ -602,25 +612,25 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
             ) : (
               <>
                 <label>
-                  邀請碼
+                  {t("邀請碼")}
                   <input
                     type="text"
                     value={inviteCode}
                     onChange={(e) => setInviteCode(e.target.value)}
-                    placeholder="向邀請你的人索取"
+                    placeholder={t("向邀請你的人索取")}
                     autoComplete="off"
                     required
                     autoFocus
                   />
                 </label>
                 <label>
-                  使用者名稱（同時為你的信箱地址）
+                  {t("使用者名稱（同時為你的信箱地址）")}
                   <div className="suffix-input">
                     <input
                       type="text"
                       value={newUsername}
                       onChange={(e) => setNewUsername(e.target.value)}
-                      placeholder="例如 friend01"
+                      placeholder={t("例如 friend01")}
                       autoComplete="username"
                       required
                     />
@@ -628,18 +638,18 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                   </div>
                 </label>
                 <label>
-                  密碼
+                  {t("密碼")}
                   <input
                     type="password"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="至少 10 個字元、非純數字"
+                    placeholder={t("至少 10 個字元、非純數字")}
                     autoComplete="new-password"
                     required
                   />
                 </label>
                 <label>
-                  確認密碼
+                  {t("確認密碼")}
                   <input
                     type="password"
                     value={confirmPassword}
@@ -654,11 +664,11 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
             forgotOpen ? (
               <>
                 <label>
-                  Email 或使用者名稱
+                  {t("Email 或使用者名稱")}
                   <input
                     type="text"
                     autoComplete="username"
-                    placeholder="you@example.com 或 itag"
+                    placeholder={t("you@example.com 或 itag")}
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
                     onKeyDown={(e) => {
@@ -672,7 +682,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                   />
                 </label>
                 {forgotSent ? (
-                  <p className="login-hint">若帳號存在，已寄出重設信（30 分鐘內有效）。</p>
+                  <p className="login-hint">{t("若帳號存在，已寄出重設信（30 分鐘內有效）。")}</p>
                 ) : (
                   <button
                     type="button"
@@ -680,7 +690,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                     onClick={() => void sendForgot()}
                     disabled={busy}
                   >
-                    {busy ? "寄送中…" : "寄送重設信"}
+                    {busy ? t("寄送中…") : t("寄送重設信")}
                   </button>
                 )}
                 <button
@@ -693,17 +703,17 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                   }}
                   disabled={busy}
                 >
-                  返回登入
+                  {t("返回登入")}
                 </button>
               </>
             ) : (
               <>
                 <label>
-                  電子郵件地址或使用者名稱
+                  {t("電子郵件地址或使用者名稱")}
                   <input
                     type="text"
                     autoComplete="username"
-                    placeholder="you@atwho.org 或 itag"
+                    placeholder={t("you@atwho.org 或 itag")}
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
@@ -711,7 +721,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                   />
                 </label>
                 <label>
-                  密碼
+                  {t("密碼")}
                   <input
                     type="password"
                     autoComplete="current-password"
@@ -732,16 +742,16 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                       setError(null);
                     }}
                   >
-                    忘記密碼？
+                    {t("忘記密碼？")}
                   </button>
                 </div>
                 {noPasswordSet && (
                   <div className="login-guidance">
                     <p className="login-hint">
-                      此帳號尚未設定密碼：請用 Google 登入，或使用「忘記密碼」設定。
+                      {t("此帳號尚未設定密碼：請用 Google 登入，或使用「忘記密碼」設定。")}
                     </p>
                     <button type="button" className="btn-google" onClick={startGoogle}>
-                      使用 Google 登入
+                      {t("使用 Google 登入")}
                     </button>
                     <button
                       type="button"
@@ -753,7 +763,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                         setError(null);
                       }}
                     >
-                      使用忘記密碼設定
+                      {t("使用忘記密碼設定")}
                     </button>
                   </div>
                 )}
@@ -762,7 +772,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
           ) : (
             <>
               <label>
-                管理員帳號
+                {t("管理員帳號")}
                 <input
                   type="text"
                   autoComplete="username"
@@ -773,7 +783,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                 />
               </label>
               <label>
-                密碼
+                {t("密碼")}
                 <input
                   type="password"
                   autoComplete="current-password"
@@ -796,20 +806,20 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
 
         {tab !== "register" && (
           <button type="button" className="btn-google" onClick={startGoogle}>
-            使用 Google 登入
+            {t("使用 Google 登入")}
           </button>
         )}
 
         <p className="login-hint">
           {tab === "mailbox"
-            ? "信箱登入僅能看到此地址的信件（可用範圍：收信匣、寄件備份、封存、垃圾郵件、垃圾桶）。"
+            ? t("信箱登入僅能看到此地址的信件（可用範圍：收信匣、寄件備份、封存、垃圾郵件、垃圾桶）。")
             : tab === "owner"
-              ? "管理員（owner）可管理所有虛擬地址，並以聚合視角查看全部信箱。"
+              ? t("管理員（owner）可管理所有虛擬地址，並以聚合視角查看全部信箱。")
               : regMode === "email_verify"
-                ? "填寫 Email 收取 6 位數驗證碼；驗證成功後會建立你的信箱地址（寄信受每日配額限制）。"
+                ? t("填寫 Email 收取 6 位數驗證碼；驗證成功後會建立你的信箱地址（寄信受每日配額限制）。")
                 : regMode === "closed"
-                  ? "站方目前暫停開放註冊。"
-                  : "註冊需要邀請碼。註冊後會建立你自己的信箱地址（寄信受每日配額限制）。"}
+                  ? t("站方目前暫停開放註冊。")
+                  : t("註冊需要邀請碼。註冊後會建立你自己的信箱地址（寄信受每日配額限制）。")}
         </p>
       </div>
     </div>

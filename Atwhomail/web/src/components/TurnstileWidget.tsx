@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 import { loadTurnstileScript, type TurnstileApi } from "../lib/turnstile";
 
 interface Props {
@@ -14,6 +15,7 @@ interface Props {
  * site key 未設定時 `LoginPage` 不會渲染本元件，也就不會載入腳本。
  */
 export function TurnstileWidget({ siteKey, onToken, resetKey = 0 }: Props) {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement | null>(null);
   // 父層每次 render 都會傳新的箭頭函式 → 以 ref 保存，避免 widget 被反覆重建
   const onTokenRef = useRef(onToken);
@@ -49,12 +51,12 @@ export function TurnstileWidget({ siteKey, onToken, resetKey = 0 }: Props) {
           "expired-callback": () => {
             if (!alive) return;
             onTokenRef.current(null);
-            setError("驗證已過期，請重新完成驗證。");
+            setError(t("驗證已過期，請重新完成驗證。"));
           },
           "error-callback": () => {
             if (!alive) return;
             onTokenRef.current(null);
-            setError("機器人驗證載入失敗，請重試。");
+            setError(t("機器人驗證載入失敗，請重試。"));
           },
         });
         setLoading(false);
@@ -63,7 +65,7 @@ export function TurnstileWidget({ siteKey, onToken, resetKey = 0 }: Props) {
         if (!alive) return;
         onTokenRef.current(null);
         setLoading(false);
-        setError("機器人驗證載入失敗，請重試。");
+        setError(t("機器人驗證載入失敗，請重試。"));
       });
 
     return () => {
@@ -76,12 +78,12 @@ export function TurnstileWidget({ siteKey, onToken, resetKey = 0 }: Props) {
         }
       }
     };
-  }, [siteKey, resetKey]);
+  }, [siteKey, resetKey, t]);
 
   return (
     <div className="turnstile-widget">
       <div ref={containerRef} />
-      {loading && <p className="login-hint">正在載入機器人驗證…</p>}
+      {loading && <p className="login-hint">{t("正在載入機器人驗證…")}</p>}
       {error && (
         <p className="login-error" role="alert">
           {error}

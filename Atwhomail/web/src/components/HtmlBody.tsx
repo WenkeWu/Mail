@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useI18n } from "../i18n";
 
 /**
  * HTML 信件內文的唯一渲染路徑（安全設計，docs/08 §16）：
@@ -19,11 +20,12 @@ interface Props {
 }
 
 export function HtmlBody({ html }: Props) {
+  const { t } = useI18n();
   const doc = useMemo(() => PREAMBLE + html, [html]);
   return (
     <iframe
       className="html-body"
-      title="信件內容"
+      title={t("信件內容")}
       sandbox="allow-popups allow-popups-to-escape-sandbox"
       referrerPolicy="no-referrer"
       srcDoc={doc}

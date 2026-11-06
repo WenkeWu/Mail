@@ -1022,7 +1022,7 @@ select {
   font-size: 12px;
 }
 
-/* D31：撰寫視窗的三種隱私模式（真實 ID／暱稱／Token） */
+/* D31：撰寫視窗的三種隱私模式（真實 ID／暱稱／隱身代號） */
 .privacy-modes {
   display: flex;
   flex: 1;
@@ -1321,6 +1321,38 @@ select {
   margin: 2px 0 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+/* D32：登入頁／個人設置的國家與語言選擇 */
+.locale-selectors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.locale-selectors label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.locale-selectors select {
+  max-width: 190px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.login-locale {
+  justify-content: flex-end;
+  margin: -10px 0 14px;
 }
 
 .login-tabs {

@@ -893,6 +893,18 @@ app.get("/api/health", async (c) => {
   );
 });
 
+/**
+ * D32：Cloudflare `CF-IPCountry`（公開、唯讀、不可快取）。
+ * 只作為前端「國家／語言」的預設；**不得**用於任何權限或身分判定。
+ * `XX`（未知）與 `T1`（Tor）視為無法判斷。
+ */
+app.get("/api/geo", (c) => {
+  const raw = (c.req.header("cf-ipcountry") ?? "").trim().toUpperCase();
+  const country = /^[A-Z]{2}$/.test(raw) && raw !== "XX" && raw !== "T1" ? raw : null;
+  c.header("Cache-Control", "no-store");
+  return c.json({ country });
+});
+
 // ══════════════════════ Phase 11：認證 ══════════════════════
 
 /** D2：管理員登入的 Access 閘門（對外的統一訊息，不區分失敗原因以免洩漏細節） */

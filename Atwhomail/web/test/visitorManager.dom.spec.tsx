@@ -97,7 +97,7 @@ describe("T33-3（D8-2）：停權與停用的文案與 tooltip", () => {
     fireEvent.click(await screen.findByRole("button", { name: addressStatusActionLabel(false) }));
 
     const dialog = screen.getByRole("dialog", { name: "停用／啟用地址" });
-    expect(within(dialog).getByText(VISITOR.address!.email)).toBeTruthy();
+    expect(dialog.textContent).toContain(VISITOR.address!.email);
     expect(within(dialog).getByText(new RegExp(ADDRESS_DISABLE_WARNING))).toBeTruthy();
     // 停權的警語不得出現在停用對話框（兩者後果不同，不可互相頂替）
     expect(within(dialog).queryByText(/來信仍會照常收到並保留/)).toBeNull();

@@ -1,23 +1,27 @@
 /** 顯示用格式化（Yahoo Mail 風格的時間呈現：今天只顯示時刻、昨天、月日…） */
+import { getFormatLocale, tGlobal } from "../i18n";
 
 export function relativeTime(ts: number, now: number = Date.now()): string {
   const d = new Date(ts);
   const n = new Date(now);
   if (Number.isNaN(d.getTime())) return "";
+  const locale = getFormatLocale();
   const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const dayDiff = Math.round((startOfDay(n) - startOfDay(d)) / 86_400_000);
   if (dayDiff <= 0) {
-    return d.toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
+    return d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", hour12: false });
   }
-  if (dayDiff === 1) return "昨天";
-  if (d.getFullYear() === n.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日`;
-  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+  if (dayDiff === 1) return tGlobal("昨天");
+  if (d.getFullYear() === n.getFullYear()) {
+    return d.toLocaleDateString(locale, { month: "short", day: "numeric" });
+  }
+  return d.toLocaleDateString(locale, { year: "numeric", month: "numeric", day: "numeric" });
 }
 
 export function formatFullDate(ts: number): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString("zh-TW", {
+  return d.toLocaleString(getFormatLocale(), {
     year: "numeric",
     month: "long",
     day: "numeric",
@@ -45,7 +49,7 @@ export function parseAddress(raw: string): { name: string; address: string } {
 
 export function displaySender(from: string): string {
   const p = parseAddress(from);
-  return p.name || p.address || "(未知寄件者)";
+  return p.name || p.address || tGlobal("（未知寄件者）");
 }
 
 /** 頭像文字（Yahoo 風格圓形頭像） */

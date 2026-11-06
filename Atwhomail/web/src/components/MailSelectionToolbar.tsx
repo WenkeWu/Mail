@@ -4,6 +4,8 @@
  * - 垃圾桶：還原／永久刪除，並提供「清空垃圾桶」（未選取時仍顯示）
  * - 其他資料夾（含跨資料夾搜尋）：移至垃圾桶／標為已讀
  */
+import { useI18n } from "../i18n";
+
 interface Props {
   count: number;
   /** `MailList` 目前查詢的資料夾（"all" = 跨資料夾搜尋） */
@@ -34,14 +36,15 @@ export function MailSelectionToolbar({
   onMarkRead,
   onClear,
 }: Props) {
+  const { t } = useI18n();
   const inTrash = folder === "trash";
   // 垃圾桶即使沒有選取也要顯示「清空垃圾桶」；其他資料夾只在有選取時出現
   if (count === 0 && !inTrash) return null;
   return (
-    <div className="selection-toolbar" role="toolbar" aria-label="批次動作">
+    <div className="selection-toolbar" role="toolbar" aria-label={t("批次動作")}>
       {count > 0 && (
         <span className="selection-count" aria-live="polite">
-          已選 {count} 封
+          {t("已選 {count} 封", { count })}
         </span>
       )}
       {inTrash ? (
@@ -49,10 +52,10 @@ export function MailSelectionToolbar({
           {count > 0 && (
             <>
               <button type="button" onClick={onRestore} disabled={busy}>
-                還原
+                {t("還原")}
               </button>
               <button type="button" className="danger" onClick={onPurge} disabled={busy}>
-                永久刪除
+                {t("永久刪除")}
               </button>
             </>
           )}
@@ -63,26 +66,26 @@ export function MailSelectionToolbar({
             disabled={busy || trashCount === 0}
             title={
               trashCount === 0
-                ? "垃圾桶是空的"
-                : `永久刪除垃圾桶內 ${trashCount} 封（含附件與原始檔）`
+                ? t("垃圾桶是空的")
+                : t("永久刪除垃圾桶內 {count} 封（含附件與原始檔）", { count: trashCount })
             }
           >
-            清空垃圾桶
+            {t("清空垃圾桶")}
           </button>
         </>
       ) : (
         <>
           <button type="button" onClick={onTrash} disabled={busy}>
-            移至垃圾桶
+            {t("移至垃圾桶")}
           </button>
           <button type="button" onClick={onMarkRead} disabled={busy}>
-            標為已讀
+            {t("標為已讀")}
           </button>
         </>
       )}
       {count > 0 && (
         <button type="button" className="link" onClick={onClear} disabled={busy}>
-          取消選取
+          {t("取消選取")}
         </button>
       )}
     </div>

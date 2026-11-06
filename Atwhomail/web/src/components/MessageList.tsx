@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import type { MailListItem } from "../api/types";
+import { useI18n } from "../i18n";
 import { MessageListItem } from "./MessageListItem";
 import { IconInbox, IconSearch } from "./icons";
 
@@ -37,6 +38,7 @@ export function MessageList({
   onToggleSelect,
   onSelectAll,
 }: Props) {
+  const { t } = useI18n();
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -55,8 +57,8 @@ export function MessageList({
   if (loading) {
     return (
       <div className="list-state">
-        <div className="spinner" aria-label="載入中" />
-        <p>載入中…</p>
+        <div className="spinner" aria-label={t("載入中")} />
+        <p>{t("載入中…")}</p>
       </div>
     );
   }
@@ -73,7 +75,7 @@ export function MessageList({
     return (
       <div className="list-state">
         {query ? <IconSearch size={34} /> : <IconInbox size={34} />}
-        <p>{query ? `找不到符合「${query}」的信件` : "這裡沒有信件"}</p>
+        <p>{query ? t("找不到符合「{query}」的信件", { query }) : t("這裡沒有信件")}</p>
       </div>
     );
   }
@@ -92,7 +94,7 @@ export function MessageList({
       <ul
         role="listbox"
         aria-multiselectable="true"
-        aria-label="信件清單"
+        aria-label={t("信件清單")}
         tabIndex={0}
         className="mail-listbox"
         onKeyDown={handleKeyDown}
@@ -110,7 +112,7 @@ export function MessageList({
       </ul>
       <div ref={sentinelRef} className="list-sentinel">
         {loadingMore && <span className="spinner small" />}
-        {!nextCursor && items.length >= 50 && <span className="list-end">沒有更多信件了</span>}
+        {!nextCursor && items.length >= 50 && <span className="list-end">{t("沒有更多信件了")}</span>}
       </div>
     </div>
   );

@@ -66,6 +66,7 @@
 | Attachment | GET | `/api/mail/:messageId/attachments` | 附件清單 |
 | Attachment | GET | `/api/attachments/:id` | 下載附件（stream） |
 | Backup | GET | `/api/backup/changes` | 增量備份 cursor（Backup Agent 專用） |
+| Geo | GET | `/api/geo` | **D32：IP 國別（公開；`CF-IPCountry`，只作 UI 預設，不做權限判斷）** |
 
 ## 2. 詳細規格
 
@@ -1145,7 +1146,7 @@ recipient 查 email_addresses（active）→ 命中：既有流程，envelope_to
 
 - `/api/mail/send` 的 From 驗證已擴充：接受 active 別名（target 屬於 session scope）。
 - 配額一律計入 target 地址；稽核 `mail_sent.detail.via_alias`（布林）。
-- **D31（2026-11-06）**：撰寫新信可用三種隱私模式（真實 ID／暱稱／Token）；後端原本即接受 active 別名 From（同 §5 驗證）。一次性別名／轉寄外部信箱仍不做。
+- **D31（2026-11-06）**：撰寫新信可用三種隱私模式（真實 ID／暱稱／隱身代號＝Token）；後端原本即接受 active 別名 From（同 §5 驗證）。一次性別名／轉寄外部信箱仍不做。
 
 **Migration 與部署**
 
@@ -1589,7 +1590,7 @@ T180 既有 T1–T172 零回歸）。
 **部署順序（docs/11 §2-24）**：API → 前端（無 migration）。
 **回退**：前端回上一版即恢復舊選單；API 回上一版即移除 `/api/account/*`（不影響既有端點）。
 
-### 2.30 D31：三種寄信身分（真實 ID／暱稱／Token，2026-11-06）
+### 2.30 D31：三種寄信身分（真實 ID／暱稱／隱身代號＝Token，2026-11-06）
 
 > migration `0015_privacy_identities.sql`：`email_aliases.kind`（`named`｜`token`）、
 > 既有 active 地址回填 Token、每個地址唯一 Token index。
@@ -1599,14 +1600,31 @@ T180 既有 T1–T172 零回歸）。
 |---|---|---|
 | **真實 ID** | `itag@atwho.org` | 固定（mailbox＝自己的地址；owner＝第一個 active 地址），撰寫視窗不提供切換 |
 | **暱稱** | `luke001@atwho.org` | 每帳號最多 1 個啟用中；`replace_existing: true` 變更時舊的立即停用（同一 batch） |
-| **Token** | `0123456789abcdef@atwho.org` | 帳號／地址建立時自動產生（16 hex，64 bits）；不隨暱稱變更；系統管理 |
+| **Token（UI：隱身代號）** | `0123456789abcdef@atwho.org` | 帳號／地址建立時自動產生（16 hex，64 bits）；不隨暱稱變更；系統管理 |
 
 - Token 產生時會排除：既有 `email_addresses.email`、`email_aliases.alias_address`、以及正在建立的地址；
   碰撞重抽（最多 5 次）。
 - 自動產生時機：Email 驗證碼註冊、邀請碼註冊、OAuth 首次登入、owner 建立地址（皆與地址同一交易）。
 - Token 別名的 PATCH／DELETE → `409 TOKEN_ALIAS_MANAGED`。
-- 撰寫視窗的「互動式表單」只接受真實 ID；回信給外部寄件者仍自動使用原信收到的暱稱／Token。
+- 撰寫視窗的「互動式表單」只接受真實 ID；回信給外部寄件者仍自動使用原信收到的暱稱／隱身代號。
 - `GET /api/email-aliases` 與 POST 回應都含 `kind`；POST 變更時另含 `replaced`（舊地址陣列）。
+
+### 2.31 D32：IP 國別（語系／區域預設，2026-11-06）
+
+> 只用於前端**預設**國家與語言；**絕不**作為權限、身分或內容判斷的依據。
+
+```http
+GET /api/geo                               // 公開、唯讀、不需登入
+→ 200 { "country": "TW" }                  // Cloudflare CF-IPCountry（大寫兩碼）
+→ 200 { "country": null }                  // 無標頭／XX（未知）／T1（Tor）／格式錯誤
+Cache-Control: no-store
+```
+
+- 只取國別代碼；不記錄 IP、不送第三方。標頭缺漏（本機開發）→ `null`。
+- 前端判斷順序：已存偏好 → 瀏覽器時區對照 → 時區判斷不到才呼叫本端點 → 該國第一語言；
+  都無法判斷 → English。
+- 國家選單只列 10 種支援語系的主要國家；自動判斷結果不寫入 localStorage。
+- 完整設計與限制見 `docs/32-i18n-locale.md`。
 
 ## 3. 通用原則
 

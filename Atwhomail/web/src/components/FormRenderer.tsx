@@ -12,6 +12,7 @@ import Form from "@rjsf/core";
 import validator from "@rjsf/validator-ajv8";
 import type { RJSFSchema, WidgetProps } from "@rjsf/utils";
 import type { FormSchema } from "../api/types";
+import { useI18n } from "../i18n";
 import { sanitizeSchemaForDisplay } from "../lib/formText";
 
 function controlClass(props: WidgetProps): string {
@@ -69,6 +70,7 @@ function DateWidget(props: WidgetProps) {
 
 /** enum → select（值仍為原始型別，避免數字 enum 變成字串） */
 function SelectWidget(props: WidgetProps) {
+  const { t } = useI18n();
   const { id, value, onChange, disabled, readonly, options, placeholder } = props;
   const opts = options.enumOptions ?? [];
   const index = opts.findIndex((o) => String(o.value) === String(value));
@@ -83,7 +85,7 @@ function SelectWidget(props: WidgetProps) {
         onChange(Number.isInteger(i) && opts[i] ? opts[i]!.value : undefined);
       }}
     >
-      <option value="">{placeholder ?? "請選擇"}</option>
+      <option value="">{placeholder ?? t("請選擇")}</option>
       {opts.map((o, i) => (
         <option key={`${String(o.value)}-${i}`} value={String(i)}>
           {o.label}
@@ -138,7 +140,8 @@ export interface FormRendererProps {
   submitLabel?: string;
 }
 
-export function FormRenderer({ schema, onSubmit, submitting = false, submitLabel = "送出回覆" }: FormRendererProps) {
+export function FormRenderer({ schema, onSubmit, submitting = false, submitLabel }: FormRendererProps) {
+  const { t } = useI18n();
   // 縱深防禦：後端已消毒，前端再消毒一次；RJSF 只以文字渲染 title／description
   const safeSchema = useMemo(() => sanitizeSchemaForDisplay(schema) as RJSFSchema, [schema]);
 
@@ -155,7 +158,7 @@ export function FormRenderer({ schema, onSubmit, submitting = false, submitLabel
       >
         <div className="form-actions">
           <button type="submit" className="btn-primary" disabled={submitting}>
-            {submitting ? "送出中…" : submitLabel}
+            {submitting ? t("送出中…") : (submitLabel ?? t("送出回覆"))}
           </button>
         </div>
       </Form>

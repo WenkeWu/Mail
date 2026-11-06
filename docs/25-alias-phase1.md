@@ -135,5 +135,5 @@ CREATE INDEX IF NOT EXISTS idx_messages_envelope_to ON messages(envelope_to);
 ## 8. 明確不做（Phase 2）
 
 - 反向別名（`reverse_aliases`、`Reply-To` 改寫）✅ 預留欄位但**不啟用**
-- ~~別名主動寄新信給外部~~ → ✅ **D31（2026-11-06）開放**：撰寫新信可選「真實 ID／暱稱／Token」三種隱私模式；後端原本即接受 active 別名 From
+- ~~別名主動寄新信給外部~~ → ✅ **D31（2026-11-06）開放**：撰寫新信可選「真實 ID／暱稱／隱身代號（Token）」三種隱私模式；後端原本即接受 active 別名 From
 - 一次性別名、別名轉寄到外部信箱 ✅（仍不做）

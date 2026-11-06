@@ -7,6 +7,7 @@
  *  - 不執行、不解析 schema 內的任何程式碼
  */
 import type { FormSchema } from "../api/types";
+import { tGlobal } from "../i18n";
 
 export function sanitizeDisplayText(raw: unknown): string {
   if (typeof raw !== "string") return "";
@@ -51,5 +52,5 @@ export function sanitizeSchemaForDisplay(input: FormSchema): FormSchema {
 /** 表單標題（顯示用；已消毒） */
 export function formTitle(schema: FormSchema, fallback: string): string {
   const title = sanitizeDisplayText(schema.title);
-  return title || sanitizeDisplayText(fallback) || "互動式表單";
+  return title || sanitizeDisplayText(fallback) || tGlobal("互動式表單");
 }

@@ -10,6 +10,7 @@ import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { parseAppLoginQuery } from "./lib/appLogin";
 import { loginModeFor } from "./lib/hostMode";
 import { getResetToken, takeOAuthSession } from "./lib/oauth";
+import { I18nProvider, useI18n } from "./i18n";
 
 /**
  * 登入頁顯示模式：依 hostname 決定一次（docs/16 D1）
@@ -32,6 +33,15 @@ const defaultNavigate = (url: string): void => {
  * - 完全沒帶 app／redirect_uri → 行為與 D26 之前完全相同（`?register=1`／`?invite=` 不受影響）
  */
 export default function App({ navigate = defaultNavigate }: { navigate?: (url: string) => void } = {}) {
+  return (
+    <I18nProvider>
+      <AppContent navigate={navigate} />
+    </I18nProvider>
+  );
+}
+
+function AppContent({ navigate }: { navigate: (url: string) => void }) {
+  const { t } = useI18n();
   // D27：Google OAuth callback 以 `#oauth_token=…` 導回 → 讀取後立即清除 fragment
   const [session, setSession] = useState<Session | null>(() => {
     const fromOAuth = takeOAuthSession(window);
@@ -55,11 +65,11 @@ export default function App({ navigate = defaultNavigate }: { navigate?: (url: s
     const onUnauthorized = () => {
       clearSession();
       setSession(null);
-      setNotice("登入已過期或密碼已變更，請重新登入。");
+      setNotice(t("登入已過期或密碼已變更，請重新登入。"));
     };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
-  }, []);
+  }, [t]);
 
   /** D26：登入後把 session 換成 App 的一次性 code，並導回其他 App */
   useEffect(() => {
@@ -81,13 +91,13 @@ export default function App({ navigate = defaultNavigate }: { navigate?: (url: s
         if (!alive) return;
         setHandoff({
           status: "error",
-          error: err instanceof ApiError ? err.message : "無法完成應用程式登入，請稍後再試",
+          error: err instanceof ApiError ? err.message : t("無法完成應用程式登入，請稍後再試"),
         });
       });
     return () => {
       alive = false;
     };
-  }, [appQuery, session, handoffAttempt, handoffDismissed, navigate]);
+  }, [appQuery, session, handoffAttempt, handoffDismissed, navigate, t]);
 
   const handoffRequired = appQuery.active && !handoffDismissed;
 

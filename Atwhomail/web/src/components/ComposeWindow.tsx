@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { sendForm, sendMail } from "../api/endpoints";
 import type { EmailAddressInfo, EmailAlias, FormSchema, Session } from "../api/types";
+import { useI18n, translate, type Language } from "../i18n";
 import { checkFileSize, fileToBase64, type PendingAttachment } from "../lib/files";
 import { formatBytes } from "../lib/format";
 import { splitRecipients, textToHtml } from "../lib/recipients";
@@ -29,7 +30,7 @@ interface Props {
   session: Session;
   /** owner 才有（可選寄件地址）；mailbox 固定為自己 */
   addresses: EmailAddressInfo[];
-  /** D31：可供「暱稱／Token」模式使用的別名（由後端依 session scope 回傳） */
+  /** D31：可供「暱稱／隱身代號」模式使用的別名（由後端依 session scope 回傳） */
   aliases: EmailAlias[];
   onClose: () => void;
   onSent: (info: { from: string; to: string[] }) => void;
@@ -47,22 +48,25 @@ const MODE_TITLE: Record<DraftMode, string> = {
 };
 
 /** 互動式表單的預設 schema（可編輯；後端仍會做白名單驗證） */
-const DEFAULT_FORM_SCHEMA = JSON.stringify(
-  {
-    type: "object",
-    properties: {
-      name: { type: "string", title: "姓名", maxLength: 100 },
-      message: { type: "string", title: "內容", maxLength: 2000 },
+function defaultFormSchema(language: Language): string {
+  return JSON.stringify(
+    {
+      type: "object",
+      properties: {
+        name: { type: "string", title: translate(language, "名稱"), maxLength: 100 },
+        message: { type: "string", title: translate(language, "信件內容"), maxLength: 2000 },
+      },
+      required: ["message"],
     },
-    required: ["message"],
-  },
-  null,
-  2
-);
+    null,
+    2
+  );
+}
 
 const INTERNAL_DOMAIN = "@atwho.org";
 
 export function ComposeWindow({ draft, session, addresses, aliases, onClose, onSent, onError, onDirty }: Props) {
+  const { t, language } = useI18n();
   const [from, setFrom] = useState(draft.from);
   const [to, setTo] = useState(draft.to);
   const [cc, setCc] = useState(draft.cc);
@@ -76,7 +80,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
   // docs/18 P2：「互動式表單」模式（收件人只允許內部地址；送出打 /api/forms/send）
   const [interactive, setInteractive] = useState(draft.mode === "form");
   const [formDescription, setFormDescription] = useState("");
-  const [schemaText, setSchemaText] = useState(DEFAULT_FORM_SCHEMA);
+  const [schemaText, setSchemaText] = useState(() => defaultFormSchema(language));
   const editorRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -91,7 +95,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
    * D31（owner 2026-11-06）：三種隱私模式
    * - `real`：真實 ID（固定；mailbox = 自己的地址，owner = 第一個 active 地址）
    * - `nickname`：1 個啟用中的暱稱別名（可在個人設置變更；舊的立即停用）
-   * - `token`：帳號建立時系統自動產生的 Token 別名（對方只看到 Token）
+   * - `token`：帳號建立時系統自動產生的隱身代號（對方只看到隱身代號）
    *
    * 回覆草稿的 `draft.from` 會自動對應到正確模式；若別名已停用則退回真實 ID。
    * ⚠️ 互動式表單後端只接受真實地址 → 切換時自動改回真實 ID。
@@ -151,7 +155,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
   };
 
   const addLink = () => {
-    const url = window.prompt("連結網址（https://…）");
+    const url = window.prompt(t("連結網址（https://…）"));
     if (url) exec("createLink", url);
   };
 
@@ -176,7 +180,9 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
         });
         total += file.size;
       } catch (e) {
-        errors.push(e instanceof Error ? e.message : `讀取檔案失敗：${file.name}`);
+        errors.push(
+          e instanceof Error ? e.message : t("讀取檔案失敗：{filename}", { filename: file.name })
+        );
       }
     }
     setAttachments(next);
@@ -192,19 +198,19 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
     const ccList = splitRecipients(cc);
     const bccList = splitRecipients(bcc);
     if (!from) {
-      setError("請選擇寄件地址");
+      setError(t("請選擇寄件地址"));
       return;
     }
     if (interactive && mode !== "real") {
-      setError("互動式表單只能使用真實 ID 寄件");
+      setError(t("互動式表單只能使用真實 ID 寄件"));
       return;
     }
     if (toList.length === 0) {
-      setError("請填寫至少一個收件者");
+      setError(t("請填寫至少一個收件者"));
       return;
     }
     if (!subject.trim()) {
-      setError("請填寫主旨");
+      setError(t("請填寫主旨"));
       return;
     }
     let formSchema: FormSchema | null = null;
@@ -213,22 +219,22 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
     if (interactive) {
       const allRecipients = [...toList, ...ccList, ...bccList];
       if (allRecipients.some((a) => !a.toLowerCase().endsWith(INTERNAL_DOMAIN))) {
-        setError("互動式表單只能寄給 @atwho.org 內部地址");
+        setError(t("互動式表單只能寄給 @atwho.org 內部地址"));
         return;
       }
       if (attachments.length > 0) {
-        setError("互動式表單不支援附件");
+        setError(t("互動式表單不支援附件"));
         return;
       }
       let parsed: unknown;
       try {
         parsed = JSON.parse(schemaText);
       } catch {
-        setError("表單 schema 不是有效的 JSON");
+        setError(t("表單 schema 不是有效的 JSON"));
         return;
       }
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        setError("表單 schema 必須是 JSON 物件");
+        setError(t("表單 schema 必須是 JSON 物件"));
         return;
       }
       const candidate = parsed as Record<string, unknown>;
@@ -238,7 +244,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
         candidate.properties === null ||
         Array.isArray(candidate.properties)
       ) {
-        setError("表單 schema 需為 type=object 且包含 properties");
+        setError(t("表單 schema 需為 type=object 且包含 properties"));
         return;
       }
       formSchema = candidate as FormSchema;
@@ -246,7 +252,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
       html = editorRef.current?.innerHTML ?? "";
       text = editorRef.current?.innerText ?? "";
       if (!text.trim()) {
-        setError("請輸入信件內容");
+        setError(t("請輸入信件內容"));
         return;
       }
     }
@@ -286,7 +292,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
       }
       onSent({ from, to: toList });
     } catch (err) {
-      const message = err instanceof ApiError ? `${err.message}（${err.code}）` : "寄送失敗，請稍後再試";
+      const message = err instanceof ApiError ? `${err.message}（${err.code}）` : t("寄送失敗，請稍後再試");
       setError(message);
       onError(message);
     } finally {
@@ -295,10 +301,10 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
   };
 
   return (
-    <div className="compose-window" role="dialog" aria-label={MODE_TITLE[draft.mode]}>
+    <div className="compose-window" role="dialog" aria-label={t(MODE_TITLE[draft.mode])}>
       <div className="compose-head">
-        <strong>{interactive ? "互動式表單" : MODE_TITLE[draft.mode]}</strong>
-        <div className="compose-mode-switch" role="tablist" aria-label="郵件模式">
+        <strong>{interactive ? t("互動式表單") : t(MODE_TITLE[draft.mode])}</strong>
+        <div className="compose-mode-switch" role="tablist" aria-label={t("郵件模式")}>
           <button
             type="button"
             role="tab"
@@ -309,7 +315,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
               setInteractive(false);
             }}
           >
-            一般信件
+            {t("一般信件")}
           </button>
           <button
             type="button"
@@ -319,22 +325,22 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
             onClick={() => {
               touch();
               setInteractive(true);
-              // D31：互動式表單後端只接受真實地址 → 從暱稱／Token 自動改回真實 ID
+              // D31：互動式表單後端只接受真實地址 → 從暱稱／隱身代號自動改回真實 ID
               if (mode !== "real") setFrom(realIdEmail);
             }}
           >
-            互動式表單
+            {t("互動式表單")}
           </button>
         </div>
-        <button type="button" className="icon-btn" onClick={onClose} aria-label="關閉">
+        <button type="button" className="icon-btn" onClick={onClose} aria-label={t("關閉")}>
           <IconClose size={16} />
         </button>
       </div>
 
       <form className="compose-form" onSubmit={submit}>
         <div className="compose-row">
-          <label>隱私模式</label>
-          <div className="privacy-modes" role="radiogroup" aria-label="隱私模式">
+          <label>{t("隱私模式")}</label>
+          <div className="privacy-modes" role="radiogroup" aria-label={t("隱私模式")}>
             <button
               type="button"
               role="radio"
@@ -343,7 +349,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
               title={realIdEmail || undefined}
               onClick={() => chooseMode("real")}
             >
-              真實 ID
+              {t("真實 ID")}
             </button>
             <button
               type="button"
@@ -353,14 +359,14 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
               disabled={!nicknameAlias || interactive}
               title={
                 !nicknameAlias
-                  ? "尚未建立暱稱別名；請到「個人設置 → 匿名（別名）」建立"
+                  ? t("尚未建立暱稱別名；請到「個人設置 → 匿名（別名）」建立")
                   : interactive
-                    ? "互動式表單只能使用真實 ID"
+                    ? t("互動式表單只能使用真實 ID")
                     : nicknameAlias.alias_address
               }
               onClick={() => chooseMode("nickname")}
             >
-              暱稱
+              {t("暱稱")}
             </button>
             <button
               type="button"
@@ -370,41 +376,41 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
               disabled={!tokenAlias || interactive}
               title={
                 !tokenAlias
-                  ? "Token 尚未產生；請重新登入或聯絡管理者"
+                  ? t("隱身代號尚未產生；請重新登入或聯絡管理者")
                   : interactive
-                    ? "互動式表單只能使用真實 ID"
+                    ? t("互動式表單只能使用真實 ID")
                     : tokenAlias.alias_address
               }
               onClick={() => chooseMode("token")}
             >
-              Token
+              {t("隱身代號")}
             </button>
           </div>
         </div>
 
         <div className="compose-row">
-          <label htmlFor="compose-from">寄件者</label>
+          <label htmlFor="compose-from">{t("寄件者")}</label>
           <input id="compose-from" value={from} readOnly />
         </div>
 
         {!interactive && (
           <p className="compose-hint compose-from-hint">
-            {mode === "real" && "對方會看到你的真實 ID。"}
-            {mode === "nickname" && "對方會看到暱稱別名；回信仍會送到你的真實 ID。"}
-            {mode === "token" && "對方只會看到這組 Token，看不到真實 ID 或暱稱；回信仍會送到你的真實 ID。"}
+            {mode === "real" && t("對方會看到你的真實 ID。")}
+            {mode === "nickname" && t("對方會看到暱稱別名；回信仍會送到你的真實 ID。")}
+            {mode === "token" && t("對方只會看到這組隱身代號，看不到真實 ID 或暱稱；回信仍會送到你的真實 ID。")}
           </p>
         )}
         {!interactive && !nicknameAlias && (
           <p className="compose-hint compose-from-hint">
-            尚未建立暱稱別名；請到「個人設置 → 匿名（別名）」建立後即可使用。
+            {t("尚未建立暱稱別名；請到「個人設置 → 匿名（別名）」建立後即可使用。")}
           </p>
         )}
         {!interactive && !tokenAlias && (
-          <p className="compose-hint compose-from-hint">Token 尚未產生；請重新登入或聯絡管理者。</p>
+          <p className="compose-hint compose-from-hint">{t("隱身代號尚未產生；請重新登入或聯絡管理者。")}</p>
         )}
 
         <div className="compose-row">
-          <label htmlFor="compose-to">收件者</label>
+          <label htmlFor="compose-to">{t("收件者")}</label>
           <input
             id="compose-to"
             value={to}
@@ -412,18 +418,18 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
               touch();
               setTo(e.target.value);
             }}
-            placeholder="以逗號分隔多個地址"
+            placeholder={t("以逗號分隔多個地址")}
             autoComplete="off"
           />
           <span className="compose-cc-toggle">
             {!showCc && (
               <button type="button" onClick={() => setShowCc(true)}>
-                副本
+                {t("副本")}
               </button>
             )}
             {!showBcc && (
               <button type="button" onClick={() => setShowBcc(true)}>
-                密件副本
+                {t("密件副本")}
               </button>
             )}
           </span>
@@ -431,7 +437,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
 
         {showCc && (
           <div className="compose-row">
-            <label htmlFor="compose-cc">副本</label>
+            <label htmlFor="compose-cc">{t("副本")}</label>
             <input
               id="compose-cc"
               value={cc}
@@ -445,7 +451,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
         )}
         {showBcc && (
           <div className="compose-row">
-            <label htmlFor="compose-bcc">密件副本</label>
+            <label htmlFor="compose-bcc">{t("密件副本")}</label>
             <input
               id="compose-bcc"
               value={bcc}
@@ -459,7 +465,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
         )}
 
         <div className="compose-row">
-          <label htmlFor="compose-subject">主旨</label>
+          <label htmlFor="compose-subject">{t("主旨")}</label>
           <input
             id="compose-subject"
             value={subject}
@@ -473,7 +479,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
         {interactive ? (
           <>
             <div className="compose-row compose-stack-row">
-              <label htmlFor="compose-form-description">表單說明</label>
+              <label htmlFor="compose-form-description">{t("表單說明")}</label>
               <textarea
                 id="compose-form-description"
                 className="form-control"
@@ -484,11 +490,11 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
                 }}
                 rows={2}
                 maxLength={2000}
-                placeholder="選填；會顯示在表單上方（純文字）"
+                placeholder={t("選填；會顯示在表單上方（純文字）")}
               />
             </div>
             <div className="compose-form-schema">
-              <label htmlFor="compose-form-schema">表單欄位（JSON Schema）</label>
+              <label htmlFor="compose-form-schema">{t("表單欄位（JSON Schema）")}</label>
               <textarea
                 id="compose-form-schema"
                 className="schema-editor"
@@ -499,39 +505,39 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
                 }}
                 rows={12}
                 spellCheck={false}
-                aria-label="表單 schema"
+                aria-label={t("表單 schema")}
               />
               <p className="compose-hint">
-                僅支援基本型別、enum、format: date；禁止 $ref／anyOf／oneOf／allOf／patternProperties／dependencies。
-                收件人僅限 @atwho.org 內部地址。
+                {t("僅支援基本型別、enum、format: date；禁止 $ref／anyOf／oneOf／allOf／patternProperties／dependencies。")}
+                {t("收件人僅限 @atwho.org 內部地址。")}
               </p>
             </div>
           </>
         ) : (
           <>
             <div className="compose-toolbar">
-              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("bold")} title="粗體">
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("bold")} title={t("粗體")}>
                 <strong>B</strong>
               </button>
-              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("italic")} title="斜體">
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("italic")} title={t("斜體")}>
                 <em>I</em>
               </button>
-              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("underline")} title="底線">
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("underline")} title={t("底線")}>
                 <u>U</u>
               </button>
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => exec("insertUnorderedList")}
-                title="項目符號"
+                title={t("項目符號")}
               >
                 •≡
               </button>
-              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={addLink} title="插入連結">
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={addLink} title={t("插入連結")}>
                 🔗
               </button>
               <span className="toolbar-spacer" />
-              <button type="button" onClick={() => fileRef.current?.click()} title="加入附件">
+              <button type="button" onClick={() => fileRef.current?.click()} title={t("加入附件")}>
                 <IconPaperclip size={16} />
               </button>
             </div>
@@ -543,7 +549,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
               suppressContentEditableWarning
               role="textbox"
               aria-multiline="true"
-              aria-label="信件內容"
+              aria-label={t("信件內容")}
               onInput={touch}
             />
 
@@ -558,7 +564,7 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
                       type="button"
                       className="icon-btn"
                       onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
-                      aria-label={`移除 ${a.filename}`}
+                      aria-label={t("移除 {filename}", { filename: a.filename })}
                     >
                       <IconClose size={14} />
                     </button>
@@ -574,12 +580,12 @@ export function ComposeWindow({ draft, session, addresses, aliases, onClose, onS
         <div className="compose-footer">
           <button type="submit" className="btn-primary" disabled={sending}>
             <IconSend size={16} />
-            {sending ? (interactive ? "送出中…" : "傳送中…") : interactive ? "送出表單" : "傳送"}
+            {sending ? (interactive ? t("送出中…") : t("傳送中…")) : interactive ? t("送出表單") : t("傳送")}
           </button>
           <span className="compose-hint">
             {interactive
-              ? "互動式表單僅在 atwho.org 內部流動（不繞外網、不支援附件）"
-              : "附件單檔 ≤ 3.5 MiB（含內文總計 ≤ 5 MiB）"}
+              ? t("互動式表單僅在 atwho.org 內部流動（不繞外網、不支援附件）")
+              : t("附件單檔 ≤ 3.5 MiB（含內文總計 ≤ 5 MiB）")}
           </span>
         </div>
 

@@ -8,6 +8,7 @@
  *    app 是否存在、redirect_uri 是否在白名單，一律由後端 app-login 判定。
  *    前端不得自行把 redirect_uri 當成可信目的地（一定要以後端回的 `redirect` 為準）。
  */
+import { tGlobal } from "../i18n";
 
 export interface AppLoginQuery {
   /** 網址是否帶了 app／redirect_uri（任一）。false = 維持既有登入／註冊行為 */
@@ -51,14 +52,14 @@ export function parseAppLoginQuery(search: string): AppLoginQuery {
       active: true,
       app: app || null,
       redirectUri: redirectUri || null,
-      error: "登入參數不完整：需要 app 與 redirect_uri",
+      error: tGlobal("登入參數不完整：需要 app 與 redirect_uri"),
     };
   }
   if (!APP_ID_RE.test(app)) {
-    return { active: true, app, redirectUri, error: "app 參數格式錯誤（需為小寫英數字／連字號）" };
+    return { active: true, app, redirectUri, error: tGlobal("app 參數格式錯誤（需為小寫英數字／連字號）") };
   }
   if (!isHttpUrl(redirectUri)) {
-    return { active: true, app, redirectUri, error: "redirect_uri 必須是完整的 http(s) 網址" };
+    return { active: true, app, redirectUri, error: tGlobal("redirect_uri 必須是完整的 http(s) 網址") };
   }
   return { active: true, app, redirectUri, error: null };
 }

@@ -2,8 +2,8 @@
  * composeAlias.dom.spec.tsx — D31：撰寫視窗的三種隱私模式
  *
  * owner 2026-11-06 定案：
- * - 每個帳號有 1 個真實 ID（固定）、1 個啟用中的暱稱別名、1 個系統自動產生的 Token
- * - 撰寫介面用「真實 ID／暱稱／Token」三種模式選擇，不再顯示可切換的地址清單
+ * - 每個帳號有 1 個真實 ID（固定）、1 個啟用中的暱稱別名、1 個系統自動產生的隱身代號
+ * - 撰寫介面用「真實 ID／暱稱／隱身代號」三種模式選擇，不再顯示可切換的地址清單
  * - 對方只會看到所選身分；回信仍會送到真實 ID
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -61,7 +61,7 @@ function fromInput(): HTMLInputElement {
 }
 
 describe("D31：撰寫視窗的三種隱私模式", () => {
-  it("owner：真實 ID 固定第一個 active 地址；可切換暱稱與 Token", () => {
+  it("owner：真實 ID 固定第一個 active 地址；可切換暱稱與隱身代號", () => {
     renderCompose(
       OWNER,
       ADDRESSES,
@@ -80,16 +80,16 @@ describe("D31：撰寫視窗的三種隱私模式", () => {
     expect(fromInput().value).toBe("luke001@atwho.org");
     expect(screen.getByText(/對方會看到暱稱別名/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("radio", { name: "Token" }));
+    fireEvent.click(screen.getByRole("radio", { name: "隱身代號" }));
     expect(fromInput().value).toBe(TOKEN_ADDRESS);
-    expect(screen.getByText(/只會看到這組 Token/)).toBeTruthy();
+    expect(screen.getByText(/只會看到這組隱身代號/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("radio", { name: "真實 ID" }));
     expect(fromInput().value).toBe("alice@atwho.org");
     expect(screen.getByText(/對方會看到你的真實 ID/)).toBeTruthy();
   });
 
-  it("沒有暱稱別名 → 暱稱模式停用；Token 仍可用", () => {
+  it("沒有暱稱別名 → 暱稱模式停用；隱身代號仍可用", () => {
     renderCompose(
       OWNER,
       ADDRESSES,
@@ -98,10 +98,10 @@ describe("D31：撰寫視窗的三種隱私模式", () => {
     );
 
     expect((screen.getByRole("radio", { name: "暱稱" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("radio", { name: "Token" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("radio", { name: "隱身代號" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("mailbox session：真實 ID 是自己的地址，也能選暱稱與 Token", () => {
+  it("mailbox session：真實 ID 是自己的地址，也能選暱稱與隱身代號", () => {
     renderCompose(
       MAILBOX,
       [],
@@ -113,11 +113,11 @@ describe("D31：撰寫視窗的三種隱私模式", () => {
     );
 
     expect(fromInput().value).toBe("alice@atwho.org");
-    fireEvent.click(screen.getByRole("radio", { name: "Token" }));
+    fireEvent.click(screen.getByRole("radio", { name: "隱身代號" }));
     expect(fromInput().value).toBe(TOKEN_ADDRESS);
   });
 
-  it("切到互動式表單：從暱稱自動改回真實 ID，且暱稱／Token 停用", () => {
+  it("切到互動式表單：從暱稱自動改回真實 ID，且暱稱／隱身代號停用", () => {
     renderCompose(
       OWNER,
       ADDRESSES,
@@ -130,7 +130,7 @@ describe("D31：撰寫視窗的三種隱私模式", () => {
 
     expect(fromInput().value).toBe("alice@atwho.org");
     expect((screen.getByRole("radio", { name: "暱稱" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("radio", { name: "Token" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("radio", { name: "隱身代號" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("草稿指向已停用的別名 → 自動退回真實 ID", async () => {

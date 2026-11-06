@@ -33,7 +33,6 @@ function renderShell(host: string, session: Session) {
         searchInput=""
         onSearchInput={vi.fn()}
         onSubmitSearch={vi.fn()}
-        onCompose={vi.fn()}
         onOpenSettings={vi.fn()}
         onOpenAddresses={vi.fn()}
         onOpenInvites={vi.fn()}
@@ -212,10 +211,10 @@ describe("T179：個人設置頁", () => {
     expect(screen.queryByText("Google 帳號")).toBeNull();
     expect(screen.getByText(/今日已寄 2 \/ 5/)).toBeTruthy();
 
-    // D29／D31：別名管理內嵌（不再有「管理別名」按鈕）＋暱稱需自行建立、Token 系統自動產生
+    // D29／D31：別名管理內嵌（不再有「管理別名」按鈕）＋暱稱需自行建立、隱身代號系統自動產生
     expect(await screen.findByRole("button", { name: "建立" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: /建立暱稱別名/ })).toBeTruthy();
-    expect(screen.getByText("暱稱別名需自行建立（每帳號最多 1 個）；Token 由系統在帳號建立時自動產生。")).toBeTruthy();
+    expect(screen.getByText("暱稱別名需自行建立（每帳號最多 1 個）；隱身代號由系統在帳號建立時自動產生。")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "管理別名" })).toBeNull();
 
     // 有密碼 → 變更密碼表單（需要目前密碼）

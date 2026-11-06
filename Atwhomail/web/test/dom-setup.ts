@@ -26,6 +26,13 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  // D32：既有測試都以繁中斷言；固定測試預設語系（個別 i18n 測試可再覆寫）
+  try {
+    localStorage.setItem("atwhomail.language", "zh-TW");
+    localStorage.setItem("atwhomail.country", "TW");
+  } catch {
+    /* ignore */
+  }
   vi.stubGlobal("fetch", () => {
     throw new Error("D12：DOM 測試不得發出真實網路請求 —— 這個測試忘記安裝 fetch mock");
   });

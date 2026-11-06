@@ -83,7 +83,7 @@ export interface EmailAlias {
   target_address_id: number;
   target_email: string;
   status: "active" | "disabled";
-  /** D31：named＝使用者建立的暱稱別名；token＝帳號建立時系統自動產生的 Token 別名 */
+  /** D31：named＝使用者建立的暱稱別名；token＝帳號建立時系統自動產生的隱身代號 */
   kind: "named" | "token";
   /** 寄到這個別名的信件數（`messages.envelope_to` 統計） */
   received_count: number;

@@ -8,6 +8,7 @@
  * ⚠️ 不要從這個檔案以外的地方靜態 import `./FormRenderer`（會把 RJSF 拉回首屏 bundle）。
  */
 import { lazy, Suspense } from "react";
+import { useI18n } from "../i18n";
 import type { FormRendererProps } from "./FormRenderer";
 
 const LazyFormRenderer = lazy(() =>
@@ -15,12 +16,13 @@ const LazyFormRenderer = lazy(() =>
 );
 
 export function FormRenderer(props: FormRendererProps) {
+  const { t } = useI18n();
   return (
     <Suspense
       fallback={
         <div className="list-state" role="status">
           <div className="spinner" />
-          <p>表單載入中…</p>
+          <p>{t("表單載入中…")}</p>
         </div>
       }
     >

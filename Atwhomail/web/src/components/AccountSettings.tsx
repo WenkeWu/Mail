@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { changeAccountPassword, getAccountSettings } from "../api/endpoints";
 import type { AccountSettingsResponse, Session } from "../api/types";
+import { useI18n } from "../i18n";
 import { AliasManager } from "./AliasManager";
-import { IconAt, IconBack, IconKey, IconUsers } from "./icons";
+import { IconAt, IconBack, IconKey, IconSettings, IconUsers } from "./icons";
+import { LocaleSelectors } from "./LocaleSelectors";
 
 /** 錯誤碼 → 給人看的說明（其餘沿用 server 訊息，例如 LOCKED 會帶解鎖時間） */
 const ERROR_HINTS: Record<string, string> = {
@@ -43,6 +45,7 @@ interface Props {
  *    因此完成畫面直接引導重新登入。
  */
 export function AccountSettings({ session, onBack, onLogout, onToast, onAliasChanged }: Props) {
+  const { t } = useI18n();
   const [data, setData] = useState<AccountSettingsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -61,40 +64,40 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
         if (!cancelled) setData(res);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setLoadError(e instanceof ApiError ? e.message : "無法載入個人設置");
+        if (!cancelled) setLoadError(e instanceof ApiError ? e.message : t("無法載入個人設置"));
       });
     return () => {
       cancelled = true;
     };
-  }, [reloadKey]);
+  }, [reloadKey, t]);
 
   const copyAddress = useCallback(
     async (address: string) => {
       try {
         await navigator.clipboard.writeText(address);
         setCopied(address);
-        onToast("已複製信箱地址");
+        onToast(t("已複製信箱地址"));
         window.setTimeout(() => setCopied((prev) => (prev === address ? null : prev)), 2500);
       } catch {
-        onToast("複製失敗，請手動選取地址", "error");
+        onToast(t("複製失敗，請手動選取地址"), "error");
       }
     },
-    [onToast]
+    [onToast, t]
   );
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (busy) return;
     if (data?.has_password === 1 && currentPw === "") {
-      onToast("請輸入目前的密碼", "error");
+      onToast(t("請輸入目前的密碼"), "error");
       return;
     }
     if (newPw.length < 8) {
-      onToast("新密碼至少 8 個字元", "error");
+      onToast(t("新密碼至少 8 個字元"), "error");
       return;
     }
     if (newPw !== confirmPw) {
-      onToast("兩次輸入的新密碼不一致", "error");
+      onToast(t("兩次輸入的新密碼不一致"), "error");
       return;
     }
     setBusy(true);
@@ -103,9 +106,10 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
       setDone(true);
     } catch (err) {
       if (err instanceof ApiError) {
-        onToast(ERROR_HINTS[err.code] ?? err.message, "error");
+        const hint = ERROR_HINTS[err.code];
+        onToast(hint ? t(hint) : err.message, "error");
       } else {
-        onToast("密碼更新失敗", "error");
+        onToast(t("密碼更新失敗"), "error");
       }
     } finally {
       setBusy(false);
@@ -115,29 +119,31 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
   return (
     <section className="address-page">
       <div className="page-head">
-        <button type="button" className="icon-btn" onClick={onBack} aria-label="返回">
+        <button type="button" className="icon-btn" onClick={onBack} aria-label={t("返回")}>
           <IconBack size={20} />
         </button>
-        <h1>個人設置</h1>
+        <h1>{t("個人設置")}</h1>
       </div>
 
       {done ? (
         <div className="create-address narrow">
           <h2>
-            <IconKey size={18} /> 密碼已更新
+            <IconKey size={18} /> {t("密碼已更新")}
           </h2>
           <p className="muted">
-            基於安全，<strong>所有裝置的既有登入已立即失效</strong>（包含這一台）。請用新密碼重新登入。
+            {t("基於安全，")}
+            <strong>{t("所有裝置的既有登入已立即失效")}</strong>
+            {t("（包含這一台）。請用新密碼重新登入。")}
           </p>
           <button type="button" className="btn-primary" onClick={onLogout}>
-            重新登入
+            {t("重新登入")}
           </button>
         </div>
       ) : loadError ? (
         <div className="create-address narrow">
           <p className="error-text">{loadError}</p>
           <button type="button" className="btn-secondary" onClick={() => setReloadKey((k) => k + 1)}>
-            重試
+            {t("重試")}
           </button>
         </div>
       ) : data === null ? (
@@ -148,7 +154,15 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
         <div className="settings-grid">
           <section className="create-address settings-card">
             <h2>
-              <IconUsers size={18} /> 身分
+              <IconSettings size={18} /> {t("語言與國家")}
+            </h2>
+            <LocaleSelectors />
+            <p className="muted small">{t("這些設定會套用到整個介面與日期格式。")}</p>
+          </section>
+
+          <section className="create-address settings-card">
+            <h2>
+              <IconUsers size={18} /> {t("身分")}
             </h2>
             <dl className="settings-list">
               <div>
@@ -156,23 +170,23 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
                 <dd className="mono">{data.username}</dd>
               </div>
               <div>
-                <dt>角色</dt>
-                <dd>{ROLE_LABEL[data.role] ?? data.role}</dd>
+                <dt>{t("角色")}</dt>
+                <dd>{t(ROLE_LABEL[data.role] ?? data.role)}</dd>
               </div>
               <div>
-                <dt>信箱地址</dt>
+                <dt>{t("信箱地址")}</dt>
                 <dd>
                   {data.addresses.length === 0 ? (
-                    <span className="muted">（尚無地址）</span>
+                    <span className="muted">{t("（尚無地址）")}</span>
                   ) : (
                     data.addresses.map((a) => (
                       <div key={a.id} className="settings-address-row">
                         <span className="mono">{a.email}</span>
                         <span className={`status-pill ${a.status}`}>
-                          {ADDRESS_STATUS_LABEL[a.status] ?? a.status}
+                          {t(ADDRESS_STATUS_LABEL[a.status] ?? a.status)}
                         </span>
                         <button type="button" className="btn-secondary" onClick={() => void copyAddress(a.email)}>
-                          {copied === a.email ? "已複製" : "複製"}
+                          {copied === a.email ? t("已複製") : t("複製")}
                         </button>
                       </div>
                     ))
@@ -184,22 +198,22 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
 
           <section className="create-address settings-card">
             <h2>
-              <IconAt size={18} /> 備用電子郵件
+              <IconAt size={18} /> {t("備用電子郵件")}
             </h2>
             <dl className="settings-list">
               <div>
-                <dt>備用電子郵件</dt>
+                <dt>{t("備用電子郵件")}</dt>
                 <dd className="mono">
-                  {data.contact_email ? data.contact_email : <span className="muted">（未提供）</span>}
+                  {data.contact_email ? data.contact_email : <span className="muted">{t("（未提供）")}</span>}
                 </dd>
               </div>
             </dl>
-            <p className="muted small">用於「忘記密碼」時寄送重設連結。</p>
+            <p className="muted small">{t("用於「忘記密碼」時寄送重設連結。")}</p>
           </section>
 
           <section className="create-address settings-card">
             <h2>
-              <IconKey size={18} /> {data.has_password === 1 ? "變更密碼" : "設定密碼"}
+              <IconKey size={18} /> {data.has_password === 1 ? t("變更密碼") : t("設定密碼")}
             </h2>
             <form className="settings-form" onSubmit={submit}>
               {data.has_password === 1 && (
@@ -207,7 +221,7 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
                   type="password"
                   value={currentPw}
                   onChange={(e) => setCurrentPw(e.target.value)}
-                  placeholder="目前的密碼"
+                  placeholder={t("目前的密碼")}
                   autoComplete="current-password"
                   required
                 />
@@ -216,7 +230,7 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
                 type="password"
                 value={newPw}
                 onChange={(e) => setNewPw(e.target.value)}
-                placeholder="新密碼（至少 8 個字元）"
+                placeholder={t("新密碼（至少 8 個字元）")}
                 autoComplete="new-password"
                 required
               />
@@ -224,22 +238,22 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
                 type="password"
                 value={confirmPw}
                 onChange={(e) => setConfirmPw(e.target.value)}
-                placeholder="確認新密碼"
+                placeholder={t("確認新密碼")}
                 autoComplete="new-password"
                 required
               />
               <button type="submit" className="btn-primary" disabled={busy}>
-                {busy ? "更新中…" : data.has_password === 1 ? "更新密碼" : "設定密碼"}
+                {busy ? t("更新中…") : data.has_password === 1 ? t("更新密碼") : t("設定密碼")}
               </button>
-              <p className="muted small">更新後所有裝置（含這一台）都需要用新密碼重新登入。</p>
+              <p className="muted small">{t("更新後所有裝置（含這一台）都需要用新密碼重新登入。")}</p>
             </form>
           </section>
 
           <section className="create-address settings-card">
             <h2>
-              <IconAt size={18} /> 匿名（別名）
+              <IconAt size={18} /> {t("匿名（別名）")}
             </h2>
-            <p className="muted small">暱稱別名需自行建立（每帳號最多 1 個）；Token 由系統在帳號建立時自動產生。</p>
+            <p className="muted small">{t("暱稱別名需自行建立（每帳號最多 1 個）；隱身代號由系統在帳號建立時自動產生。")}</p>
             <AliasManager
               embedded
               session={session}
@@ -251,20 +265,21 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
 
           <section className="create-address settings-card">
             <h2>
-              <IconUsers size={18} /> 配額
+              <IconUsers size={18} /> {t("配額")}
             </h2>
             {data.role === "visitor" ? (
               data.addresses.length === 0 ? (
-                <p className="muted small">尚無可用地址。</p>
+                <p className="muted small">{t("尚無可用地址。")}</p>
               ) : (
                 data.addresses.map((a) => (
                   <p key={a.id} className="muted small settings-quota">
-                    <span className="mono">{a.email}</span>：今日已寄 {a.sent_today} / {a.daily_send_quota}
+                    <span className="mono">{a.email}</span>
+                    {t("：今日已寄 {sent} / {limit}", { sent: a.sent_today, limit: a.daily_send_quota })}
                   </p>
                 ))
               )
             ) : (
-              <p className="muted small">不適用（管理員帳號）。</p>
+              <p className="muted small">{t("不適用（管理員帳號）。")}</p>
             )}
           </section>
         </div>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { createInvite, getRegistrationMode, listInvites, revokeInvite } from "../api/endpoints";
 import type { Invite, RegistrationMode } from "../api/types";
+import { useI18n } from "../i18n";
 import { INVITE_STATE_LABEL, formatExpiry, inviteState } from "../lib/invites";
 import { REGISTER_LINK, inviteLink } from "../lib/registrationLinks";
 import { IconBack, IconPlus } from "./icons";
@@ -24,6 +25,7 @@ interface Props {
 const REVOCABLE = new Set(["active", "expired", "exhausted"]);
 
 export function InviteManager({ onBack, onToast }: Props) {
+  const { t } = useI18n();
   const [invites, setInvites] = useState<Invite[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [maxUses, setMaxUses] = useState("1");
@@ -45,9 +47,9 @@ export function InviteManager({ onBack, onToast }: Props) {
       setInvites(res.invites);
       setError(null);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "載入邀請碼失敗");
+      setError(e instanceof ApiError ? e.message : t("載入邀請碼失敗"));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void reload();
@@ -73,14 +75,14 @@ export function InviteManager({ onBack, onToast }: Props) {
     e.preventDefault();
     const uses = Number(maxUses);
     if (!Number.isInteger(uses) || uses < 1 || uses > 100) {
-      setError("使用次數需為 1–100 的整數");
+      setError(t("使用次數需為 1–100 的整數"));
       return;
     }
     let hours: number | null = null;
     if (expiresHours.trim() !== "") {
       hours = Number(expiresHours);
       if (!Number.isFinite(hours) || hours < 1 || hours > 8760) {
-        setError("有效時數需為 1–8760（留空 = 不過期）");
+        setError(t("有效時數需為 1–8760（留空 = 不過期）"));
         return;
       }
     }
@@ -94,11 +96,11 @@ export function InviteManager({ onBack, onToast }: Props) {
       });
       // D22：建立後以對話框顯示「邀請連結」＋一鍵複製（不再自動複製全碼）
       setCreatedInvite({ id: res.id, code: res.code });
-      onToast("已建立邀請碼");
+      onToast(t("已建立邀請碼"));
       setNote("");
       await reload();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "建立失敗");
+      setError(err instanceof ApiError ? err.message : t("建立失敗"));
     } finally {
       setBusy(false);
     }
@@ -123,7 +125,7 @@ export function InviteManager({ onBack, onToast }: Props) {
     const res = await listInvites(true);
     const full = res.invites.find((i) => i.id === row.id)?.code;
     if (!full) {
-      onToast("找不到邀請碼（可能已被撤銷）", "error");
+      onToast(t("找不到邀請碼（可能已被撤銷）"), "error");
       return null;
     }
     setRevealed((prev) => ({ ...prev, [row.id]: full }));
@@ -136,15 +138,15 @@ export function InviteManager({ onBack, onToast }: Props) {
       const known = revealed[row.id];
       if (known) {
         const ok = await copyToClipboard(known, row.id);
-        onToast(ok ? "已複製邀請碼" : "無法存取剪貼簿，請手動複製列表中的邀請碼", ok ? "info" : "error");
+        onToast(ok ? t("已複製邀請碼") : t("無法存取剪貼簿，請手動複製列表中的邀請碼"), ok ? "info" : "error");
         return;
       }
       const full = await revealCode(row);
       if (!full) return;
       const ok = await copyToClipboard(full, row.id);
-      onToast(ok ? "已複製邀請碼" : "已顯示邀請碼，請手動複製", ok ? "info" : "error");
+      onToast(ok ? t("已複製邀請碼") : t("已顯示邀請碼，請手動複製"), ok ? "info" : "error");
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "取得邀請碼失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("取得邀請碼失敗"), "error");
     }
   };
 
@@ -156,10 +158,10 @@ export function InviteManager({ onBack, onToast }: Props) {
         setCopiedLinkId(id);
         window.setTimeout(() => setCopiedLinkId((cur) => (cur === id ? null : cur)), 2500);
       }
-      onToast("已複製連結");
+      onToast(t("已複製連結"));
       return true;
     } catch {
-      onToast("無法存取剪貼簿，請手動複製連結", "error");
+      onToast(t("無法存取剪貼簿，請手動複製連結"), "error");
       return false;
     }
   };
@@ -171,7 +173,7 @@ export function InviteManager({ onBack, onToast }: Props) {
       if (!full) return;
       await copyLink(inviteLink(full), row.id);
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "取得邀請碼失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("取得邀請碼失敗"), "error");
     }
   };
 
@@ -179,7 +181,7 @@ export function InviteManager({ onBack, onToast }: Props) {
     if (!revokeTarget) return;
     try {
       await revokeInvite(revokeTarget.id);
-      onToast("邀請碼已撤銷");
+      onToast(t("邀請碼已撤銷"));
       setRevealed((prev) => {
         const next = { ...prev };
         delete next[revokeTarget.id];
@@ -188,22 +190,22 @@ export function InviteManager({ onBack, onToast }: Props) {
       setRevokeTarget(null);
       await reload();
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "撤銷失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("撤銷失敗"), "error");
     }
   };
 
   return (
     <section className="address-page">
       <div className="page-head">
-        <button type="button" className="icon-btn" onClick={onBack} aria-label="返回">
+        <button type="button" className="icon-btn" onClick={onBack} aria-label={t("返回")}>
           <IconBack size={20} />
         </button>
-        <h1>邀請碼管理</h1>
+        <h1>{t("邀請碼管理")}</h1>
       </div>
 
       <form className="create-address" onSubmit={submitCreate}>
         <h2>
-          <IconPlus size={18} /> 建立邀請碼
+          <IconPlus size={18} /> {t("建立邀請碼")}
         </h2>
         <div className="create-row">
           <input
@@ -212,8 +214,8 @@ export function InviteManager({ onBack, onToast }: Props) {
             max={100}
             value={maxUses}
             onChange={(e) => setMaxUses(e.target.value)}
-            placeholder="使用次數（1–100）"
-            aria-label="使用次數"
+            placeholder={t("使用次數（1–100）")}
+            aria-label={t("使用次數")}
           />
           <input
             type="number"
@@ -221,42 +223,42 @@ export function InviteManager({ onBack, onToast }: Props) {
             max={8760}
             value={expiresHours}
             onChange={(e) => setExpiresHours(e.target.value)}
-            placeholder="有效時數（留空 = 不過期）"
-            aria-label="有效時數"
+            placeholder={t("有效時數（留空 = 不過期）")}
+            aria-label={t("有效時數")}
           />
           <input
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="備註（例如：給小明 2026-10）"
-            aria-label="備註"
+            placeholder={t("備註（例如：給小明 2026-10）")}
+            aria-label={t("備註")}
             maxLength={200}
           />
           <button type="submit" className="btn-primary" disabled={busy}>
-            {busy ? "建立中…" : "建立"}
+            {busy ? t("建立中…") : t("建立")}
           </button>
         </div>
         {error && <p className="error-text">{error}</p>}
         <p className="muted small">
-          邀請碼即註冊憑證：只在建立當下與「複製」時以全碼呈現，其餘一律遮罩；每次複製都會在稽核留下紀錄。
+          {t("邀請碼即註冊憑證：只在建立當下與「複製」時以全碼呈現，其餘一律遮罩；每次複製都會在稽核留下紀錄。")}
         </p>
       </form>
 
       {regMode === "email_verify" && (
-        <section className="create-address register-link-card" aria-label="一般註冊連結">
-          <h2>一般註冊連結</h2>
+        <section className="create-address register-link-card" aria-label={t("一般註冊連結")}>
+          <h2>{t("一般註冊連結")}</h2>
           <p className="muted small">
-            目前為 Email 驗證碼註冊模式，對方不需要邀請碼。把連結傳出去，對方打開後會直接進到註冊頁。
+            {t("目前為 Email 驗證碼註冊模式，對方不需要邀請碼。把連結傳出去，對方打開後會直接進到註冊頁。")}
           </p>
           <div className="link-row">
             <input
               type="text"
               readOnly
               value={REGISTER_LINK}
-              aria-label="一般註冊連結"
+              aria-label={t("一般註冊連結")}
               onFocus={(e) => e.currentTarget.select()}
             />
             <button type="button" className="btn-primary" onClick={() => void copyLink(REGISTER_LINK)}>
-              複製連結
+              {t("複製連結")}
             </button>
           </div>
         </section>
@@ -268,17 +270,17 @@ export function InviteManager({ onBack, onToast }: Props) {
             <div className="spinner" />
           </div>
         ) : invites.length === 0 ? (
-          <div className="list-state">尚無邀請碼</div>
+          <div className="list-state">{t("尚無邀請碼")}</div>
         ) : (
           <table className="address-table">
             <thead>
               <tr>
-                <th>備註</th>
-                <th>邀請碼</th>
-                <th>已用／上限</th>
-                <th>到期時間</th>
-                <th>狀態</th>
-                <th>操作</th>
+                <th>{t("備註")}</th>
+                <th>{t("邀請碼")}</th>
+                <th>{t("已用／上限")}</th>
+                <th>{t("到期時間")}</th>
+                <th>{t("狀態")}</th>
+                <th>{t("操作")}</th>
               </tr>
             </thead>
             <tbody>
@@ -288,7 +290,7 @@ export function InviteManager({ onBack, onToast }: Props) {
                 return (
                   <tr key={row.id} className={state !== "active" ? "row-dim" : ""}>
                     <td>{row.note ?? <span className="muted">—</span>}</td>
-                    <td className="invite-code mono" title={revealed[row.id] ?? "按「複製」取得完整邀請碼"}>
+                    <td className="invite-code mono" title={revealed[row.id] ?? t("按「複製」取得完整邀請碼")}>
                       {shown}
                     </td>
                     <td>
@@ -296,19 +298,19 @@ export function InviteManager({ onBack, onToast }: Props) {
                     </td>
                     <td>{formatExpiry(row.expires_at)}</td>
                     <td>
-                      <span className={`status-pill ${state}`}>{INVITE_STATE_LABEL[state]}</span>
+                      <span className={`status-pill ${state}`}>{t(INVITE_STATE_LABEL[state])}</span>
                     </td>
                     <td className="row-actions">
                       <button type="button" onClick={() => void handleCopy(row)} disabled={state === "revoked"}>
-                        {copiedId === row.id ? "已複製" : "複製"}
+                        {copiedId === row.id ? t("已複製") : t("複製")}
                       </button>
                       <button
                         type="button"
                         onClick={() => void handleCopyLink(row)}
                         disabled={state === "revoked"}
-                        title="複製可直接開啟註冊頁並預填此邀請碼的連結"
+                        title={t("複製可直接開啟註冊頁並預填此邀請碼的連結")}
                       >
-                        {copiedLinkId === row.id ? "已複製連結" : "複製邀請連結"}
+                        {copiedLinkId === row.id ? t("已複製連結") : t("複製邀請連結")}
                       </button>
                       <button
                         type="button"
@@ -316,7 +318,7 @@ export function InviteManager({ onBack, onToast }: Props) {
                         onClick={() => setRevokeTarget(row)}
                         disabled={!REVOCABLE.has(state) || state === "revoked"}
                       >
-                        撤銷
+                        {t("撤銷")}
                       </button>
                     </td>
                   </tr>
@@ -327,56 +329,57 @@ export function InviteManager({ onBack, onToast }: Props) {
         )}
       </div>
       <p className="muted small">
-        撤銷為 soft（保留紀錄，狀態改為「已撤銷」）；已撤銷的邀請碼無法再用於註冊，也無法復原。
+        {t("撤銷為 soft（保留紀錄，狀態改為「已撤銷」）；已撤銷的邀請碼無法再用於註冊，也無法復原。")}
       </p>
 
       {createdInvite && (
-        <Modal title="已建立邀請碼" onClose={() => setCreatedInvite(null)}>
-          <p>把這個連結傳給對方，對方打開後會直接進到註冊頁並預填邀請碼：</p>
+        <Modal title={t("已建立邀請碼")} onClose={() => setCreatedInvite(null)}>
+          <p>{t("把這個連結傳給對方，對方打開後會直接進到註冊頁並預填邀請碼：")}</p>
           <input
             type="text"
             readOnly
             value={inviteLink(createdInvite.code)}
-            aria-label="邀請連結"
+            aria-label={t("邀請連結")}
             onFocus={(e) => e.currentTarget.select()}
           />
           <p className="muted small">
-            邀請碼：<span className="mono">{createdInvite.code}</span>
+            {t("邀請碼：")}
+            <span className="mono">{createdInvite.code}</span>
           </p>
           <div className="modal-actions">
             <button type="button" className="btn-secondary" onClick={() => setCreatedInvite(null)}>
-              關閉
+              {t("關閉")}
             </button>
             <button
               type="button"
               className="btn-primary"
               onClick={() => void copyLink(inviteLink(createdInvite.code))}
             >
-              複製邀請連結
+              {t("複製邀請連結")}
             </button>
           </div>
         </Modal>
       )}
 
       {revokeTarget && (
-        <Modal title="撤銷邀請碼" onClose={() => setRevokeTarget(null)}>
+        <Modal title={t("撤銷邀請碼")} onClose={() => setRevokeTarget(null)}>
           <p>
-            確定要撤銷這組邀請碼嗎？
+            {t("確定要撤銷這組邀請碼嗎？")}
             {revokeTarget.note ? (
               <>
-                （備註：<strong>{revokeTarget.note}</strong>）
+                {t("（備註：{note}）", { note: revokeTarget.note })}
               </>
             ) : null}
           </p>
           <p className="muted small">
-            撤銷後將無法再用於註冊（已註冊的帳號不受影響），且無法復原 —— 需要時請重新建立。
+            {t("撤銷後將無法再用於註冊（已註冊的帳號不受影響），且無法復原 —— 需要時請重新建立。")}
           </p>
           <div className="modal-actions">
             <button type="button" className="btn-secondary" onClick={() => setRevokeTarget(null)}>
-              取消
+              {t("取消")}
             </button>
             <button type="button" className="btn-danger" onClick={() => void submitRevoke()}>
-              確定撤銷
+              {t("確定撤銷")}
             </button>
           </div>
         </Modal>

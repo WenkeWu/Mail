@@ -7,6 +7,7 @@
  * ⚠️ 失敗時**不導向**（也不把使用者自行提供的 redirect_uri 當成目的地）——
  *    只有後端回傳的 `redirect` 才會被使用。
  */
+import { useI18n } from "../i18n";
 import { IconMail } from "./icons";
 
 interface Props {
@@ -20,6 +21,7 @@ interface Props {
 }
 
 export function AppHandoff({ app, status, error, onRetry, onCancel }: Props) {
+  const { t } = useI18n();
   return (
     <div className="login-page">
       <div className="login-card">
@@ -29,29 +31,33 @@ export function AppHandoff({ app, status, error, onRetry, onCancel }: Props) {
           </span>
           <div>
             <h1>AtWhoMail</h1>
-            <p>應用程式登入</p>
+            <p>{t("應用程式登入")}</p>
           </div>
         </div>
 
         {status === "pending" ? (
           <>
-            <p className="login-hint">登入成功，正在返回{app ? `「${app}」` : "應用程式"}…</p>
+            <p className="login-hint">
+              {app
+                ? t("登入成功，正在返回「{app}」…", { app })
+                : t("登入成功，正在返回應用程式…")}
+            </p>
             <div className="list-state">
               <div className="spinner" />
             </div>
           </>
         ) : (
           <>
-            <p className="login-error">{error ?? "無法完成應用程式登入，請稍後再試"}</p>
+            <p className="login-error">{error ?? t("無法完成應用程式登入，請稍後再試")}</p>
             <p className="login-hint">
-              授權失敗時不會帶你前往其他網站。你可以重試，或先繼續使用 AtWhoMail。
+              {t("授權失敗時不會帶你前往其他網站。你可以重試，或先繼續使用 AtWhoMail。")}
             </p>
             <div className="register-actions">
               <button type="button" className="btn-secondary" onClick={onRetry}>
-                重試
+                {t("重試")}
               </button>
               <button type="button" className="btn-link" onClick={onCancel}>
-                以 AtWhoMail 繼續
+                {t("以 AtWhoMail 繼續")}
               </button>
             </div>
           </>

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import { getFormResponses, revokeForm } from "../api/endpoints";
 import type { FormInstanceSummary, FormResponsesResponse } from "../api/types";
+import { tGlobal, useI18n } from "../i18n";
 import { formatFullDate } from "../lib/format";
 
 type State =
@@ -33,11 +34,12 @@ function payloadText(inst: FormInstanceSummary): string {
   try {
     return JSON.stringify(inst.payload, null, 2);
   } catch {
-    return "（無法顯示回覆）";
+    return tGlobal("（無法顯示回覆）");
   }
 }
 
 export function FormManagePanel({ instanceId }: { instanceId: number }) {
+  const { t } = useI18n();
   const [state, setState] = useState<State>({ kind: "loading" });
   const [busy, setBusy] = useState(false);
 
@@ -51,9 +53,9 @@ export function FormManagePanel({ instanceId }: { instanceId: number }) {
         setState({ kind: "hidden" });
         return;
       }
-      setState({ kind: "error", message: e instanceof ApiError ? e.message : "無法載入表單回覆" });
+      setState({ kind: "error", message: e instanceof ApiError ? e.message : t("無法載入表單回覆") });
     }
-  }, [instanceId]);
+  }, [instanceId, t]);
 
   useEffect(() => {
     void load();
@@ -63,7 +65,7 @@ export function FormManagePanel({ instanceId }: { instanceId: number }) {
     if (busy) return;
     if (
       !window.confirm(
-        "撤回後，所有收件人將立即無法填寫此表單（已送出的回覆仍會保留）。確定要撤回這批表單嗎？"
+        t("撤回後，所有收件人將立即無法填寫此表單（已送出的回覆仍會保留）。確定要撤回這批表單嗎？")
       )
     ) {
       return;
@@ -73,7 +75,7 @@ export function FormManagePanel({ instanceId }: { instanceId: number }) {
       await revokeForm(instanceId);
       await load();
     } catch (e) {
-      setState({ kind: "error", message: e instanceof ApiError ? e.message : "撤回失敗" });
+      setState({ kind: "error", message: e instanceof ApiError ? e.message : t("撤回失敗") });
     } finally {
       setBusy(false);
     }
@@ -83,7 +85,7 @@ export function FormManagePanel({ instanceId }: { instanceId: number }) {
   if (state.kind === "loading") {
     return (
       <div className="form-manage">
-        <p className="muted">載入表單回覆…</p>
+        <p className="muted">{t("載入表單回覆…")}</p>
       </div>
     );
   }
@@ -92,7 +94,7 @@ export function FormManagePanel({ instanceId }: { instanceId: number }) {
       <div className="form-manage">
         <p className="compose-error">{state.message}</p>
         <button type="button" className="btn-secondary" onClick={() => void load()}>
-          重試
+          {t("重試")}
         </button>
       </div>
     );
@@ -103,13 +105,16 @@ export function FormManagePanel({ instanceId }: { instanceId: number }) {
   return (
     <div className="form-manage">
       <div className="form-manage-head">
-        <strong>互動式表單管理</strong>
+        <strong>{t("互動式表單管理")}</strong>
         <span className="muted">
-          {data.instances.filter((i) => i.status === "submitted").length} / {data.instances.length} 已回覆
+          {t("{submitted} / {total} 已回覆", {
+            submitted: data.instances.filter((i) => i.status === "submitted").length,
+            total: data.instances.length,
+          })}
         </span>
         {canRevoke && (
           <button type="button" className="btn-danger" onClick={() => void revoke()} disabled={busy}>
-            {busy ? "撤回中…" : "撤回表單"}
+            {busy ? t("撤回中…") : t("撤回表單")}
           </button>
         )}
       </div>
@@ -118,7 +123,7 @@ export function FormManagePanel({ instanceId }: { instanceId: number }) {
           <li key={inst.id} className={`form-instance status-${inst.status}`}>
             <div className="form-instance-row">
               <span className="form-instance-recipient">{inst.recipient}</span>
-              <span className={`status-chip status-${inst.status}`}>{statusLabel(inst.status)}</span>
+              <span className={`status-chip status-${inst.status}`}>{t(statusLabel(inst.status))}</span>
               {inst.submitted_at !== null && (
                 <span className="muted">{formatFullDate(inst.submitted_at)}</span>
               )}

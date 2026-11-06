@@ -8,6 +8,7 @@ import {
   setEmailAliasStatus,
 } from "../api/endpoints";
 import type { CreatedAlias, EmailAlias, Session } from "../api/types";
+import { useI18n } from "../i18n";
 import { aliasPreview, normalizeAliasInput, validateAliasName } from "../lib/alias";
 import { formatFullDate } from "../lib/format";
 import { IconBack, IconPlus } from "./icons";
@@ -31,17 +32,18 @@ interface AliasTarget {
   email: string;
 }
 
-const EMPTY_HINT = "尚未建立暱稱別名。Token 會在帳號建立時自動產生；暱稱別名可在下方建立。";
+const EMPTY_HINT = "尚未建立暱稱別名。隱身代號會在帳號建立時自動產生；暱稱別名可在下方建立。";
 
 /**
  * 別名管理（D25；D31 改為三種寄信身分）。
  *
  * - **暱稱別名**：每帳號最多 1 個「啟用中」；可變更，舊的立即停用（來信回 550）
- * - **Token 別名**：帳號建立時由系統自動產生，不隨暱稱變更；由系統管理，不能停用／刪除
+ * - **隱身代號**：帳號建立時由系統自動產生，不隨暱稱變更；由系統管理，不能停用／刪除
  * - owner 看名下全部；mailbox 只看自己地址的別名（後端 scope 判定）
  * - 停用／刪除皆為**軟停用**（不刪資料列；停用後寄到別名的信回 550）
  */
 export function AliasManager({ session, onBack, onToast, onChanged, embedded = false }: Props) {
+  const { t } = useI18n();
   const [aliases, setAliases] = useState<EmailAlias[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [targets, setTargets] = useState<AliasTarget[]>([]);
@@ -58,7 +60,7 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
       setAliases(res.aliases);
       setError(null);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "載入別名失敗");
+      setError(e instanceof ApiError ? e.message : t("載入別名失敗"));
     }
   }, []);
 
@@ -87,7 +89,7 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
         setTargetId((prev) => (prev && active.some((a) => String(a.id) === prev) ? prev : String(active[0]?.id ?? "")));
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof ApiError ? e.message : "載入地址失敗");
+        if (!cancelled) setError(e instanceof ApiError ? e.message : t("載入地址失敗"));
       });
     return () => {
       cancelled = true;
@@ -107,17 +109,19 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
     e.preventDefault();
     const validation = validateAliasName(name);
     if (validation) {
-      setError(validation);
+      setError(t(validation));
       return;
     }
     if (!targetId) {
-      setError("請選擇目標地址");
+      setError(t("請選擇目標地址"));
       return;
     }
     if (
       replacing &&
       !window.confirm(
-        `變更暱稱別名？舊的 ${activeNamed.map((a) => a.alias_address).join("、")} 會立即停用（來信回 550）。`
+        t("變更暱稱別名？舊的 {addresses} 會立即停用（來信回 550）。", {
+          addresses: activeNamed.map((a) => a.alias_address).join("、"),
+        })
       )
     ) {
       return;
@@ -130,12 +134,14 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
       setName("");
       setCopied(null);
       onToast(
-        replacing ? `已變更暱稱別名 ${res.alias_address}（舊的已停用）` : `已建立暱稱別名 ${res.alias_address}`
+        replacing
+          ? t("已變更暱稱別名 {address}（舊的已停用）", { address: res.alias_address })
+          : t("已建立暱稱別名 {address}", { address: res.alias_address })
       );
       await reload();
       onChanged?.();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "建立別名失敗");
+      setError(err instanceof ApiError ? err.message : t("建立別名失敗"));
     } finally {
       setBusy(false);
     }
@@ -145,10 +151,10 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
     try {
       await navigator.clipboard.writeText(address);
       setCopied(address);
-      onToast("已複製別名");
+      onToast(t("已複製別名"));
       window.setTimeout(() => setCopied((prev) => (prev === address ? null : prev)), 2500);
     } catch {
-      onToast("複製失敗，請手動選取別名", "error");
+      onToast(t("複製失敗，請手動選取別名"), "error");
     }
   };
 
@@ -157,11 +163,15 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
     setBusyId(row.id);
     try {
       await setEmailAliasStatus(row.id, next);
-      onToast(`${row.alias_address} 已${next === "active" ? "啟用" : "停用"}`);
+      onToast(
+        next === "active"
+          ? t("{address} 已啟用", { address: row.alias_address })
+          : t("{address} 已停用", { address: row.alias_address })
+      );
       await reload();
       onChanged?.();
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "操作失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("操作失敗"), "error");
     } finally {
       setBusyId(null);
     }
@@ -169,17 +179,23 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
 
   /** 刪除＝軟停用（後端不刪資料列，保留既有信件的 envelope_to 與稽核） */
   const removeAlias = async (row: EmailAlias) => {
-    if (!window.confirm(`停用別名 ${row.alias_address}？停用後寄到這個別名的信會遭拒收（550），資料列會保留。`)) {
+    if (
+      !window.confirm(
+        t("停用別名 {address}？停用後寄到這個別名的信會遭拒收（550），資料列會保留。", {
+          address: row.alias_address,
+        })
+      )
+    ) {
       return;
     }
     setBusyId(row.id);
     try {
       await deleteEmailAlias(row.id);
-      onToast(`${row.alias_address} 已停用`);
+      onToast(t("{address} 已停用", { address: row.alias_address }));
       await reload();
       onChanged?.();
     } catch (e) {
-      onToast(e instanceof ApiError ? e.message : "停用失敗", "error");
+      onToast(e instanceof ApiError ? e.message : t("停用失敗"), "error");
     } finally {
       setBusyId(null);
     }
@@ -197,59 +213,61 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
     <section className={embedded ? "address-page alias-embedded" : "address-page"}>
       {!embedded && (
         <div className="page-head">
-          <button type="button" className="icon-btn" onClick={onBack} aria-label="返回">
+          <button type="button" className="icon-btn" onClick={onBack} aria-label={t("返回")}>
             <IconBack size={20} />
           </button>
-          <h1>別名管理</h1>
+          <h1>{t("別名管理")}</h1>
         </div>
       )}
 
-      <p className="muted small">
-        每個帳號有三種寄信身分：<strong>真實 ID</strong>、<strong>暱稱別名</strong>（最多 1 個，可變更）、
-        <strong>Token</strong>（系統自動產生）。暱稱與 Token 都能收信與回信；停用後寄到該地址的信會回 550。
-      </p>
+      <p className="muted small">{t("每個帳號有三種寄信身分：真實 ID、暱稱別名（最多 1 個，可變更）、隱身代號（系統自動產生）。暱稱與隱身代號都能收信與回信；停用後寄到該地址的信會回 550。")}</p>
 
       <form className="create-address" onSubmit={submitCreate}>
         <h2>
-          <IconPlus size={18} /> {replacing ? "變更暱稱別名" : "建立暱稱別名"}
+          <IconPlus size={18} /> {replacing ? t("變更暱稱別名") : t("建立暱稱別名")}
         </h2>
         <div className="create-row alias-create-row">
           <div className="alias-name-input">
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="名字（例：luke）"
-              aria-label="別名名字"
+              placeholder={t("名字（例：luke）")}
+              aria-label={t("別名名字")}
               maxLength={12}
               autoComplete="off"
             />
-            <span className="alias-name-suffix">＋ 流水號 @atwho.org</span>
+            <span className="alias-name-suffix">{t("＋ 流水號 @atwho.org")}</span>
           </div>
           <select
             value={targetId}
             onChange={(e) => setTargetId(e.target.value)}
-            aria-label="目標地址"
+            aria-label={t("目標地址")}
             disabled={targets.length === 0}
           >
             {targets.length === 0 ? (
-              <option value="">沒有可用的目標地址</option>
+              <option value="">{t("沒有可用的目標地址")}</option>
             ) : (
-              targets.map((t) => (
-                <option key={t.id} value={String(t.id)}>
-                  {t.email}
+              targets.map((target) => (
+                <option key={target.id} value={String(target.id)}>
+                  {target.email}
                 </option>
               ))
             )}
           </select>
           <button type="submit" className="btn-primary" disabled={!canSubmit}>
-            {busy ? "處理中…" : replacing ? "變更" : "建立"}
+            {busy ? t("處理中…") : replacing ? t("變更") : t("建立")}
           </button>
         </div>
         <p className={`muted small ${nameError ? "error-text" : ""}`} aria-live="polite">
-          {nameError ??
-            (replacing
-              ? `每個帳號限 1 個啟用中的暱稱別名；送出後舊的 ${activeNamed[0]?.alias_address ?? ""} 會立即停用。`
-              : `僅限 3–12 個英文字母、不可使用保留字；實際地址例：${aliasPreview(name || "luke")}`)}
+          {nameError
+            ? t(nameError)
+            : replacing
+              ? t("每個帳號限 1 個啟用中的暱稱別名；送出後舊的 {address} 會立即停用。", {
+                  address: activeNamed[0]?.alias_address ?? "",
+                })
+              : t("僅限 3–12 個英文字母、不可使用保留字；實際地址例：{preview}", {
+                  preview: aliasPreview(name || "luke"),
+                })}
         </p>
         {error && <p className="error-text">{error}</p>}
       </form>
@@ -257,22 +275,23 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
       {created && (
         <div className="alias-success" role="status">
           <div>
-            <strong>{created.replaced?.length ? "暱稱別名已變更" : "暱稱別名已建立"}</strong>
+            <strong>{created.replaced?.length ? t("暱稱別名已變更") : t("暱稱別名已建立")}</strong>
             <p className="mono alias-success-address">{created.alias_address}</p>
-            <p className="muted small">目標地址：{createdTarget}。把這個別名給對方即可。</p>
+            <p className="muted small">{t("目標地址：{address}。把這個別名給對方即可。", { address: createdTarget })}</p>
             {created.replaced?.length ? (
-              <p className="muted small">舊別名已停用：{created.replaced.join("、")}</p>
+              <p className="muted small">
+                {t("舊別名已停用：{addresses}", { addresses: created.replaced.join("、") })}
+              </p>
             ) : null}
           </div>
           <button type="button" className="btn-secondary" onClick={() => void copyAlias(created.alias_address)}>
-            {copied === created.alias_address ? "已複製" : "複製別名"}
+            {copied === created.alias_address ? t("已複製") : t("複製別名")}
           </button>
         </div>
       )}
 
       <p className="muted small">
-        <strong>Token 別名</strong>由系統在帳號建立時自動產生，對方只會看到隨機 Token；
-        撰寫時選「Token」模式即可使用，回信仍會送到你的真實 ID。
+        {t("隱身代號由系統在帳號建立時自動產生，對方只會看到隨機隱身代號；撰寫時選「隱身代號」模式即可使用，回信仍會送到你的真實 ID。")}
       </p>
 
       <div className="address-table-wrap">
@@ -282,30 +301,30 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
           </div>
         ) : aliases.length === 0 ? (
           <div className="list-state">
-            <p>{EMPTY_HINT}</p>
+            <p>{t(EMPTY_HINT)}</p>
           </div>
         ) : (
           <table className="address-table">
             <thead>
               <tr>
-                <th>別名</th>
-                <th>類型</th>
-                <th>目標地址</th>
-                <th>狀態</th>
-                <th>收到幾封</th>
-                <th>最後收到</th>
-                <th>操作</th>
+                <th>{t("別名")}</th>
+                <th>{t("類型")}</th>
+                <th>{t("目標地址")}</th>
+                <th>{t("狀態")}</th>
+                <th>{t("收到幾封")}</th>
+                <th>{t("最後收到")}</th>
+                <th>{t("操作")}</th>
               </tr>
             </thead>
             <tbody>
               {aliases.map((row) => (
                 <tr key={row.id} className={row.status !== "active" ? "row-dim" : ""}>
                   <td className="mono">{row.alias_address}</td>
-                  <td>{row.kind === "token" ? "Token" : "暱稱"}</td>
+                  <td>{row.kind === "token" ? t("隱身代號") : t("暱稱")}</td>
                   <td className="mono">{row.target_email}</td>
                   <td>
                     <span className={`status-pill ${row.status}`}>
-                      {row.status === "active" ? "啟用" : "停用"}
+                      {row.status === "active" ? t("啟用") : t("停用")}
                     </span>
                   </td>
                   <td>{row.received_count}</td>
@@ -314,14 +333,14 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
                     {row.kind === "token" ? (
                       <>
                         <button type="button" onClick={() => void copyAlias(row.alias_address)}>
-                          {copied === row.alias_address ? "已複製" : "複製"}
+                          {copied === row.alias_address ? t("已複製") : t("複製")}
                         </button>
-                        <span className="muted small">系統管理</span>
+                        <span className="muted small">{t("系統管理")}</span>
                       </>
                     ) : (
                       <>
                         <button type="button" disabled={busyId === row.id} onClick={() => void toggleStatus(row)}>
-                          {row.status === "active" ? "停用" : "啟用"}
+                          {row.status === "active" ? t("停用") : t("啟用")}
                         </button>
                         {row.status === "active" && (
                           <button
@@ -330,7 +349,7 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
                             disabled={busyId === row.id}
                             onClick={() => void removeAlias(row)}
                           >
-                            刪除（停用）
+                            {t("刪除（停用）")}
                           </button>
                         )}
                       </>
@@ -344,8 +363,7 @@ export function AliasManager({ session, onBack, onToast, onChanged, embedded = f
       </div>
 
       <p className="muted small">
-        <strong>停用</strong>後寄到別名的來信會回 550（避免退信迴圈），真實地址不受影響；
-        <strong>刪除</strong>為軟停用，資料列與既有信件紀錄會保留。Token 別名由系統管理，無法停用。
+        {t("停用後寄到別名的來信會回 550（避免退信迴圈），真實地址不受影響；刪除為軟停用，資料列與既有信件紀錄會保留。隱身代號由系統管理，無法停用。")}
       </p>
     </section>
   );

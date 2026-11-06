@@ -32,6 +32,7 @@ import type {
 import { useCounts } from "../hooks/useCounts";
 import { useMailList } from "../hooks/useMailList";
 import { useMailSelection } from "../hooks/useMailSelection";
+import { useI18n } from "../i18n";
 import { replyFromFor } from "../lib/alias";
 import { displaySender, formatFullDate, parseAddress } from "../lib/format";
 import { showsAdminConsole, type LoginMode } from "../lib/hostMode";
@@ -97,6 +98,7 @@ export function AppShell({
   const [toast, setToast] = useState<ToastState | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
+  const { t } = useI18n();
 
   /**
    * 管理功能（地址管理、邀請碼／訪客／App Clients）只在 `mail.`（admin）與本機開發（all）顯示；
@@ -181,9 +183,9 @@ export function AppShell({
     const blocked = me.addresses.filter((a) => a.can_send !== 1 || a.sent_today >= a.daily_send_quota);
     if (blocked.length < me.addresses.length) return null;
     return blocked[0]!.can_send !== 1
-      ? "此帳號的寄信權限已關閉，請聯絡管理者"
-      : "今日寄信額度已用完（每日 00:00 UTC 重置）";
-  }, [me]);
+      ? t("此帳號的寄信權限已關閉，請聯絡管理者")
+      : t("今日寄信額度已用完（每日 00:00 UTC 重置）");
+  }, [me, t]);
 
   /** 側欄配額顯示（僅 visitor，依 docs/14 §4.5） */
   const quotaLine = useMemo(() => {
@@ -286,12 +288,12 @@ export function AppShell({
       } catch (e) {
         if (seq !== selectSeq.current) return;
         setBody({ kind: "none" });
-        showToast(e instanceof ApiError ? e.message : "無法載入信件", "error");
+        showToast(e instanceof ApiError ? e.message : t("無法載入信件"), "error");
       } finally {
         if (seq === selectSeq.current) setDetailLoading(false);
       }
     },
-    [patchItem, showToast]
+    [patchItem, showToast, t]
   );
 
   const closeReading = useCallback(() => {
@@ -318,11 +320,11 @@ export function AppShell({
     try {
       await archiveMail(detail.id);
       afterRemoved(detail.id);
-      showToast("已封存");
+      showToast(t("已封存"));
     } catch (e) {
-      showToast(e instanceof ApiError ? e.message : "封存失敗", "error");
+      showToast(e instanceof ApiError ? e.message : t("封存失敗"), "error");
     }
-  }, [detail, afterRemoved, showToast]);
+  }, [detail, afterRemoved, showToast, t]);
 
   const handleMove = useCallback(
     async (target: "inbox" | "spam" | "trash") => {
@@ -330,12 +332,12 @@ export function AppShell({
       try {
         await moveMail(detail.id, target);
         afterRemoved(detail.id);
-        showToast(`已移至${FOLDER_TITLE[target]}`);
+        showToast(t("已移至{target}", { target: t(FOLDER_TITLE[target]) }));
       } catch (e) {
-        showToast(e instanceof ApiError ? e.message : "搬移失敗", "error");
+        showToast(e instanceof ApiError ? e.message : t("搬移失敗"), "error");
       }
     },
-    [detail, afterRemoved, showToast]
+    [detail, afterRemoved, showToast, t]
   );
 
   const handleDelete = useCallback(async () => {
@@ -343,11 +345,11 @@ export function AppShell({
     try {
       await deleteMail(detail.id);
       afterRemoved(detail.id);
-      showToast("已移至垃圾桶");
+      showToast(t("已移至垃圾桶"));
     } catch (e) {
-      showToast(e instanceof ApiError ? e.message : "刪除失敗", "error");
+      showToast(e instanceof ApiError ? e.message : t("刪除失敗"), "error");
     }
-  }, [detail, afterRemoved, showToast]);
+  }, [detail, afterRemoved, showToast, t]);
 
   /** docs/19 D19-3：單封還原（僅垃圾桶；成功後關閉 ReadingPane、更新清單與計數） */
   const handleRestore = useCallback(async () => {
@@ -355,27 +357,27 @@ export function AppShell({
     try {
       await restoreMail(detail.id);
       afterRemoved(detail.id);
-      showToast("已還原至收件匣");
+      showToast(t("已還原至收件匣"));
     } catch (e) {
       // 失敗時保留目前畫面（不清空、不關閉）
-      showToast(e instanceof ApiError ? e.message : "還原失敗", "error");
+      showToast(e instanceof ApiError ? e.message : t("還原失敗"), "error");
     }
-  }, [detail, afterRemoved, showToast]);
+  }, [detail, afterRemoved, showToast, t]);
 
   /** docs/19 D19-3：單封永久刪除（二次確認 → hard delete；不可復原） */
   const handleHardDelete = useCallback(async () => {
     if (!detail) return;
-    const label = detail.subject || "(無主旨)";
-    if (!window.confirm(`將永久刪除「${label}」（含附件與原始檔），無法復原`)) return;
+    const label = detail.subject || t("(無主旨)");
+    if (!window.confirm(t("將永久刪除「{label}」（含附件與原始檔），無法復原", { label }))) return;
     try {
       await hardDeleteMail(detail.id);
       afterRemoved(detail.id);
-      showToast("已永久刪除");
+      showToast(t("已永久刪除"));
     } catch (e) {
       // 失敗時保留目前畫面（不清空、不關閉）
-      showToast(e instanceof ApiError ? e.message : "永久刪除失敗", "error");
+      showToast(e instanceof ApiError ? e.message : t("永久刪除失敗"), "error");
     }
-  }, [detail, afterRemoved, showToast]);
+  }, [detail, afterRemoved, showToast, t]);
 
   /**
    * docs/19 D19-3：清空垃圾桶。
@@ -385,7 +387,7 @@ export function AppShell({
   const handleEmptyTrash = useCallback(async () => {
     if (emptyTrashBusy) return;
     const count = trashCount;
-    if (!window.confirm(`將永久刪除 ${count} 封（含附件與原始檔），無法復原`)) return;
+    if (!window.confirm(t("將永久刪除 {count} 封（含附件與原始檔），無法復原", { count }))) return;
     setEmptyTrashBusy(true);
     try {
       const res = await emptyTrash();
@@ -393,14 +395,17 @@ export function AppShell({
       clearSelection();
       setListRefreshKey((k) => k + 1);
       setCountsRefreshKey((k) => k + 1);
-      showToast(`已清空垃圾桶：永久刪除 ${res.count} 封、${res.r2_objects} 個附件／原始檔物件`);
+      showToast(t("已清空垃圾桶：永久刪除 {count} 封、{objects} 個附件／原始檔物件", {
+        count: res.count,
+        objects: res.r2_objects,
+      }));
     } catch (e) {
       // 失敗時保留清單與畫面，只顯示錯誤
-      showToast(e instanceof ApiError ? e.message : "清空垃圾桶失敗", "error");
+      showToast(e instanceof ApiError ? e.message : t("清空垃圾桶失敗"), "error");
     } finally {
       setEmptyTrashBusy(false);
     }
-  }, [emptyTrashBusy, trashCount, detail, closeReading, clearSelection, showToast]);
+  }, [emptyTrashBusy, trashCount, detail, closeReading, clearSelection, showToast, t]);
 
   const handleToggleRead = useCallback(
     async (read: boolean) => {
@@ -411,10 +416,10 @@ export function AppShell({
         setDetail((prev) => (prev && prev.id === detail.id ? { ...prev, read_at: read ? Date.now() : null } : prev));
         setCountsRefreshKey((k) => k + 1);
       } catch (e) {
-        showToast(e instanceof ApiError ? e.message : "操作失敗", "error");
+        showToast(e instanceof ApiError ? e.message : t("操作失敗"), "error");
       }
     },
-    [detail, patchItem, showToast]
+    [detail, patchItem, showToast, t]
   );
 
   // ── 複選／批次（docs/19 D19-2）──
@@ -448,35 +453,35 @@ export function AppShell({
         await batchMail(action, ids);
         if (action === "read") {
           for (const id of ids) patchItem(id, { read: true });
-          showToast(`已將 ${ids.length} 封標為已讀`);
+          showToast(t("已將 {count} 封標為已讀", { count: ids.length }));
         } else {
           for (const id of ids) removeItem(id);
           if (selectedId !== null && ids.includes(selectedId)) closeReading();
           showToast(
             action === "trash"
-              ? `已將 ${ids.length} 封移至垃圾桶`
+              ? t("已將 {count} 封移至垃圾桶", { count: ids.length })
               : action === "restore"
-                ? `已還原 ${ids.length} 封`
-                : `已永久刪除 ${ids.length} 封`
+                ? t("已還原 {count} 封", { count: ids.length })
+                : t("已永久刪除 {count} 封", { count: ids.length })
           );
         }
         setCountsRefreshKey((k) => k + 1);
         clearSelection();
       } catch (e) {
         // 後端整批未執行（例如任一 id 越權 → 404）→ 保留選取讓使用者修正
-        showToast(e instanceof ApiError ? e.message : "批次操作失敗", "error");
+        showToast(e instanceof ApiError ? e.message : t("批次操作失敗"), "error");
       } finally {
         setBatchBusy(false);
       }
     },
-    [selectedIds, patchItem, removeItem, selectedId, closeReading, showToast, clearSelection]
+    [selectedIds, patchItem, removeItem, selectedId, closeReading, showToast, clearSelection, t]
   );
 
   const handleBatchPurge = useCallback(() => {
     if (selectedIds.size === 0) return;
-    if (!window.confirm(`永久刪除 ${selectedIds.size} 封信？此動作無法復原。`)) return;
+    if (!window.confirm(t("永久刪除 {count} 封信？此動作無法復原。", { count: selectedIds.size }))) return;
     void handleBatch("purge");
-  }, [selectedIds, handleBatch]);
+  }, [selectedIds, handleBatch, t]);
 
   const handleDownload = useCallback(
     async (att: AttachmentMeta) => {
@@ -492,7 +497,7 @@ export function AppShell({
         a.remove();
         window.setTimeout(() => URL.revokeObjectURL(url), 15_000);
       } catch (e) {
-        showToast(e instanceof ApiError ? e.message : "下載失敗", "error");
+        showToast(e instanceof ApiError ? e.message : t("下載失敗"), "error");
       } finally {
         setDownloadingId(null);
       }
@@ -521,10 +526,10 @@ export function AppShell({
 
   const guardDraft = useCallback((): boolean => {
     if (draft && draftDirty) {
-      return window.confirm("目前有未寄出的信件，確定要放棄並開新的撰寫視窗嗎？");
+      return window.confirm(t("目前有未寄出的信件，確定要放棄並開新的撰寫視窗嗎？"));
     }
     return true;
-  }, [draft, draftDirty]);
+  }, [draft, draftDirty, t]);
 
   const openCompose = useCallback(() => {
     if (!guardDraft()) return;
@@ -535,14 +540,14 @@ export function AppShell({
     if (session.kind === "owner" && addresses.filter((a) => a.status === "active").length === 0) {
       showToast(
         publicMode
-          ? "目前沒有可用的寄件地址，請聯絡管理者"
-          : "目前沒有可用的寄件地址，請先到「地址管理」建立地址",
+          ? t("目前沒有可用的寄件地址，請聯絡管理者")
+          : t("目前沒有可用的寄件地址，請先到「地址管理」建立地址"),
         "error"
       );
       return;
     }
     openDraft({ mode: "new" });
-  }, [guardDraft, openDraft, session, addresses, showToast, composeBlockedReason, publicMode]);
+  }, [guardDraft, openDraft, session, addresses, showToast, composeBlockedReason, publicMode, t]);
 
   const openReplyLike = useCallback(
     async (mode: DraftMode) => {
@@ -556,7 +561,10 @@ export function AppShell({
         /* 退回 preview */
       }
       const sender = parseAddress(detail.from).address.toLowerCase();
-      const quoteHeader = `\n\n在 ${formatFullDate(detail.received_at)}，${displaySender(detail.from)} 寫道：\n`;
+      const quoteHeader = `\n\n${t("在 {date}，{sender} 寫道：", {
+        date: formatFullDate(detail.received_at),
+        sender: displaySender(detail.from),
+      })}\n`;
       const quoted = `${quoteHeader}${quoteText(original)}`;
 
       /**
@@ -599,11 +607,11 @@ export function AppShell({
         });
       } else {
         const fwdHeader =
-          `\n\n---------- 轉寄郵件 ----------\n` +
-          `寄件者：${detail.from}\n` +
-          `日期：${formatFullDate(detail.received_at)}\n` +
-          `主旨：${detail.subject ?? "(無主旨)"}\n` +
-          `收件者：${detail.to.map((a) => a.address).join(", ") || "—"}\n\n`;
+          `\n\n---------- ${t("轉寄郵件")} ----------\n` +
+          `${t("寄件者：")}${detail.from}\n` +
+          `${t("日期：")}${formatFullDate(detail.received_at)}\n` +
+          `${t("主旨：")}${detail.subject ?? t("(無主旨)")}\n` +
+          `${t("收件者：")}${detail.to.map((a) => a.address).join(", ") || "—"}\n\n`;
         openDraft({
           mode,
           to: "",
@@ -612,18 +620,18 @@ export function AppShell({
         });
       }
     },
-    [detail, guardDraft, openDraft, ownAddresses, aliases, defaultFrom]
+    [detail, guardDraft, openDraft, ownAddresses, aliases, defaultFrom, t]
   );
 
   const handleSent = useCallback(
     (info: { from: string; to: string[] }) => {
       setDraft(null);
       setDraftDirty(false);
-      showToast(`已寄出：${info.to.join(", ")}`);
+      showToast(t("已寄出：{to}", { to: info.to.join(", ") }));
       setCountsRefreshKey((k) => k + 1);
       if (listFolder === "sent" || listFolder === "all") setListRefreshKey((k) => k + 1);
     },
-    [showToast, listFolder]
+    [showToast, listFolder, t]
   );
 
   // ── 導覽 ──
@@ -651,10 +659,10 @@ export function AppShell({
   };
 
   const listTitle = searchActive
-    ? `搜尋「${query}」`
+    ? t("搜尋「{query}」", { query })
     : addressFilter !== null
-      ? `${FOLDER_TITLE[folder]} · ${addresses.find((a) => a.id === addressFilter)?.email.split("@")[0] ?? ""}`
-      : FOLDER_TITLE[folder];
+      ? `${t(FOLDER_TITLE[folder])} · ${addresses.find((a) => a.id === addressFilter)?.email.split("@")[0] ?? ""}`
+      : t(FOLDER_TITLE[folder]);
 
   return (
     <div className={`app ${page !== "mail" ? "app-page" : ""}`}>
@@ -663,7 +671,6 @@ export function AppShell({
         searchInput={searchInput}
         onSearchInput={setSearchInput}
         onSubmitSearch={submitSearch}
-        onCompose={openCompose}
         onOpenSettings={() => setPage("settings")}
         onOpenAddresses={() => setPage("addresses")}
         onOpenInvites={() => setPage("invites")}
@@ -671,8 +678,16 @@ export function AppShell({
         onOpenApps={() => setPage("apps")}
         showAdminConsole={canUseAdminConsole}
         onLogout={onLogout}
-        onToggleSidebar={() => setSidebarOpen((v) => !v)}
-        composeBlockedReason={composeBlockedReason}
+        onToggleSidebar={() => {
+          // 子頁面（個人設置／地址管理…）沒有渲染側欄 → 這個按鈕改為「回到信箱」。
+          if (page !== "mail") {
+            setPage("mail");
+            setSidebarOpen(false);
+            return;
+          }
+          setSidebarOpen((v) => !v);
+        }}
+        sidebarToggleLabel={page === "mail" ? t("切換側欄") : t("回到信箱")}
       />
 
       {page === "addresses" && canUseAdminConsole ? (
@@ -733,8 +748,8 @@ export function AppShell({
                 ref={selectAllRef}
                 type="checkbox"
                 className="list-select-all"
-                aria-label="全選信件"
-                title="全選目前清單的信件"
+                aria-label={t("全選信件")}
+                title={t("全選目前清單的信件")}
                 checked={allInListSelected}
                 disabled={items.length === 0}
                 onChange={() => {
@@ -746,7 +761,7 @@ export function AppShell({
               <button
                 type="button"
                 className="icon-btn"
-                title="重新整理"
+                title={t("重新整理")}
                 onClick={() => setListRefreshKey((k) => k + 1)}
               >
                 <IconRefresh size={17} />
@@ -754,7 +769,7 @@ export function AppShell({
             </div>
             {searchActive && (
               <div className="search-bar">
-                跨資料夾搜尋結果
+                {t("跨資料夾搜尋結果")}
                 <button
                   type="button"
                   onClick={() => {
@@ -762,7 +777,7 @@ export function AppShell({
                     setSearchInput("");
                   }}
                 >
-                  清除搜尋
+                  {t("清除搜尋")}
                 </button>
               </div>
             )}
@@ -822,7 +837,7 @@ export function AppShell({
           addresses={addresses}
           aliases={aliases}
           onClose={() => {
-            if (draftDirty && !window.confirm("放棄這封未寄出的信件？")) return;
+            if (draftDirty && !window.confirm(t("放棄這封未寄出的信件？"))) return;
             setDraft(null);
             setDraftDirty(false);
           }}
