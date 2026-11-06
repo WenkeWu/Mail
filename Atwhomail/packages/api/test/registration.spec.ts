@@ -193,6 +193,16 @@ describe("T1–T5：邀請碼與註冊", { timeout: 90_000 }, () => {
       access_email: string | null;
     }>();
     expect(row?.role).toBe("visitor");
+
+    // D31：邀請碼註冊也自動產生 Token 別名
+    const tokenAlias = await E.DB.prepare(
+      `SELECT a.alias_address, a.status, a.kind
+         FROM email_aliases a JOIN email_addresses e ON e.id = a.target_email_address_id
+        WHERE e.email = 'friend01@atwho.org'`
+    ).first<{ alias_address: string; status: string; kind: string }>();
+    expect(tokenAlias).toBeTruthy();
+    expect(tokenAlias).toMatchObject({ status: "active", kind: "token" });
+    expect(tokenAlias!.alias_address).toMatch(/^[0-9a-f]{16}@atwho\.org$/);
   });
 
   it("T2 邀請碼不存在／已撤銷／已過期 → 400 INVITE_INVALID", async () => {

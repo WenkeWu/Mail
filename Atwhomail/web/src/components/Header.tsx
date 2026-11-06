@@ -45,9 +45,10 @@ interface Props {
  *
  * 選單順序：
  * 1. **個人設置**（所有 host／角色）
- * 2. 撰寫新信
- * 3. 管理功能（地址管理／邀請碼／訪客／App Clients）—— 僅 `mail.` 且 owner
- * 4. 登出
+ * 2. 管理功能（地址管理／邀請碼／訪客／App Clients）—— 僅 `mail.` 且 owner
+ * 3. 登出
+ *
+ * ⚠️ 選單內**不提供**「撰寫新信」：頂部列與側欄已有撰寫按鈕（owner 2026-11-06 要求）。
  *
  * ⚠️ `app.atwho.org` 即使是 owner 也不顯示任何管理功能，頭像標籤改為「個人帳號」。
  */
@@ -144,17 +145,6 @@ export function Header({
               }}
             >
               <IconSettings size={16} /> 個人設置
-            </button>
-            <button
-              type="button"
-              disabled={composeBlockedReason !== null}
-              title={composeBlockedReason ?? undefined}
-              onClick={() => {
-                setMenuOpen(false);
-                onCompose();
-              }}
-            >
-              <IconCompose size={16} /> 撰寫新信
             </button>
             {/* D29：管理功能 —— 僅 mail.／localhost 的 owner（app. 完全隱藏） */}
             {adminMode && (

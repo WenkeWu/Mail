@@ -83,6 +83,8 @@ export interface EmailAlias {
   target_address_id: number;
   target_email: string;
   status: "active" | "disabled";
+  /** D31：named＝使用者建立的暱稱別名；token＝帳號建立時系統自動產生的 Token 別名 */
+  kind: "named" | "token";
   /** 寄到這個別名的信件數（`messages.envelope_to` 統計） */
   received_count: number;
   /** 最後一次收到信的時間（epoch ms；從未收到 = null） */
@@ -97,6 +99,9 @@ export interface CreatedAlias {
   alias_address: string;
   target_address_id: number;
   status: "active";
+  kind: "named" | "token";
+  /** D31：變更暱稱別名時，回傳被停用的舊地址 */
+  replaced?: string[];
 }
 
 export interface FolderCount {

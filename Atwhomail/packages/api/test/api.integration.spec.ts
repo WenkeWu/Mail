@@ -182,6 +182,16 @@ describe("地址 CRUD", () => {
     const token = await login("owner", OWNER_PW);
     const ok = await req("/api/email-addresses", { method: "POST", body: JSON.stringify({ local_part: "carol" }) }, token);
     expect(ok.status).toBe(201);
+    const created = await json<{ id: number; email: string }>(ok);
+    // D31：建立真實地址時自動產生 Token 別名（同一交易）
+    const tokenAlias = await E.DB.prepare(
+      "SELECT alias_address, status, kind FROM email_aliases WHERE target_email_address_id = ?1"
+    )
+      .bind(created.id)
+      .first<{ alias_address: string; status: string; kind: string }>();
+    expect(tokenAlias).toBeTruthy();
+    expect(tokenAlias).toMatchObject({ status: "active", kind: "token" });
+    expect(tokenAlias!.alias_address).toMatch(/^[0-9a-f]{16}@atwho\.org$/);
 
     const dup = await req("/api/email-addresses", { method: "POST", body: JSON.stringify({ local_part: "carol" }) }, token);
     expect(dup.status).toBe(409);

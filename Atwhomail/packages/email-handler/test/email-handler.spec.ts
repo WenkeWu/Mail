@@ -71,14 +71,19 @@ function makeMessage(
   };
 }
 
-/** 建立別名（D25）：alias → target；預設目標為 alice(id=1) */
-async function seedAlias(aliasAddress: string, targetId = 1, status = "active"): Promise<void> {
+/** 建立別名（D25／D31）：alias → target；預設目標為 alice(id=1) */
+async function seedAlias(
+  aliasAddress: string,
+  targetId = 1,
+  status = "active",
+  kind: "named" | "token" = "named"
+): Promise<void> {
   const ts = Date.now();
   await E.DB.prepare(
-    `INSERT INTO email_aliases (alias_address, target_email_address_id, status, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?4)`
+    `INSERT INTO email_aliases (alias_address, target_email_address_id, status, kind, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?5)`
   )
-    .bind(aliasAddress, targetId, status, ts)
+    .bind(aliasAddress, targetId, status, kind, ts)
     .run();
 }
 
@@ -206,6 +211,21 @@ describe("D25：別名收信（T114／T115）", () => {
     expect(msg!.subject).toBe("Integration test mail");
     expect(await countObjects("mail/")).toBe(2);
     expect(await countObjects("attachments/")).toBe(1);
+  });
+
+  it("D31：Token 別名 → 投遞到 target，envelope_to 是 Token（對方只看到 Token）", async () => {
+    await seedAddress();
+    const opaqueAlias = "0123456789abcdef@atwho.org";
+    await seedAlias(opaqueAlias, 1, "active", "token");
+
+    await handler.email(makeMessage(buildRaw(true, true, opaqueAlias), opaqueAlias), E);
+
+    const msg = await E.DB.prepare("SELECT address_id, envelope_to, kind FROM messages WHERE address_id = 1").first<{
+      address_id: number;
+      envelope_to: string;
+      kind: string;
+    }>();
+    expect(msg).toMatchObject({ address_id: 1, envelope_to: opaqueAlias, kind: "normal" });
   });
 
   it("T115：停用別名 → 550 5.1.1、不建立 messages、不存 R2", async () => {

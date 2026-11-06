@@ -26,6 +26,10 @@ describe("D17-1 備份涵蓋", () => {
     }
   });
 
+  it("D31：email_aliases 備份 kind（named／token）", () => {
+    expect(TABLE_COLUMNS.email_aliases).toContain("kind");
+  });
+
   it("三張表單表＋稽核表都有欄位定義", () => {
     for (const table of ["form_templates", "form_instances", "form_responses", "registration_audit"]) {
       expect(TABLE_COLUMNS[table], table).toBeDefined();

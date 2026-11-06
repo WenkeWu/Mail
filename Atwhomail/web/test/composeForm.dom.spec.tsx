@@ -35,6 +35,7 @@ function renderCompose(onSent: () => void) {
       draft={draft()}
       session={SESSION}
       addresses={ADDRESSES}
+      aliases={[]}
       onClose={() => {}}
       onSent={onSent}
       onError={() => {}}

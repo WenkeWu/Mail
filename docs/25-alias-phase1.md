@@ -50,7 +50,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_envelope_to ON messages(envelope_to);
 流程：
 1. 驗證 `name`：長度 3–12、`/^[a-z]+$/i`、非保留字 → 否則 `400 INVALID_ALIAS_NAME`
 2. 驗證 `target_address_id` 屬於 session scope 且 `status='active'` → 否則 `403 TARGET_NOT_ALLOWED`
-3. 數量上限：該帳號既有別名 ≤ **50** → `409 ALIAS_LIMIT_REACHED`
+3. **D31 起每帳號最多 1 個「啟用中」的暱稱別名**（`kind='named' AND status='active'`）→ 已有時 `409 ALIAS_LIMIT_REACHED`；
+   變更請帶 `replace_existing: true`，後端會在同一 batch 先停用舊的、再建立新的（舊的立即回 550）
+   > Token 別名（`kind='token'`）由系統在帳號建立時自動產生，不透過此端點建立，也不受此上限影響
 4. 取流水號（原子；`next_serial` 語意 = **下一個可用號碼**）：
    ```sql
    INSERT INTO alias_names(name, next_serial, created_at) VALUES(?, 2, ?)
@@ -122,7 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_envelope_to ON messages(envelope_to);
 - **T110** 同名第二個 → `luke002`（不同使用者 ✅）
 - **T111** 名字驗證：長度 <3／>12、含數字、含符號、保留字 → 全部 `400 INVALID_ALIAS_NAME`
 - **T112** 目標地址不屬於自己 → `403 TARGET_NOT_ALLOWED`
-- **T113** 別名數量上限 50 → `409 ALIAS_LIMIT_REACHED`
+- **T113**（D31 改寫）已有 active 暱稱 → 第二個 `409 ALIAS_LIMIT_REACHED`；`replace_existing: true` → 舊的停用、新的建立；停用後可再建立
 - **T114** email-handler：寄到 active 別名 → 投遞到 target，`envelope_to` 正確、`kind='normal'`
 - **T115** 停用別名來信 → 550，不建立 messages
 - **T116** `GET /api/email-aliases` 的 `received_count` 正確；owner/mailbox 範圍正確
@@ -133,5 +135,5 @@ CREATE INDEX IF NOT EXISTS idx_messages_envelope_to ON messages(envelope_to);
 ## 8. 明確不做（Phase 2）
 
 - 反向別名（`reverse_aliases`、`Reply-To` 改寫）✅ 預留欄位但**不啟用**
-- 別名主動寄新信給外部 ✅（Phase 1 只允許回覆 ✅）
-- 一次性別名、別名轉寄到外部信箱 ✅
+- ~~別名主動寄新信給外部~~ → ✅ **D31（2026-11-06）開放**：撰寫新信可選「真實 ID／暱稱／Token」三種隱私模式；後端原本即接受 active 別名 From
+- 一次性別名、別名轉寄到外部信箱 ✅（仍不做）

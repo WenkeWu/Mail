@@ -118,10 +118,15 @@ CREATE TABLE email_aliases (
   target_email_address_id  INTEGER NOT NULL REFERENCES email_addresses(id),
   status                   TEXT NOT NULL DEFAULT 'active'
                            CHECK (status IN ('active','disabled')),
+  kind                     TEXT NOT NULL DEFAULT 'named'
+                           CHECK (kind IN ('named','token')),  -- 0015（D31）
   created_at               INTEGER NOT NULL,
   updated_at               INTEGER NOT NULL
 );
 CREATE INDEX idx_alias_target ON email_aliases(target_email_address_id);
+-- 0015（D31）：每個地址最多一個 Token 別名
+CREATE UNIQUE INDEX idx_email_aliases_one_token_per_address
+  ON email_aliases(target_email_address_id) WHERE kind = 'token';
 
 CREATE TABLE messages (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,

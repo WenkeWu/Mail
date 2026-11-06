@@ -82,7 +82,15 @@ export const TABLE_COLUMNS: Record<string, string[]> = {
     "updated_at",
     "deleted_at",
   ],
-  email_aliases: ["id", "alias_address", "target_email_address_id", "status", "created_at", "updated_at"],
+  email_aliases: [
+    "id",
+    "alias_address",
+    "target_email_address_id",
+    "status",
+    "kind", // 0015（D31）：named / token
+    "created_at",
+    "updated_at",
+  ],
   messages: [
     "id",
     "owner_user_id",

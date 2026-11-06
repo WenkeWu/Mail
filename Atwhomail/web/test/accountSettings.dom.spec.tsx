@@ -153,6 +153,8 @@ describe("T176：頭像選單第一項是「個人設置」", () => {
     const buttons = menuButtons(container);
     expect(buttons.length).toBeGreaterThan(0);
     expect(buttons[0]!.textContent).toContain("個人設置");
+    // owner 2026-11-06：「撰寫新信」不放在頭像選單（頂部列／側欄已有撰寫按鈕）
+    expect(buttons.some((b) => (b.textContent ?? "").includes("撰寫新信"))).toBe(false);
   });
 });
 
@@ -210,10 +212,10 @@ describe("T179：個人設置頁", () => {
     expect(screen.queryByText("Google 帳號")).toBeNull();
     expect(screen.getByText(/今日已寄 2 \/ 5/)).toBeTruthy();
 
-    // D29：別名管理內嵌（不再有「管理別名」按鈕）＋明確說明不自動分配
+    // D29／D31：別名管理內嵌（不再有「管理別名」按鈕）＋暱稱需自行建立、Token 系統自動產生
     expect(await screen.findByRole("button", { name: "建立" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: /建立別名/ })).toBeTruthy();
-    expect(screen.getByText("別名需自行建立，系統不會自動分配。")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /建立暱稱別名/ })).toBeTruthy();
+    expect(screen.getByText("暱稱別名需自行建立（每帳號最多 1 個）；Token 由系統在帳號建立時自動產生。")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "管理別名" })).toBeNull();
 
     // 有密碼 → 變更密碼表單（需要目前密碼）

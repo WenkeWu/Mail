@@ -17,11 +17,12 @@
 | D26 | **跨 App 共用登入**：`https://auth.atwho.org` 薄代理 ＋ `app_clients`／一次性 code 交換 | ✅ 上線 | docs/26、27 |
 | D27 | **Google OAuth**（免註冊／免驗證碼、自動配發地址、配額 5/日）＋ **忘記／重設密碼** | ✅ 上線 | docs/28 |
 | D29 | `app.atwho.org` **收斂管理功能** ＋ **「個人設置」頁**（ID／**備用電子郵件**／密碼／內嵌別名）| ✅ 上線 | docs/29 |
+| **D31** | **三種寄信身分**：真實 ID（固定）／暱稱別名（每帳號 1 個，可變更）／Token（帳號建立時自動產生）；撰寫視窗三種隱私模式 | 🟡 程式完成（2026-11-06） | docs/25、docs/29 |
 | D19 | 信箱 UX（軟刪／批次／清空垃圾桶／checkbox／D1 分塊／form FK）| ✅ 上線 | docs/19 |
 | P1/P2、D16–D18 | 互動式表單（內部限定、四道鎖、RJSF lazy-load）| ✅ 上線 | docs/18 |
 | D17 | 備份 13 表 ＋ watchdog 去抖 ＋ 退避重試 | ✅ 上線 | docs/17 |
 
-**測試基準**：`pnpm test` → **553**（workerd 451 ＋ web DOM 102）；`pnpm lint` 8/8；`pnpm build` 8/8。
+**測試基準**：`pnpm test` → **562**（workerd 453 ＋ web DOM 109）；`pnpm lint` 8/8；`pnpm build` 8/8。
 
 ---
 
@@ -39,6 +40,7 @@
 | 別名命名 | 使用者輸入 3–12 字母；系統加 `0` ＋ 3 碼流水號（`luke001`）；**不自動分配** |
 | 網域收斂 | `app.`（公開）**不得**出現地址管理／我的全部信箱／管理主控台；`mail.` 全開 |
 | 別名位置 | **內嵌在「個人設置」頁**（不再有獨立「別名管理」入口）|
+| **三種寄信身分**（D31） | **真實 ID**（固定）／**暱稱**（每帳號 1 個啟用中，可變更，舊的立即停用）／**Token**（帳號建立時自動產生 16 hex，不隨暱稱變更）|
 
 ---
 
@@ -87,7 +89,7 @@ cd packages/api && node ../../node_modules/wrangler/bin/wrangler.js d1 migration
 | Pages | `atwhomail-web` |
 | Workers | `atwhomail-api`／`-email-handler`／`-mta-sts`／`-heartbeat`／**`atwhomail-auth`** |
 | 對外網址 | `app.atwho.org`（公開）／`mail.atwho.org`（Access，owner-only）／**`auth.atwho.org`**（SSO）|
-| Migration 現況 | `0001`–`0013` 全部已套 production |
+| Migration 現況 | `0001`–`0014` 已套用 production；**`0015_privacy_identities` 待套用** |
 
 ---
 

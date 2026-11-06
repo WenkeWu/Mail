@@ -293,19 +293,52 @@ describe("T97–T98：驗證成功與一次性", { timeout: 90_000 }, () => {
     expect(meRes.status).toBe(200);
 
     const user = await E.DB.prepare(
-      "SELECT role, status, access_email FROM users WHERE username = 'newuser'"
-    ).first<{ role: string; status: string; access_email: string | null }>();
+      "SELECT role, status, access_email, contact_email, email_verified FROM users WHERE username = 'newuser'"
+    ).first<{
+      role: string;
+      status: string;
+      access_email: string | null;
+      contact_email: string | null;
+      email_verified: number;
+    }>();
     expect(user).toMatchObject({ role: "visitor", status: "active", access_email: null });
+    // D29：註冊 Email 也是「備用電子郵件」（個人設置顯示／忘記密碼用）
+    expect(user?.contact_email).toBe(email);
+    expect(user?.email_verified).toBe(1);
+
+    // 個人設置頁讀的就是 contact_email → 註冊後應立即看得到（不再顯示「未提供」）
+    const settingsCtx = createExecutionContext();
+    const settingsRes = await app.request(
+      "/api/account/settings",
+      { headers: { Authorization: `Bearer ${body.token}` } },
+      E,
+      settingsCtx
+    );
+    await waitOnExecutionContext(settingsCtx);
+    expect(settingsRes.status).toBe(200);
+    const settings = await settingsRes.json<{ contact_email: string | null; provider: string }>();
+    expect(settings.contact_email).toBe(email);
+    expect(settings.provider).toBe("local");
 
     const addr = await E.DB.prepare(
       `SELECT status, can_send, daily_send_quota, created_at FROM email_addresses WHERE email = 'newuser@atwho.org'`
     ).first<{ status: string; can_send: number; daily_send_quota: number; created_at: number }>();
-    expect(addr?.status).toBe("active");
-    expect(addr?.can_send).toBe(1);
-    expect(addr?.daily_send_quota).toBe(20);
+    expect(addr!.status).toBe("active");
+    expect(addr!.can_send).toBe(1);
+    expect(addr!.daily_send_quota).toBe(20);
     // 暖機期：created_at 起 24 小時內（寄信上限 min(20, 5)）
     expect(Number(addr!.created_at)).toBeGreaterThan(Date.now() - 60_000);
     expect(Number(addr!.created_at) + 24 * 3600_000).toBeGreaterThan(Date.now());
+
+    // D31：註冊成功時自動產生 Token 別名（16 hex；對方只會看到 Token）
+    const tokenAlias = await E.DB.prepare(
+      `SELECT a.alias_address, a.status, a.kind
+         FROM email_aliases a JOIN email_addresses e ON e.id = a.target_email_address_id
+        WHERE e.email = 'newuser@atwho.org'`
+    ).first<{ alias_address: string; status: string; kind: string }>();
+    expect(tokenAlias).toBeTruthy();
+    expect(tokenAlias).toMatchObject({ status: "active", kind: "token" });
+    expect(tokenAlias!.alias_address).toMatch(/^[0-9a-f]{16}@atwho\.org$/);
 
     const verified = await E.DB.prepare(
       "SELECT detail FROM registration_audit WHERE event = 'register_verified' ORDER BY id DESC LIMIT 1"

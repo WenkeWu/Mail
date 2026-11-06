@@ -1,12 +1,12 @@
 /**
- * `AliasManager` 的渲染測試（D25，docs/25 §6）。
+ * `AliasManager` 的渲染測試（D25；D31 三種寄信身分）。
  *
  * 只 mock `fetch`（網路邊界），元件、驗證、表單與 DOM 事件都是真的。
- * API 規則本身（T109–T118）在 `packages/api/test/alias.spec.ts`；
- * 這裡確認 UI 真的把「建立 → 顯示別名＋複製」與「停用」接上。
+ * API 規則本身在 `packages/api/test/alias.spec.ts`；
+ * 這裡確認 UI 接上「建立／變更暱稱別名」、「Token 系統管理」與「停用」。
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AliasManager } from "../src/components/AliasManager";
 import type { EmailAddressInfo, EmailAlias, Session } from "../src/api/types";
 import { installFetch, type FetchCall, type FakeReply } from "./dom-fetch";
@@ -22,28 +22,53 @@ const ADDRESS: EmailAddressInfo = {
   updated_at: Date.UTC(2026, 8, 1),
 };
 
-const ALIAS: EmailAlias = {
+const NAMED_ALIAS: EmailAlias = {
   id: 7,
   alias_address: "luke001@atwho.org",
   target_address_id: 11,
   target_email: "alice@atwho.org",
   status: "active",
+  kind: "named",
   received_count: 3,
   last_received_at: Date.UTC(2026, 10, 1, 12, 0, 0),
   created_at: Date.UTC(2026, 9, 1),
   updated_at: Date.UTC(2026, 9, 1),
 };
 
-function routes(opts: { aliases?: EmailAlias[] }): (call: FetchCall) => FakeReply {
+const TOKEN_ALIAS: EmailAlias = {
+  id: 8,
+  alias_address: "0123456789abcdef@atwho.org",
+  target_address_id: 11,
+  target_email: "alice@atwho.org",
+  status: "active",
+  kind: "token",
+  received_count: 1,
+  last_received_at: null,
+  created_at: Date.UTC(2026, 9, 1),
+  updated_at: Date.UTC(2026, 9, 1),
+};
+
+function routes(opts: { aliases?: EmailAlias[]; postReply?: FakeReply }): (call: FetchCall) => FakeReply {
   return (call) => {
     if (call.url === "/api/email-aliases" && call.method === "GET") {
       return { body: { aliases: opts.aliases ?? [] } };
     }
     if (call.url === "/api/email-aliases" && call.method === "POST") {
-      return { status: 201, body: { id: 7, alias_address: "luke001@atwho.org", target_address_id: 11, status: "active" } };
+      return (
+        opts.postReply ?? {
+          status: 201,
+          body: {
+            id: 7,
+            alias_address: "luke001@atwho.org",
+            target_address_id: 11,
+            status: "active",
+            kind: "named",
+          },
+        }
+      );
     }
     if (call.url === "/api/email-aliases/7" && call.method === "PATCH") {
-      return { body: { ok: true, id: 7, alias_address: ALIAS.alias_address, status: "disabled" } };
+      return { body: { ok: true, id: 7, alias_address: NAMED_ALIAS.alias_address, status: "disabled" } };
     }
     if (call.url === "/api/email-addresses") {
       return { body: { addresses: [ADDRESS] } };
@@ -52,7 +77,7 @@ function routes(opts: { aliases?: EmailAlias[] }): (call: FetchCall) => FakeRepl
   };
 }
 
-function renderManager(opts: { aliases?: EmailAlias[] } = {}) {
+function renderManager(opts: { aliases?: EmailAlias[]; postReply?: FakeReply } = {}) {
   const onToast = vi.fn();
   const onChanged = vi.fn();
   const spy = installFetch(routes(opts));
@@ -60,10 +85,14 @@ function renderManager(opts: { aliases?: EmailAlias[] } = {}) {
   return { onToast, onChanged, spy };
 }
 
-describe("AliasManager（D25）", () => {
-  it("空狀態顯示「對方看不到真實地址」提示", async () => {
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("AliasManager（D25／D31）", () => {
+  it("空狀態說明暱稱需自行建立、Token 由系統產生", async () => {
     renderManager();
-    expect(await screen.findByText(/建立別名後，把別名給對方，對方就看不到你的真實地址/)).toBeTruthy();
+    expect(await screen.findByText(/尚未建立暱稱別名。Token 會在帳號建立時自動產生/)).toBeTruthy();
   });
 
   it("名字即時驗證：少於 3 個字母 → 顯示錯誤且不送出 POST", async () => {
@@ -80,13 +109,13 @@ describe("AliasManager（D25）", () => {
     expect(await screen.findByText(/保留字/)).toBeTruthy();
   });
 
-  it("建立成功 → 顯示完整別名與複製按鈕，並送出正確 payload", async () => {
+  it("建立成功 → 顯示暱稱別名與複製按鈕，並送出正確 payload", async () => {
     const { spy, onChanged } = renderManager();
-    await screen.findByText(/建立別名後/); // 等初始載入完成
+    await screen.findByText(/尚未建立暱稱別名/); // 等初始載入完成
     fireEvent.change(screen.getByLabelText("別名名字"), { target: { value: "Luke" } });
     fireEvent.click(screen.getByRole("button", { name: "建立" }));
 
-    expect(await screen.findByText("別名已建立")).toBeTruthy();
+    expect(await screen.findByText("暱稱別名已建立")).toBeTruthy();
     expect(screen.getByText("luke001@atwho.org")).toBeTruthy();
     expect(screen.getByRole("button", { name: "複製別名" })).toBeTruthy();
     expect(spy.calls.find((c) => c.method === "POST")?.body).toEqual({
@@ -96,15 +125,56 @@ describe("AliasManager（D25）", () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
-  it("列表顯示收到幾封／最後收到時間，停用會打 PATCH", async () => {
-    const { spy } = renderManager({ aliases: [ALIAS] });
-    const row = (await screen.findByText(ALIAS.alias_address)).closest("tr")!;
+  it("已有啟用中的暱稱別名 → 表單改為「變更」，送出 replace_existing 並顯示舊別名已停用", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { spy } = renderManager({
+      aliases: [NAMED_ALIAS],
+      postReply: {
+        status: 201,
+        body: {
+          id: 9,
+          alias_address: "robert001@atwho.org",
+          target_address_id: 11,
+          status: "active",
+          kind: "named",
+          replaced: ["luke001@atwho.org"],
+        },
+      },
+    });
+
+    expect(await screen.findByRole("heading", { name: /變更暱稱別名/ })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("別名名字"), { target: { value: "robert" } });
+    fireEvent.click(screen.getByRole("button", { name: "變更" }));
+
+    expect(await screen.findByText("暱稱別名已變更")).toBeTruthy();
+    expect(screen.getByText(/舊別名已停用：luke001@atwho.org/)).toBeTruthy();
+    expect(spy.calls.find((c) => c.method === "POST")?.body).toEqual({
+      name: "robert",
+      target_address_id: 11,
+      replace_existing: true,
+    });
+  });
+
+  it("列表顯示收到幾封／最後收到時間，停用暱稱會打 PATCH", async () => {
+    const { spy } = renderManager({ aliases: [NAMED_ALIAS] });
+    const row = (await screen.findByText(NAMED_ALIAS.alias_address)).closest("tr")!;
     expect(within(row).getByText("3")).toBeTruthy();
     expect(within(row).getByText("alice@atwho.org")).toBeTruthy();
+    expect(within(row).getByText("暱稱")).toBeTruthy();
 
     fireEvent.click(within(row).getByRole("button", { name: "停用" }));
     await waitFor(() =>
       expect(spy.calls.find((c) => c.method === "PATCH")?.body).toEqual({ status: "disabled" })
     );
+  });
+
+  it("Token 列標示「Token」、只有複製按鈕，沒有停用／刪除", async () => {
+    renderManager({ aliases: [NAMED_ALIAS, TOKEN_ALIAS] });
+    const row = (await screen.findByText(TOKEN_ALIAS.alias_address)).closest("tr")!;
+    expect(within(row).getByText("Token")).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "複製" })).toBeTruthy();
+    expect(within(row).queryByRole("button", { name: "停用" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: "刪除（停用）" })).toBeNull();
+    expect(within(row).getByText("系統管理")).toBeTruthy();
   });
 });

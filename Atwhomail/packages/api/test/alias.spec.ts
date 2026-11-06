@@ -220,41 +220,58 @@ describe("T112：目標地址不屬於自己 → 403 TARGET_NOT_ALLOWED", () => 
   });
 });
 
-describe("T113：每帳號別名上限 50 → 409 ALIAS_LIMIT_REACHED", () => {
-  it("既有 50 個別名後，第 51 個被拒絕", async () => {
-    const ts = Date.now();
-    const stmts = Array.from({ length: 50 }, (_, i) =>
-      E.DB.prepare(
-        `INSERT INTO email_aliases (alias_address, target_email_address_id, status, created_at, updated_at)
-         VALUES (?1, 1, 'active', ?2, ?2)`
-      ).bind(`seed${String(i + 1).padStart(3, "0")}@atwho.org`, ts)
+describe("T113：每帳號限 1 個啟用中的暱稱別名（D31）", () => {
+  it("已有 active 暱稱 → 第二個 409；replace_existing=true → 舊的停用、新的建立", async () => {
+    const owner = await login("owner", OWNER_PW);
+    expect((await createAlias(owner, "luke", 1)).status).toBe(201);
+
+    const second = await createAlias(owner, "robert", 2);
+    expect(second.status).toBe(409);
+    expect(errorCode(await json(second))).toBe("ALIAS_LIMIT_REACHED");
+
+    const replaced = await req(
+      "/api/email-aliases",
+      { method: "POST", body: JSON.stringify({ name: "robert", target_address_id: 2, replace_existing: true }) },
+      owner
     );
-    await E.DB.batch(stmts);
+    expect(replaced.status).toBe(201);
+    const body = await json<{ alias_address: string; kind: string; replaced: string[] }>(replaced);
+    expect(body.alias_address).toBe("robert001@atwho.org");
+    expect(body.kind).toBe("named");
+    expect(body.replaced).toEqual(["luke001@atwho.org"]);
 
-    const token = await login("owner", OWNER_PW);
-    const res = await createAlias(token, "luke", 1);
-    expect(res.status).toBe(409);
-    expect(errorCode(await json(res))).toBe("ALIAS_LIMIT_REACHED");
-
-    const count = await E.DB.prepare("SELECT COUNT(*) AS n FROM email_aliases").first<{ n: number }>();
-    expect(Number(count!.n)).toBe(50);
+    const rows = await E.DB.prepare(
+      "SELECT alias_address, status, kind FROM email_aliases ORDER BY id"
+    ).all<{ alias_address: string; status: string; kind: string }>();
+    expect(rows.results).toEqual([
+      { alias_address: "luke001@atwho.org", status: "disabled", kind: "named" },
+      { alias_address: "robert001@atwho.org", status: "active", kind: "named" },
+    ]);
+    const active = await E.DB.prepare(
+      "SELECT COUNT(*) AS n FROM email_aliases WHERE kind = 'named' AND status = 'active'"
+    ).first<{ n: number }>();
+    expect(Number(active!.n)).toBe(1);
   });
 
-  it("上限以帳號計：訪客自己的 50 個不影響 owner", async () => {
-    const ts = Date.now();
-    const stmts = Array.from({ length: 50 }, (_, i) =>
-      E.DB.prepare(
-        `INSERT INTO email_aliases (alias_address, target_email_address_id, status, created_at, updated_at)
-         VALUES (?1, 3, 'active', ?2, ?2)`
-      ).bind(`visitor${String(i + 1).padStart(3, "0")}@atwho.org`, ts)
-    );
-    await E.DB.batch(stmts);
-
+  it("上限以帳號計：visitor 的 active 暱稱不影響 owner；停用後可再建立", async () => {
     const owner = await login("owner", OWNER_PW);
     expect((await createAlias(owner, "luke", 1)).status).toBe(201);
 
     const visitor = await mailboxLogin("visitor@atwho.org", VISITOR_PW);
-    expect((await createAlias(visitor, "luke", 3)).status).toBe(409);
+    expect((await createAlias(visitor, "vicky", 3)).status).toBe(201);
+
+    // visitor 停用舊的之後可再建立新的（舊資料列保留為 disabled）
+    const list = await json<{ aliases: Array<{ id: number; alias_address: string }> }>(
+      await req("/api/email-aliases", {}, visitor)
+    );
+    const vicky = list.aliases.find((a) => a.alias_address === "vicky001@atwho.org")!;
+    const disabled = await req(
+      `/api/email-aliases/${vicky.id}`,
+      { method: "PATCH", body: JSON.stringify({ status: "disabled" }) },
+      visitor
+    );
+    expect(disabled.status).toBe(200);
+    expect((await createAlias(visitor, "victor", 3)).status).toBe(201);
   });
 });
 
@@ -262,7 +279,16 @@ describe("T116：GET /api/email-aliases（received_count 與 scope）", () => {
   it("owner 看全部、mailbox 只看自己地址的別名；統計與最後收到時間正確", async () => {
     const owner = await login("owner", OWNER_PW);
     expect((await createAlias(owner, "luke", 1)).status).toBe(201);
-    expect((await createAlias(owner, "robert", 2)).status).toBe(201);
+
+    // D31：Token 別名由系統在帳號建立時產生；此測試直接插入 bob 地址的 Token
+    const tokenAddress = "abcdef0123456789@atwho.org";
+    const tokenRes = await E.DB.prepare(
+      `INSERT INTO email_aliases (alias_address, target_email_address_id, status, kind, created_at, updated_at)
+       VALUES (?1, 2, 'active', 'token', ?2, ?2)`
+    )
+      .bind(tokenAddress, Date.now())
+      .run();
+    const tokenId = Number(tokenRes.meta.last_row_id);
 
     const ts = Date.UTC(2026, 10, 1, 12, 0, 0);
     await E.DB.prepare(
@@ -270,10 +296,10 @@ describe("T116：GET /api/email-aliases（received_count 與 scope）", () => {
                              subject, text_preview, received_at, raw_r2_key, created_at, updated_at, envelope_to)
        VALUES (1, 1, 'inbox', '<a@x>', 'ext@example.com', '[]', '[]', 's1', 'p1', ?, 'mail/2026/11/a.eml', ?, ?, 'luke001@atwho.org'),
               (1, 1, 'inbox', '<b@x>', 'ext@example.com', '[]', '[]', 's2', 'p2', ?, 'mail/2026/11/b.eml', ?, ?, 'luke001@atwho.org'),
-              (1, 2, 'inbox', '<c@x>', 'ext@example.com', '[]', '[]', 's3', 'p3', ?, 'mail/2026/11/c.eml', ?, ?, 'robert001@atwho.org'),
+              (1, 2, 'inbox', '<c@x>', 'ext@example.com', '[]', '[]', 's3', 'p3', ?, 'mail/2026/11/c.eml', ?, ?, ?),
               (1, 1, 'inbox', '<d@x>', 'ext@example.com', '[]', '[]', 's4', 'p4', ?, 'mail/2026/11/d.eml', ?, ?, NULL)`
     )
-      .bind(ts, ts, ts, ts + 1000, ts + 1000, ts + 1000, ts + 2000, ts + 2000, ts + 2000, ts + 3000, ts + 3000, ts + 3000)
+      .bind(ts, ts, ts, ts + 1000, ts + 1000, ts + 1000, ts + 2000, ts + 2000, ts + 2000, tokenAddress, ts + 3000, ts + 3000, ts + 3000)
       .run();
 
     const ownerRes = await json<{ aliases: Array<Record<string, unknown>> }>(
@@ -288,8 +314,14 @@ describe("T116：GET /api/email-aliases（received_count 與 scope）", () => {
       received_count: 2,
       last_received_at: ts + 1000,
     });
-    const robert = ownerRes.aliases.find((a) => a.alias_address === "robert001@atwho.org");
-    expect(robert).toMatchObject({ target_address_id: 2, received_count: 1, last_received_at: ts + 2000 });
+    const tokenRow = ownerRes.aliases.find((a) => a.alias_address === tokenAddress);
+    expect(tokenRow).toMatchObject({
+      target_address_id: 2,
+      target_email: "bob@atwho.org",
+      kind: "token",
+      received_count: 1,
+      last_received_at: ts + 2000,
+    });
     expect(ownerRes.aliases.some((a) => a.alias_address === "nobody")).toBe(false);
 
     const alice = await mailboxLogin("alice@atwho.org", ALICE_PW);
@@ -302,7 +334,7 @@ describe("T116：GET /api/email-aliases（received_count 與 scope）", () => {
     const bobRes = await json<{ aliases: Array<{ alias_address: string }> }>(
       await req("/api/email-aliases", {}, bob)
     );
-    expect(bobRes.aliases.map((a) => a.alias_address)).toEqual(["robert001@atwho.org"]);
+    expect(bobRes.aliases.map((a) => a.alias_address)).toEqual([tokenAddress]);
 
     // 停用／刪除為軟停用：資料列保留，新狀態需反映在清單
     const aliasId = Number(luke!.id);
@@ -322,8 +354,15 @@ describe("T116：GET /api/email-aliases（received_count 與 scope）", () => {
     expect(row!.status).toBe("disabled"); // 資料列未被刪除
 
     // mailbox 不能操作他人地址的別名 → 404（不洩漏存在性）
-    const robertId = Number(robert!.id);
-    expect((await req(`/api/email-aliases/${robertId}`, { method: "PATCH", body: JSON.stringify({ status: "disabled" }) }, alice)).status).toBe(404);
+    expect((await req(`/api/email-aliases/${tokenId}`, { method: "PATCH", body: JSON.stringify({ status: "disabled" }) }, alice)).status).toBe(404);
+
+    // D31：Token 別名由系統管理 → 連自己的 mailbox 也不能停用／刪除
+    expect(
+      (await req(`/api/email-aliases/${tokenId}`, { method: "PATCH", body: JSON.stringify({ status: "disabled" }) }, bob)).status
+    ).toBe(409);
+    expect(errorCode(await json(await req(`/api/email-aliases/${tokenId}`, { method: "DELETE" }, bob)))).toBe(
+      "TOKEN_ALIAS_MANAGED"
+    );
   });
 });
 

@@ -368,6 +368,16 @@ describe("T164：callback 新使用者", () => {
     expect(address!.status).toBe("active");
     expect(frag.get("oauth_address_id")).toBe(String(address!.id));
 
+    // D31：帳號建立時自動產生 Token 別名（16 hex，目標為這個地址）
+    const tokenAlias = await E.DB.prepare(
+      "SELECT alias_address, status, kind FROM email_aliases WHERE target_email_address_id = ?1"
+    )
+      .bind(address!.id)
+      .first<{ alias_address: string; status: string; kind: string }>();
+    expect(tokenAlias).toBeTruthy();
+    expect(tokenAlias).toMatchObject({ status: "active", kind: "token" });
+    expect(tokenAlias!.alias_address).toMatch(/^[0-9a-f]{16}@atwho\.org$/);
+
     // 稽核：oauth_registered ＋ oauth_login；不得包含 Google Email 全文
     const audits = await E.DB.prepare(
       "SELECT event, user_id, detail FROM registration_audit ORDER BY id"

@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { sendForm, sendMail } from "../api/endpoints";
-import type { EmailAddressInfo, FormSchema, Session } from "../api/types";
+import type { EmailAddressInfo, EmailAlias, FormSchema, Session } from "../api/types";
 import { checkFileSize, fileToBase64, type PendingAttachment } from "../lib/files";
 import { formatBytes } from "../lib/format";
 import { splitRecipients, textToHtml } from "../lib/recipients";
 import { IconClose, IconFile, IconPaperclip, IconSend } from "./icons";
 
 export type DraftMode = "new" | "reply" | "replyAll" | "forward" | "form";
+
+/** D31：撰寫時的三種隱私模式 */
+export type PrivacyMode = "real" | "nickname" | "token";
 
 export interface Draft {
   /** 每次開新草稿遞增 → 讓 ComposeWindow 重新掛載並套用初始值 */
@@ -26,6 +29,8 @@ interface Props {
   session: Session;
   /** owner 才有（可選寄件地址）；mailbox 固定為自己 */
   addresses: EmailAddressInfo[];
+  /** D31：可供「暱稱／Token」模式使用的別名（由後端依 session scope 回傳） */
+  aliases: EmailAlias[];
   onClose: () => void;
   onSent: (info: { from: string; to: string[] }) => void;
   onError: (message: string) => void;
@@ -57,7 +62,7 @@ const DEFAULT_FORM_SCHEMA = JSON.stringify(
 
 const INTERNAL_DOMAIN = "@atwho.org";
 
-export function ComposeWindow({ draft, session, addresses, onClose, onSent, onError, onDirty }: Props) {
+export function ComposeWindow({ draft, session, addresses, aliases, onClose, onSent, onError, onDirty }: Props) {
   const [from, setFrom] = useState(draft.from);
   const [to, setTo] = useState(draft.to);
   const [cc, setCc] = useState(draft.cc);
@@ -83,12 +88,59 @@ export function ComposeWindow({ draft, session, addresses, onClose, onSent, onEr
 
   const activeAddresses = addresses.filter((a) => a.status === "active");
   /**
-   * D25：回覆外部寄件者時，`draft.from` 會是別名（不在真實地址清單中）。
-   * 仍要讓它出現在選單並保持選取——使用者可手動改回自己的真實地址（限自己名下）。
+   * D31（owner 2026-11-06）：三種隱私模式
+   * - `real`：真實 ID（固定；mailbox = 自己的地址，owner = 第一個 active 地址）
+   * - `nickname`：1 個啟用中的暱稱別名（可在個人設置變更；舊的立即停用）
+   * - `token`：帳號建立時系統自動產生的 Token 別名（對方只看到 Token）
+   *
+   * 回覆草稿的 `draft.from` 會自動對應到正確模式；若別名已停用則退回真實 ID。
+   * ⚠️ 互動式表單後端只接受真實地址 → 切換時自動改回真實 ID。
    */
-  const baseFromOptions = session.kind === "mailbox" ? [] : activeAddresses.map((a) => a.email);
-  const fromOptions =
-    from && !baseFromOptions.includes(from) ? [from, ...baseFromOptions] : baseFromOptions;
+  const primaryRealEmail = session.kind === "mailbox" ? session.email : (activeAddresses[0]?.email ?? "");
+  const realIdEmail =
+    session.kind === "owner" &&
+    draft.from &&
+    activeAddresses.some((a) => a.email.toLowerCase() === draft.from.toLowerCase())
+      ? draft.from
+      : primaryRealEmail;
+
+  const ownEmailSet = new Set(
+    session.kind === "mailbox"
+      ? [session.email.toLowerCase()]
+      : activeAddresses.map((a) => a.email.toLowerCase())
+  );
+  const usableAliases = aliases.filter(
+    (a) => a.status === "active" && ownEmailSet.has(a.target_email.toLowerCase())
+  );
+  const nicknameAlias = usableAliases.find((a) => a.kind === "named") ?? null;
+  const tokenAlias =
+    usableAliases.find(
+      (a) => a.kind === "token" && a.target_email.toLowerCase() === realIdEmail.toLowerCase()
+    ) ??
+    usableAliases.find((a) => a.kind === "token") ??
+    null;
+
+  /** 由目前的 `from` 反推模式（別名清單非同步載入後也會自動正確） */
+  const mode: PrivacyMode =
+    tokenAlias && from.toLowerCase() === tokenAlias.alias_address.toLowerCase()
+      ? "token"
+      : nicknameAlias && from.toLowerCase() === nicknameAlias.alias_address.toLowerCase()
+        ? "nickname"
+        : "real";
+
+  const chooseMode = (next: PrivacyMode) => {
+    touch();
+    if (next === "real") setFrom(realIdEmail);
+    else if (next === "nickname" && nicknameAlias) setFrom(nicknameAlias.alias_address);
+    else if (next === "token" && tokenAlias) setFrom(tokenAlias.alias_address);
+  };
+
+  // 草稿的 From 指向已停用／不可用的別名 → 退回真實 ID（等別名清單載入後才判斷）
+  useEffect(() => {
+    if (aliases.length === 0 || !from) return;
+    const known = aliases.find((a) => a.alias_address.toLowerCase() === from.toLowerCase());
+    if (known && known.status !== "active") setFrom(realIdEmail);
+  }, [aliases, from, realIdEmail]);
 
   /** 任何編輯都通知上層（放棄確認用） */
   const touch = () => onDirty();
@@ -141,6 +193,10 @@ export function ComposeWindow({ draft, session, addresses, onClose, onSent, onEr
     const bccList = splitRecipients(bcc);
     if (!from) {
       setError("請選擇寄件地址");
+      return;
+    }
+    if (interactive && mode !== "real") {
+      setError("互動式表單只能使用真實 ID 寄件");
       return;
     }
     if (toList.length === 0) {
@@ -263,6 +319,8 @@ export function ComposeWindow({ draft, session, addresses, onClose, onSent, onEr
             onClick={() => {
               touch();
               setInteractive(true);
+              // D31：互動式表單後端只接受真實地址 → 從暱稱／Token 自動改回真實 ID
+              if (mode !== "real") setFrom(realIdEmail);
             }}
           >
             互動式表單
@@ -275,26 +333,75 @@ export function ComposeWindow({ draft, session, addresses, onClose, onSent, onEr
 
       <form className="compose-form" onSubmit={submit}>
         <div className="compose-row">
-          <label htmlFor="compose-from">寄件者</label>
-          {session.kind === "mailbox" ? (
-            <input id="compose-from" value={from} readOnly />
-          ) : (
-            <select
-              id="compose-from"
-              value={from}
-              onChange={(e) => {
-                touch();
-                setFrom(e.target.value);
-              }}
+          <label>隱私模式</label>
+          <div className="privacy-modes" role="radiogroup" aria-label="隱私模式">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={mode === "real"}
+              className={mode === "real" ? "active" : ""}
+              title={realIdEmail || undefined}
+              onClick={() => chooseMode("real")}
             >
-              {fromOptions.map((email) => (
-                <option key={email} value={email}>
-                  {email}
-                </option>
-              ))}
-            </select>
-          )}
+              真實 ID
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={mode === "nickname"}
+              className={mode === "nickname" ? "active" : ""}
+              disabled={!nicknameAlias || interactive}
+              title={
+                !nicknameAlias
+                  ? "尚未建立暱稱別名；請到「個人設置 → 匿名（別名）」建立"
+                  : interactive
+                    ? "互動式表單只能使用真實 ID"
+                    : nicknameAlias.alias_address
+              }
+              onClick={() => chooseMode("nickname")}
+            >
+              暱稱
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={mode === "token"}
+              className={mode === "token" ? "active" : ""}
+              disabled={!tokenAlias || interactive}
+              title={
+                !tokenAlias
+                  ? "Token 尚未產生；請重新登入或聯絡管理者"
+                  : interactive
+                    ? "互動式表單只能使用真實 ID"
+                    : tokenAlias.alias_address
+              }
+              onClick={() => chooseMode("token")}
+            >
+              Token
+            </button>
+          </div>
         </div>
+
+        <div className="compose-row">
+          <label htmlFor="compose-from">寄件者</label>
+          <input id="compose-from" value={from} readOnly />
+        </div>
+
+        {!interactive && (
+          <p className="compose-hint compose-from-hint">
+            {mode === "real" && "對方會看到你的真實 ID。"}
+            {mode === "nickname" && "對方會看到暱稱別名；回信仍會送到你的真實 ID。"}
+            {mode === "token" && "對方只會看到這組 Token，看不到真實 ID 或暱稱；回信仍會送到你的真實 ID。"}
+          </p>
+        )}
+        {!interactive && !nicknameAlias && (
+          <p className="compose-hint compose-from-hint">
+            尚未建立暱稱別名；請到「個人設置 → 匿名（別名）」建立後即可使用。
+          </p>
+        )}
+        {!interactive && !tokenAlias && (
+          <p className="compose-hint compose-from-hint">Token 尚未產生；請重新登入或聯絡管理者。</p>
+        )}
 
         <div className="compose-row">
           <label htmlFor="compose-to">收件者</label>

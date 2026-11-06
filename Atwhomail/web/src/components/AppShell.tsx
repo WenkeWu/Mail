@@ -51,8 +51,6 @@ import { Toast } from "./Toast";
 import { VisitorManager } from "./VisitorManager";
 import { IconRefresh } from "./icons";
 
-const LAST_FROM_KEY = "atwhomail.lastFrom";
-
 const FOLDER_TITLE: Record<FolderQuery, string> = {
   inbox: "收件匣",
   sent: "寄件備份",
@@ -230,16 +228,13 @@ export function AppShell({
     return new Set(addresses.map((a) => a.email.toLowerCase()));
   }, [session, addresses]);
 
+  /**
+   * D31：真實 ID 固定在帳號的第一個 active 地址（owner 多地址時也一樣，不在撰寫視窗切換）。
+   * mailbox session 固定為自己的地址。
+   */
   const defaultFrom = useMemo(() => {
     if (session.kind === "mailbox") return session.email;
-    const active = addresses.filter((a) => a.status === "active").map((a) => a.email);
-    let last = "";
-    try {
-      last = sessionStorage.getItem(LAST_FROM_KEY) ?? "";
-    } catch {
-      /* ignore */
-    }
-    return active.includes(last) ? last : (active[0] ?? "");
+    return addresses.find((a) => a.status === "active")?.email ?? "";
   }, [session, addresses]);
 
   // ── 開信（含內文載入與自動標已讀）──
@@ -624,11 +619,6 @@ export function AppShell({
     (info: { from: string; to: string[] }) => {
       setDraft(null);
       setDraftDirty(false);
-      try {
-        sessionStorage.setItem(LAST_FROM_KEY, info.from);
-      } catch {
-        /* ignore */
-      }
       showToast(`已寄出：${info.to.join(", ")}`);
       setCountsRefreshKey((k) => k + 1);
       if (listFolder === "sent" || listFolder === "all") setListRefreshKey((k) => k + 1);
@@ -830,6 +820,7 @@ export function AppShell({
           draft={draft}
           session={session}
           addresses={addresses}
+          aliases={aliases}
           onClose={() => {
             if (draftDirty && !window.confirm("放棄這封未寄出的信件？")) return;
             setDraft(null);

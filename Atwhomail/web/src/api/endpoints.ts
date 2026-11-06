@@ -171,11 +171,19 @@ export const changeAccountPassword = (newPassword: string, currentPassword?: str
  */
 export const listEmailAliases = () => request<{ aliases: EmailAlias[] }>("/api/email-aliases");
 
-/** 建立別名：只提供名字（3–12 字母）與目標地址；流水號由後端自動分配（luke → luke001） */
-export const createEmailAlias = (name: string, targetAddressId: number) =>
+/**
+ * 建立／變更暱稱別名（D25、D31）。
+ * 每個帳號最多 1 個啟用中的暱稱別名；`replaceExisting` 時後端會在同一交易
+ * 先停用舊的、再建立新的（舊別名立即回 550）。
+ */
+export const createEmailAlias = (name: string, targetAddressId: number, replaceExisting = false) =>
   request<CreatedAlias>("/api/email-aliases", {
     method: "POST",
-    json: { name, target_address_id: targetAddressId },
+    json: {
+      name,
+      target_address_id: targetAddressId,
+      ...(replaceExisting ? { replace_existing: true } : {}),
+    },
   });
 
 /** 啟用／停用別名（停用後寄到別名的信會回 550，不寫入信箱） */

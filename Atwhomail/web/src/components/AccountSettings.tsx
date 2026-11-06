@@ -239,7 +239,7 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
             <h2>
               <IconAt size={18} /> 匿名（別名）
             </h2>
-            <p className="muted small">別名需自行建立，系統不會自動分配。</p>
+            <p className="muted small">暱稱別名需自行建立（每帳號最多 1 個）；Token 由系統在帳號建立時自動產生。</p>
             <AliasManager
               embedded
               session={session}

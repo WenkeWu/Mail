@@ -1022,6 +1022,41 @@ select {
   font-size: 12px;
 }
 
+/* D31：撰寫視窗的三種隱私模式（真實 ID／暱稱／Token） */
+.privacy-modes {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.privacy-modes button {
+  border: 1px solid var(--border);
+  background: #f5f5f9;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.privacy-modes button.active {
+  border-color: var(--purple);
+  background: var(--purple);
+  color: #fff;
+  font-weight: 600;
+}
+
+.privacy-modes button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* D31：寄件者模式下的說明（對齊 label 欄寬） */
+.compose-from-hint {
+  margin: 2px 0 0 80px;
+}
+
 /* ───────────── 按鈕與通用元件 ───────────── */
 .btn-primary {
   display: inline-flex;

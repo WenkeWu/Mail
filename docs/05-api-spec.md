@@ -1069,19 +1069,21 @@ DNS 二級網域撞名檢查（fail-open）；詳見 §2.25。
 | 使用者輸入 | 3–12 個英文字母（`a–z`／`A–Z`，儲存小寫；不可數字／符號） |
 | 保留字 | `admin postmaster abuse root noreply mailerdaemon hostmaster webmaster support` |
 | 系統附加 | 3 位流水號（`001`–`999`，不可自選）→ `luke` → `luke001@atwho.org` |
-| 別名上限 | 每個帳號 ≤ 50 個；每個名字流水號 ≤ 999 |
+| 別名上限 | **D31：每帳號最多 1 個「啟用中」的暱稱別名**（變更時舊的停用）；Token 由系統自動產生、每地址 1 個 |
 
 **端點**
 
 ```http
 POST /api/email-aliases        Authorization: Bearer <JWT>
 { "name": "luke", "target_address_id": 12 }
+// 變更既有暱稱：{ "name": "robert", "target_address_id": 12, "replace_existing": true }
 
 201 { "id": 3, "alias_address": "luke001@atwho.org",
-      "target_address_id": 12, "status": "active" }
+      "target_address_id": 12, "status": "active", "kind": "named" }
+// 變更時另含："replaced": ["luke001@atwho.org"]（舊的已停用）
 → 400 INVALID_ALIAS_NAME（長度／數字／符號／保留字）
 → 403 TARGET_NOT_ALLOWED（目標不在 session scope、非 active 或已刪除）
-→ 409 ALIAS_LIMIT_REACHED（帳號已 50 個／該名字流水號已滿）
+→ 409 ALIAS_LIMIT_REACHED（已有 1 個啟用中的暱稱別名／該名字流水號已滿）
 ```
 
 - 流水號以 `alias_names` **原子取得**（`INSERT … ON CONFLICT DO UPDATE … RETURNING`）；
@@ -1095,7 +1097,7 @@ GET /api/email-aliases        Authorization: Bearer <JWT>
   "aliases": [{
     "id": 3, "alias_address": "luke001@atwho.org",
     "target_address_id": 12, "target_email": "alice@atwho.org",
-    "status": "active",
+    "status": "active", "kind": "named",   // D31：named | token
     "received_count": 5,            // messages.envelope_to = 此別名 的封數
     "last_received_at": 1788000000000, // 從未收到 → null
     "created_at": ..., "updated_at": ...
@@ -1111,6 +1113,7 @@ PATCH  /api/email-aliases/:id   body: { "status": "active" | "disabled" }
 DELETE /api/email-aliases/:id
 → 200 { "ok": true, "id": 3, "alias_address": "...", "status": "disabled" }
 → 404 ALIAS_NOT_FOUND（不存在或不在 scope；不洩漏存在性）
+→ 409 TOKEN_ALIAS_MANAGED（D31：Token 別名由系統管理，不可停用／刪除）
 ```
 
 - **DELETE 是軟停用**：只設 `status='disabled'`，**不刪資料列**（保留既有信件的
@@ -1142,7 +1145,7 @@ recipient 查 email_addresses（active）→ 命中：既有流程，envelope_to
 
 - `/api/mail/send` 的 From 驗證已擴充：接受 active 別名（target 屬於 session scope）。
 - 配額一律計入 target 地址；稽核 `mail_sent.detail.via_alias`（布林）。
-- Phase 1 **不支援**以別名主動寄新信（只允許回覆流程自動帶入）；一次性別名／轉寄外部亦不做。
+- **D31（2026-11-06）**：撰寫新信可用三種隱私模式（真實 ID／暱稱／Token）；後端原本即接受 active 別名 From（同 §5 驗證）。一次性別名／轉寄外部信箱仍不做。
 
 **Migration 與部署**
 
@@ -1585,6 +1588,25 @@ T180 既有 T1–T172 零回歸）。
 
 **部署順序（docs/11 §2-24）**：API → 前端（無 migration）。
 **回退**：前端回上一版即恢復舊選單；API 回上一版即移除 `/api/account/*`（不影響既有端點）。
+
+### 2.30 D31：三種寄信身分（真實 ID／暱稱／Token，2026-11-06）
+
+> migration `0015_privacy_identities.sql`：`email_aliases.kind`（`named`｜`token`）、
+> 既有 active 地址回填 Token、每個地址唯一 Token index。
+> 部署順序：**先套 migration → 再部署 API → 再部署前端**。
+
+| 身分 | From | 規則 |
+|---|---|---|
+| **真實 ID** | `itag@atwho.org` | 固定（mailbox＝自己的地址；owner＝第一個 active 地址），撰寫視窗不提供切換 |
+| **暱稱** | `luke001@atwho.org` | 每帳號最多 1 個啟用中；`replace_existing: true` 變更時舊的立即停用（同一 batch） |
+| **Token** | `0123456789abcdef@atwho.org` | 帳號／地址建立時自動產生（16 hex，64 bits）；不隨暱稱變更；系統管理 |
+
+- Token 產生時會排除：既有 `email_addresses.email`、`email_aliases.alias_address`、以及正在建立的地址；
+  碰撞重抽（最多 5 次）。
+- 自動產生時機：Email 驗證碼註冊、邀請碼註冊、OAuth 首次登入、owner 建立地址（皆與地址同一交易）。
+- Token 別名的 PATCH／DELETE → `409 TOKEN_ALIAS_MANAGED`。
+- 撰寫視窗的「互動式表單」只接受真實 ID；回信給外部寄件者仍自動使用原信收到的暱稱／Token。
+- `GET /api/email-aliases` 與 POST 回應都含 `kind`；POST 變更時另含 `replaced`（舊地址陣列）。
 
 ## 3. 通用原則
 

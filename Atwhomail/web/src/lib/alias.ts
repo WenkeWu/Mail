@@ -80,7 +80,7 @@ export interface ReplyFromInput {
  *  - 寄給別名且**內部**（@atwho.org）寄件者 → 用別名的目標真實地址（對內不匿名）
  *  - 別名已停用／不在清單 → 退回預設地址（不讓使用者用失效別名寄信）
  *
- * ⚠️ 只有「回覆」會自動帶入別名；Phase 1 不支援以別名主動寄新信（docs/25 §8）。
+ * ⚠️ 回覆時自動帶入別名；新信可在撰寫視窗選擇「暱稱」或「Token」模式（D31）。
  */
 export function replyFromFor({ envelopeTo, sender, aliases, fallbackFrom }: ReplyFromInput): string {
   const target = (envelopeTo ?? "").trim().toLowerCase();

@@ -138,8 +138,8 @@ const ALIAS_RESERVED_NAMES = new Set([
   "webmaster",
   "support",
 ]);
-/** 每個帳號的別名數量上限（docs/25 §3.1） */
-const ALIAS_MAX_PER_ACCOUNT = 50;
+/** D31：每個帳號最多 1 個「啟用中」的暱稱別名（變更時舊的立即停用） */
+const ALIAS_NAMED_MAX_ACTIVE = 1;
 /** 每個名字的流水號上限（001–999；docs/25 §1） */
 const ALIAS_SERIAL_MAX = 999;
 
@@ -151,6 +151,39 @@ const ALIAS_SERIAL_MAX = 999;
  */
 function aliasAddressFor(name: string, serial: number): string {
   return `${name}${String(serial).padStart(3, "0")}@${DOMAIN}`;
+}
+
+/**
+ * D31：Token 別名的 local part —— 16 個小寫 hex（8 bytes = 64 bits）。
+ * 對方只會看到這組隨機字串，看不到真實地址或暱稱。
+ */
+function randomTokenLocalPart(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * 產生不與真實地址／既有別名衝突的 Token 地址。
+ * `excludeEmails` 用於註冊：新地址尚未寫入 DB，仍須排除（避免 token 撞到自己的地址）。
+ * 碰撞就重抽（最多 5 次）；理論上 64 bits 碰撞機率可忽略。
+ */
+async function generateTokenAliasAddress(db: D1Database, excludeEmails: string[] = []): Promise<string> {
+  const excluded = new Set(excludeEmails.map((email) => email.trim().toLowerCase()));
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const address = `${randomTokenLocalPart()}@${DOMAIN}`;
+    if (excluded.has(address)) continue;
+    const hit = await db
+      .prepare(
+        `SELECT 1 AS hit FROM email_addresses WHERE email = ?1
+         UNION ALL
+         SELECT 1 AS hit FROM email_aliases WHERE alias_address = ?1
+         LIMIT 1`
+      )
+      .bind(address)
+      .first();
+    if (!hit) return address;
+  }
+  throw new Error("token alias generation failed");
 }
 
 /** 驗證使用者輸入的名字；合法 → 小寫名字，否則 null（錯誤碼由呼叫端統一為 INVALID_ALIAS_NAME） */
@@ -1378,6 +1411,13 @@ app.get("/api/auth/oauth/google/callback", async (c) => {
     const localPart = await assignAvailableLocalPart(c.env, base);
     if (!localPart) return err(c, "OAUTH_FAILED", "無法配發可用的信箱地址，請稍後再試", 500);
     const mailboxEmail = `${localPart}@${DOMAIN}`;
+    let tokenAliasAddress: string;
+    try {
+      tokenAliasAddress = await generateTokenAliasAddress(db, [mailboxEmail]);
+    } catch (e) {
+      console.error("[atwhomail-api] oauth token alias generation failed", { reason: String(e) });
+      return err(c, "OAUTH_FAILED", "建立帳號失敗，請稍後再試", 500);
+    }
     try {
       const results = await db.batch([
         db
@@ -1397,6 +1437,13 @@ app.get("/api/auth/oauth/google/callback", async (c) => {
              FROM users WHERE username = ?1`
           )
           .bind(localPart, localPart, DOMAIN, mailboxEmail, OAUTH_DAILY_QUOTA, ts),
+        db
+          .prepare(
+            `INSERT INTO email_aliases
+               (alias_address, target_email_address_id, status, kind, created_at, updated_at)
+             SELECT ?1, id, 'active', 'token', ?2, ?2 FROM email_addresses WHERE email = ?3`
+          )
+          .bind(tokenAliasAddress, ts, mailboxEmail),
       ]);
       const userId = Number(results[0]?.meta.last_row_id ?? 0);
       registeredAddressId = Number(results[1]?.meta.last_row_id ?? 0);
@@ -2487,7 +2534,15 @@ app.post("/api/auth/register", async (c) => {
   }
 
   // 步驟 7：建 users(role=visitor) ＋ 1 個 email_addresses（可寄信，配額見 QUOTA）
+  //         ＋ D31 Token 別名（對方只看到 Token，仍可回信）
   const pwHash = await hashPassword(body.password);
+  let tokenAliasAddress: string;
+  try {
+    tokenAliasAddress = await generateTokenAliasAddress(db, [email]);
+  } catch (e) {
+    console.error("[atwhomail-api] register token alias generation failed", { error: String(e) });
+    return err(c, "REGISTER_FAILED", "註冊失敗，請稍後再試", 500);
+  }
   try {
     const userRes = await db
       .prepare(
@@ -2508,6 +2563,15 @@ app.post("/api/auth/register", async (c) => {
       .bind(userId, localPart, DOMAIN, email, pwHash, ts, QUOTA.DEFAULT_VISITOR_DAILY_QUOTA)
       .run();
     const addressId = Number(addrRes.meta.last_row_id);
+
+    await db
+      .prepare(
+        `INSERT INTO email_aliases
+           (alias_address, target_email_address_id, status, kind, created_at, updated_at)
+         VALUES (?1, ?2, 'active', 'token', ?3, ?3)`
+      )
+      .bind(tokenAliasAddress, addressId, ts)
+      .run();
 
     // 步驟 8：簽發 mailbox scope JWT（沿用既有簽發路徑與 24h 效期）
     const token = await signMailboxToken(c.env, addressId, email, ts);
@@ -2921,16 +2985,26 @@ app.post("/api/auth/register-verify", async (c) => {
   }
 
   // 4) 建立 users(role=visitor) ＋ email_addresses（status='active'；created_at=now → 暖機 24h 自動生效）
+  //    D29：驗證過的註冊 Email 同時寫入 contact_email（個人設置的「備用電子郵件」／忘記密碼用）
+  //    D31：同一交易內建立 Token 別名（三種寄信身分之一）
   const mailboxEmail = `${localPart}@${DOMAIN}`;
   const pwHash = await hashPassword(body.password);
+  let tokenAliasAddress: string;
+  try {
+    tokenAliasAddress = await generateTokenAliasAddress(db, [mailboxEmail]);
+  } catch (e) {
+    console.error("[atwhomail-api] token alias generation failed", { reason: String(e) });
+    return err(c, "REGISTER_FAILED", "註冊失敗，請稍後再試", 500);
+  }
   try {
     const results = await db.batch([
       db
         .prepare(
-          `INSERT INTO users (username, display_name, password_hash, status, role, access_email, created_at, updated_at)
-           VALUES (?1, NULL, ?2, 'active', 'visitor', NULL, ?3, ?3)`
+          `INSERT INTO users (username, display_name, password_hash, status, role, access_email,
+                              contact_email, email_verified, created_at, updated_at)
+           VALUES (?1, NULL, ?2, 'active', 'visitor', NULL, ?3, 1, ?4, ?4)`
         )
-        .bind(localPart, pwHash, ts),
+        .bind(localPart, pwHash, email, ts),
       db
         .prepare(
           `INSERT INTO email_addresses
@@ -2940,6 +3014,13 @@ app.post("/api/auth/register-verify", async (c) => {
            FROM users WHERE username = ?1`
         )
         .bind(localPart, localPart, DOMAIN, mailboxEmail, pwHash, ts, QUOTA.DEFAULT_VISITOR_DAILY_QUOTA),
+      db
+        .prepare(
+          `INSERT INTO email_aliases
+             (alias_address, target_email_address_id, status, kind, created_at, updated_at)
+           SELECT ?1, id, 'active', 'token', ?2, ?2 FROM email_addresses WHERE email = ?3`
+        )
+        .bind(tokenAliasAddress, ts, mailboxEmail),
     ]);
     const userId = Number(results[0]?.meta.last_row_id ?? 0);
     const addressId = Number(results[1]?.meta.last_row_id ?? 0);
@@ -3532,12 +3613,26 @@ app.post("/api/email-addresses", requireOwner, async (c) => {
   }
 
   const ts = now();
-  const res = await c.env.DB.prepare(
-    `INSERT INTO email_addresses (user_id, local_part, domain, email, password_hash, password_changed_at, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`
-  )
-    .bind(scope.userId, localPart, DOMAIN, email, pwHash, pwHash ? ts : 0, ts, ts)
-    .run();
+  // D31：每個真實地址建立時自動產生 1 個 Token 別名（與地址同一交易）
+  let tokenAliasAddress: string;
+  try {
+    tokenAliasAddress = await generateTokenAliasAddress(c.env.DB, [email]);
+  } catch (e) {
+    console.error("[atwhomail-api] address token alias generation failed", { error: String(e) });
+    return err(c, "ADDRESS_CREATE_FAILED", "建立地址失敗，請稍後再試", 500);
+  }
+  const results = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO email_addresses (user_id, local_part, domain, email, password_hash, password_changed_at, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`
+    ).bind(scope.userId, localPart, DOMAIN, email, pwHash, pwHash ? ts : 0, ts, ts),
+    c.env.DB.prepare(
+      `INSERT INTO email_aliases
+         (alias_address, target_email_address_id, status, kind, created_at, updated_at)
+       SELECT ?1, id, 'active', 'token', ?2, ?2 FROM email_addresses WHERE email = ?3`
+    ).bind(tokenAliasAddress, ts, email),
+  ]);
+  const res = results[0];
   return c.json({ id: res.meta.last_row_id, email, status: "active", created_at: ts, has_password: pwHash !== null }, 201);
 });
 
@@ -3840,20 +3935,25 @@ app.patch("/api/email-addresses/:id/password", requireMailSession, async (c) => 
 // ══════════════════════ D25：別名管理（owner 或 mailbox scope）══════════════════════
 
 /**
- * POST /api/email-aliases — 建立別名（docs/25 §3.1）。
+ * POST /api/email-aliases — 建立／變更暱稱別名（D25、D31）。
  *
- * 使用者只提供 `name`（3–12 字母）與 `target_address_id`；流水號由系統分配：
- *   1. 驗證名字（保留字／數字／符號一律 400 INVALID_ALIAS_NAME）
- *   2. 目標地址必須在 session scope 內且 active（否則 403 TARGET_NOT_ALLOWED）
- *   3. 每帳號 ≤ 50 個別名（否則 409 ALIAS_LIMIT_REACHED）
+ * 規則（D31，owner 2026-11-06）：
+ *   1. 驗證名字（3–12 字母、非保留字 → 400 INVALID_ALIAS_NAME）
+ *   2. 目標地址必須在 session scope 內且 active → 403 TARGET_NOT_ALLOWED
+ *   3. 每帳號最多 **1 個啟用中的暱稱別名**（ALIAS_NAMED_MAX_ACTIVE）
+ *      - 已有 active 且未帶 `replace_existing: true` → 409 ALIAS_LIMIT_REACHED
+ *      - `replace_existing: true` → 同一 batch **先停用舊的、再建立新的**（舊的立即回 550）
  *   4. `alias_names` 原子遞增取得流水號 → `luke` + 001 = `luke001`
- *   5. 寫 `email_aliases`；稽核 `alias_created`（只記別名與目標，N9）
+ *   5. 寫 `email_aliases(kind='named')`；稽核 `alias_created`（N9）
  *
+ * ⚠️ Token 別名（kind='token'）由系統在帳號建立時自動產生，不開放此端點建立。
  * ⚠️ 目標只能是 `email_addresses`（API 限制），**禁止 alias → alias**（docs/25 §4）。
  */
 app.post("/api/email-aliases", requireMailSession, async (c) => {
   const scope = c.get("scope") as MailScope;
-  const body = await c.req.json<{ name?: unknown; target_address_id?: unknown }>().catch(() => null);
+  const body = await c.req
+    .json<{ name?: unknown; target_address_id?: unknown; replace_existing?: unknown }>()
+    .catch(() => null);
   const name = normalizeAliasName(body?.name);
   if (!name) {
     return err(c, "INVALID_ALIAS_NAME", "別名需為 3–12 個英文字母，且不得使用保留字", 400);
@@ -3877,15 +3977,23 @@ app.post("/api/email-aliases", requireMailSession, async (c) => {
 
   const accountUserId = await accountUserIdForScope(c.env.DB, scope);
   if (accountUserId === null) return err(c, "TARGET_NOT_ALLOWED", "session 的帳號不存在", 403);
-  const countRow = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM email_aliases a
+  const activeNamed = await c.env.DB.prepare(
+    `SELECT a.id, a.alias_address
+       FROM email_aliases a
        JOIN email_addresses e ON e.id = a.target_email_address_id
-      WHERE e.user_id = ?1`
+      WHERE e.user_id = ?1 AND a.kind = 'named' AND a.status = 'active'
+      ORDER BY a.id`
   )
     .bind(accountUserId)
-    .first<{ n: number }>();
-  if (Number(countRow?.n ?? 0) >= ALIAS_MAX_PER_ACCOUNT) {
-    return err(c, "ALIAS_LIMIT_REACHED", `每個帳號最多 ${ALIAS_MAX_PER_ACCOUNT} 個別名`, 409);
+    .all<{ id: number; alias_address: string }>();
+  const replaceExisting = body?.replace_existing === true;
+  if (activeNamed.results.length >= ALIAS_NAMED_MAX_ACTIVE && !replaceExisting) {
+    return err(
+      c,
+      "ALIAS_LIMIT_REACHED",
+      "每個帳號只能有 1 個啟用中的暱稱別名；要更換請使用「變更別名」",
+      409
+    );
   }
 
   const ts = now();
@@ -3915,15 +4023,49 @@ app.post("/api/email-aliases", requireMailSession, async (c) => {
   }
 
   const aliasAddress = aliasAddressFor(name, serial);
+  const replaced = activeNamed.results.map((a) => a.alias_address);
   let aliasId: number;
   try {
-    const res = await c.env.DB.prepare(
-      `INSERT INTO email_aliases (alias_address, target_email_address_id, status, created_at, updated_at)
-       VALUES (?1, ?2, 'active', ?3, ?3)`
-    )
-      .bind(aliasAddress, target.id, ts)
-      .run();
-    aliasId = Number(res.meta.last_row_id);
+    if (replaceExisting && replaced.length > 0) {
+      // 變更：同一交易先停用舊的，再建立新的
+      const results = await c.env.DB.batch([
+        c.env.DB.prepare(
+          `UPDATE email_aliases SET status = 'disabled', updated_at = ?1
+            WHERE id IN (
+              SELECT a.id FROM email_aliases a
+              JOIN email_addresses e ON e.id = a.target_email_address_id
+              WHERE e.user_id = ?2 AND a.kind = 'named' AND a.status = 'active'
+            )`
+        ).bind(ts, accountUserId),
+        c.env.DB.prepare(
+          `INSERT INTO email_aliases (alias_address, target_email_address_id, status, kind, created_at, updated_at)
+           VALUES (?1, ?2, 'active', 'named', ?3, ?3)`
+        ).bind(aliasAddress, target.id, ts),
+      ]);
+      aliasId = Number(results[1]?.meta.last_row_id ?? 0);
+    } else {
+      // 條件式 INSERT：併發下也只有一個能成功（避免出現兩個 active named）
+      const res = await c.env.DB.prepare(
+        `INSERT INTO email_aliases (alias_address, target_email_address_id, status, kind, created_at, updated_at)
+         SELECT ?1, ?2, 'active', 'named', ?3, ?3
+         WHERE NOT EXISTS (
+           SELECT 1 FROM email_aliases a
+           JOIN email_addresses e ON e.id = a.target_email_address_id
+           WHERE e.user_id = ?4 AND a.kind = 'named' AND a.status = 'active'
+         )`
+      )
+        .bind(aliasAddress, target.id, ts, accountUserId)
+        .run();
+      if (res.meta.changes !== 1) {
+        return err(
+          c,
+          "ALIAS_LIMIT_REACHED",
+          "每個帳號只能有 1 個啟用中的暱稱別名；要更換請使用「變更別名」",
+          409
+        );
+      }
+      aliasId = Number(res.meta.last_row_id);
+    }
   } catch (e) {
     console.error("[atwhomail-api] alias insert failed", { name, error: String(e) });
     return err(c, "ALIAS_CREATE_FAILED", "別名建立失敗，請稍後再試", 500);
@@ -3936,10 +4078,24 @@ app.post("/api/email-aliases", requireMailSession, async (c) => {
     addressId: target.id,
     ip: clientIp(c),
     userAgent: c.req.header("user-agent") ?? null,
-    detail: { alias_address: aliasAddress, target: target.email },
+    detail: {
+      alias_address: aliasAddress,
+      target: target.email,
+      ...(replaceExisting && replaced.length > 0 ? { replaced } : {}),
+    },
   });
 
-  return c.json({ id: aliasId, alias_address: aliasAddress, target_address_id: target.id, status: "active" }, 201);
+  return c.json(
+    {
+      id: aliasId,
+      alias_address: aliasAddress,
+      target_address_id: target.id,
+      status: "active",
+      kind: "named",
+      ...(replaceExisting && replaced.length > 0 ? { replaced } : {}),
+    },
+    201
+  );
 });
 
 /**
@@ -3953,7 +4109,7 @@ app.get("/api/email-aliases", requireMailSession, async (c) => {
 
   const { results } = await c.env.DB.prepare(
     `SELECT a.id, a.alias_address, a.target_email_address_id AS target_address_id,
-            e.email AS target_email, a.status, a.created_at, a.updated_at,
+            e.email AS target_email, a.status, a.kind, a.created_at, a.updated_at,
             (SELECT COUNT(*) FROM messages m WHERE m.envelope_to = a.alias_address) AS received_count,
             (SELECT MAX(m.received_at) FROM messages m WHERE m.envelope_to = a.alias_address) AS last_received_at
        FROM email_aliases a
@@ -3968,6 +4124,7 @@ app.get("/api/email-aliases", requireMailSession, async (c) => {
       target_address_id: number;
       target_email: string;
       status: string;
+      kind: string;
       created_at: number;
       updated_at: number;
       received_count: number;
@@ -3981,6 +4138,7 @@ app.get("/api/email-aliases", requireMailSession, async (c) => {
       target_address_id: Number(r.target_address_id),
       target_email: r.target_email,
       status: r.status,
+      kind: r.kind,
       created_at: Number(r.created_at),
       updated_at: Number(r.updated_at),
       received_count: Number(r.received_count ?? 0),
@@ -3995,7 +4153,7 @@ async function scopedAlias(db: D1Database, scope: MailScope, id: number) {
   const bindValue = scope.kind === "owner" ? scope.userId : scope.addressId;
   return db
     .prepare(
-      `SELECT a.id, a.alias_address, a.status, a.target_email_address_id, e.email AS target_email
+      `SELECT a.id, a.alias_address, a.status, a.kind, a.target_email_address_id, e.email AS target_email
          FROM email_aliases a
          JOIN email_addresses e ON e.id = a.target_email_address_id
         WHERE a.id = ?1 AND ${where}`
@@ -4005,6 +4163,7 @@ async function scopedAlias(db: D1Database, scope: MailScope, id: number) {
       id: number;
       alias_address: string;
       status: string;
+      kind: string;
       target_email_address_id: number;
       target_email: string;
     }>();
@@ -4026,6 +4185,10 @@ app.patch("/api/email-aliases/:id", requireMailSession, async (c) => {
 
   const row = await scopedAlias(c.env.DB, scope, id);
   if (!row) return err(c, "ALIAS_NOT_FOUND", "alias not found", 404);
+  // D31：Token 別名由系統管理（帳號建立時自動產生），不允許停用／刪除
+  if (row.kind === "token") {
+    return err(c, "TOKEN_ALIAS_MANAGED", "Token 別名由系統自動管理，無法停用或刪除", 409);
+  }
 
   await c.env.DB.prepare("UPDATE email_aliases SET status = ?1, updated_at = ?2 WHERE id = ?3")
     .bind(body.status, now(), id)
@@ -4054,6 +4217,10 @@ app.delete("/api/email-aliases/:id", requireMailSession, async (c) => {
 
   const row = await scopedAlias(c.env.DB, scope, id);
   if (!row) return err(c, "ALIAS_NOT_FOUND", "alias not found", 404);
+  // D31：Token 別名由系統管理（帳號建立時自動產生），不允許停用／刪除
+  if (row.kind === "token") {
+    return err(c, "TOKEN_ALIAS_MANAGED", "Token 別名由系統自動管理，無法停用或刪除", 409);
+  }
 
   await c.env.DB.prepare("UPDATE email_aliases SET status = 'disabled', updated_at = ?1 WHERE id = ?2")
     .bind(now(), id)
