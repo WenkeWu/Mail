@@ -2351,3 +2351,87 @@ select {
   border: 1px solid #d0d7de;
   border-radius: 6px;
 }
+
+/* ── D29：個人設定（docs/29） ── */
+.menu-section {
+  padding: 8px 10px 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sidebar-settings {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.settings-card {
+  margin-bottom: 0;
+}
+
+.settings-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-list > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-list dt {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.settings-list dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-address-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.settings-address-row .btn-secondary {
+  margin-left: auto;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-form input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.settings-form .btn-primary {
+  align-self: flex-start;
+}
+
+.settings-quota {
+  margin: 0 0 4px;
+}

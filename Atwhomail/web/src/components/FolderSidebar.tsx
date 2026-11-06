@@ -2,19 +2,18 @@ import type { CountsResponse, Folder, FolderQuery, Session } from "../api/types"
 import {
   IconApps,
   IconArchive,
-  IconAt,
   IconCompose,
   IconInbox,
-  IconKey,
   IconSend,
+  IconSettings,
   IconSpam,
   IconTicket,
   IconTrash,
   IconUsers,
 } from "./icons";
 
-/** 主視圖（信件／地址管理／別名／管理主控台頁面） */
-export type AppPage = "mail" | "addresses" | "aliases" | "account" | "invites" | "visitors" | "apps";
+/** 主視圖（信件／地址管理／別名／個人設定／管理主控台頁面） */
+export type AppPage = "mail" | "addresses" | "aliases" | "settings" | "invites" | "visitors" | "apps";
 
 interface Props {
   session: Session;
@@ -27,10 +26,8 @@ interface Props {
   onSelectFolder: (folder: Folder) => void;
   onSelectAddress: (id: number | null) => void;
   onOpenAddresses: () => void;
-  /** D25：別名管理（owner 與 mailbox 都可用） */
-  onOpenAliases: () => void;
-  /** D7：owner 的帳號設定（自行變更密碼） */
-  onOpenAccountSettings: () => void;
+  /** D29：個人設定（所有角色、所有 host） */
+  onOpenSettings: () => void;
   /** D4：邀請碼管理 */
   onOpenInvites: () => void;
   /** D5：訪客管理／停權／配額 */
@@ -38,10 +35,15 @@ interface Props {
   /** D26：App Clients（第三方 App 的登入整合） */
   onOpenApps: () => void;
   /**
-   * 管理主控台（帳號設定／邀請碼／訪客管理）的顯示開關
+   * 管理功能（地址管理／邀請碼／訪客／App Clients）的顯示開關
    * （`mail.`／localhost 顯示；`app.` 不顯示 —— 僅 UI 收斂，權限仍由後端判定）
    */
   showAdminConsole: boolean;
+  /**
+   * D29：`app.atwho.org`（public）模式 —— 側欄只留
+   * 收件匣／寄件備份／垃圾桶／撰寫／個人設定；不顯示地址篩選、「我的全部信箱」與任何管理功能。
+   */
+  publicMode: boolean;
   onCompose: () => void;
   open: boolean;
   /** Phase 1：visitor 的寄信配額顯示（owner 為 null） */
@@ -68,17 +70,21 @@ export function FolderSidebar({
   onSelectFolder,
   onSelectAddress,
   onOpenAddresses,
-  onOpenAliases,
-  onOpenAccountSettings,
+  onOpenSettings,
   onOpenInvites,
   onOpenVisitors,
   onOpenApps,
   showAdminConsole,
+  publicMode,
   onCompose,
   open,
   quotaLine = null,
   composeBlockedReason = null,
 }: Props) {
+  // D29：public（app.atwho.org）只留下收件匣／寄件備份／垃圾桶
+  const folderItems = publicMode
+    ? FOLDER_ITEMS.filter((item) => item.key === "inbox" || item.key === "sent" || item.key === "trash")
+    : FOLDER_ITEMS;
   return (
     <nav className={`sidebar ${open ? "open" : ""}`} aria-label="資料夾">
       <button
@@ -100,7 +106,7 @@ export function FolderSidebar({
       )}
 
       <ul className="folder-list">
-        {FOLDER_ITEMS.map(({ key, label, Icon }) => {
+        {folderItems.map(({ key, label, Icon }) => {
           const c = counts?.folders?.[key];
           const unread = key === "sent" ? 0 : (c?.unread ?? 0);
           const active = currentPage === "mail" && !queryActive && folder === key;
@@ -121,23 +127,8 @@ export function FolderSidebar({
         })}
       </ul>
 
-      {/* D25：別名管理（owner 與 mailbox 都有；後端依 session scope 回傳可見的別名） */}
-      <div className="sidebar-section">別名</div>
-      <ul className="folder-list">
-        <li>
-          <button
-            type="button"
-            className={`folder-item ${currentPage === "aliases" ? "active" : ""}`}
-            onClick={onOpenAliases}
-            title="管理別名（對外匿名收信）"
-          >
-            <IconAt size={18} />
-            <span className="folder-label">別名管理</span>
-          </button>
-        </li>
-      </ul>
-
-      {session.kind === "owner" && (
+      {/* D29：別名管理已併入「個人設定」，不再有獨立入口 */}
+      {session.kind === "owner" && !publicMode && (
         <>
           <div className="sidebar-section">我的信箱</div>
           <ul className="folder-list">
@@ -212,21 +203,25 @@ export function FolderSidebar({
                     <span className="folder-label">應用程式</span>
                   </button>
                 </li>
-                <li>
-                  <button
-                    type="button"
-                    className={`folder-item ${currentPage === "account" ? "active" : ""}`}
-                    onClick={onOpenAccountSettings}
-                  >
-                    <IconKey size={18} />
-                    <span className="folder-label">帳號設定</span>
-                  </button>
-                </li>
               </>
             )}
           </ul>
         </>
       )}
+
+      {/* D29：個人設定（所有角色、所有 host；選單第一項的側欄對應入口） */}
+      <ul className="folder-list sidebar-settings">
+        <li>
+          <button
+            type="button"
+            className={`folder-item ${currentPage === "settings" ? "active" : ""}`}
+            onClick={onOpenSettings}
+          >
+            <IconSettings size={18} />
+            <span className="folder-label">個人設定</span>
+          </button>
+        </li>
+      </ul>
     </nav>
   );
 }

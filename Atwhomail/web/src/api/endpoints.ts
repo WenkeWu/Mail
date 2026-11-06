@@ -1,6 +1,7 @@
 /** endpoints.ts — 每個 API 端點的型別化包裝（契約見 docs/05、docs/12） */
 import { request, requestBlob, requestText } from "./client";
 import type {
+  AccountSettingsResponse,
   AppClient,
   CountsResponse,
   CreatedAlias,
@@ -142,6 +143,24 @@ export const changeOwnerPassword = (oldPassword: string, newPassword: string) =>
   request<{ ok: boolean }>("/api/auth/owner-password/self", {
     method: "PATCH",
     json: { old_password: oldPassword, new_password: newPassword },
+  });
+
+// ── D29：個人設定（docs/29）──
+
+/** 個人設定：只回自己的 ID／地址／聯絡 Email／登入方式（不含 password_hash） */
+export const getAccountSettings = () =>
+  request<AccountSettingsResponse>("/api/account/settings");
+
+/**
+ * 變更／設定自己的密碼（D29）。
+ * - 已有密碼 → 必須提供 `currentPassword`
+ * - 無密碼（Google OAuth 帳號）→ 省略 `currentPassword` ＝「設定密碼」
+ * 成功後所有既有 session 立即失效（`password_changed_at`）→ 前端須重新登入。
+ */
+export const changeAccountPassword = (newPassword: string, currentPassword?: string) =>
+  request<{ ok: boolean }>("/api/account/password", {
+    method: "POST",
+    json: currentPassword === undefined ? { new_password: newPassword } : { current_password: currentPassword, new_password: newPassword },
   });
 
 // ── D25：別名（docs/25）──

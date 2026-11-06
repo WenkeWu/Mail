@@ -23,6 +23,7 @@
 | Turnstile 防機器人（D23） | 🟡 程式完成、**金鑰未提供／未部署** | `register-request` 選填 `turnstile_token`；secret 未設定自動跳過、site key 空字串不顯示 widget；無 migration（見 §2-21） |
 | App 登入代理（D26） | 🟡 程式完成、**未部署** | `auth.atwho.org` 薄代理（`atwhomail-auth`）＋ App Clients／`app-login`／`exchange`／`auth/me`；migration `0012` 本地測試已套用、**遠端待 owner**（見 §2-22） |
 | Google OAuth ＋ 忘記密碼（D27） | 🟡 程式完成、**未部署** | `GET /api/auth/oauth/google/start`／`callback`、`POST /api/auth/user-login`、`forgot-password`／`reset-password`；migration `0013` 本地測試已套用、**遠端待 owner**（見 §2-23） |
+| 個人設定＋`app.` 收斂（D29） | 🟡 程式完成、**未部署** | `GET /api/account/settings`、`POST /api/account/password`；前端 `app.atwho.org` 隱藏所有管理功能（即使 owner）、新「個人設定」頁；**無 migration**（見 §2-24） |
 
 ### 1.1 2026-10-05 收發信現況稽核（公開 DNS + CF API 實測）
 
@@ -730,6 +731,43 @@
       - [ ] **未執行**：本階段未部署、未跑遠端 migration、未對 production D1／R2 寫入、
             **未新增任何 secret 值**（`GOOGLE_CLIENT_SECRET` 為既有 secret，本次未變更）。
 
+- [ ] **24. `app.` 管理功能收斂 ＋ 個人設定（docs/29 D29；2026-11-06 程式完成，未部署）**
+
+      **本次沒有 migration**；需部署 **API Worker** 與 **前端**（先 API 再前端較安全）。
+      ⚠️ **前置**：D29 的新端點會讀 `users.provider`／`contact_email` → 必須先完成
+      §2-23（migration `0013`）並確認已套用；若 0013 尚未上線，請先依 §2-23 部署。
+
+      **部署順序**：
+      1. 部署 **API Worker**（`pnpm --filter @atwhomail/api run deploy`）：
+         新增 `GET /api/account/settings`、`POST /api/account/password`。
+         ⚠️ 既有 API 授權規則**未改變**；owner token 仍可呼叫管理端點（本次只收斂 UI）。
+      2. 重新 build／deploy **前端**（`cd web; pnpm run build` → Pages）：
+         `app.atwho.org` 隱藏地址管理／「我的全部信箱」／邀請碼／訪客管理／App Clients／
+         「管理員」標籤（即使 owner）；頭像選單第一項改為「個人設定」；
+         舊「帳號設定（變更密碼）」與「別名管理」獨立入口移除（併入個人設定）。
+      3. `mail.atwho.org`／Access 設定**不需調整**；`auth.atwho.org` 代理不需重新部署。
+
+      **驗收**：
+      - [ ] `app.atwho.org` 以 **owner** 登入：側欄只有收件匣／寄件備份／垃圾桶／撰寫／個人設定；
+            看不到地址管理、「我的全部信箱」、邀請碼、訪客管理、App Clients；頭像標籤為「個人帳號」。
+      - [ ] `mail.atwho.org` 以 owner 登入：上述管理功能與「管理員」標籤**照常顯示**（行為不變）。
+      - [ ] `app.atwho.org` 以 visitor 登入：只看得到自己的信箱；無任何管理功能。
+      - [ ] 頭像選單**第一項**為「個人設定」（所有 host／角色）；選單內「登出」可用。
+      - [ ] 個人設定頁顯示 AtWhoMail ID、信箱地址（可複製）、Google Email
+            （未綁定顯示「尚未綁定 Google」）、登入方式、變更／設定密碼、別名入口與
+            「別名需自行建立，系統不會自動分配」說明；visitor 顯示今日已寄／上限。
+      - [ ] `GET /api/account/settings`：owner 回本人＋名下地址、`has_password=1`；
+            OAuth 帳號回 `has_password=0`＋`contact_email`；**不含** `password_hash`／他人資料。
+      - [ ] `POST /api/account/password`：無密碼者可設定成功（免 current）；
+            有密碼者錯 current → **401 `INVALID_CURRENT_PASSWORD`**；成功後舊 JWT →
+            **401 `TOKEN_STALE`**；`app` token 呼叫兩個端點 → **403 `SCOPE_NOT_ALLOWED`**。
+      - [ ] T173–T179 全綠；既有 T1–T172 零回歸（`pnpm test`）。
+
+      **回退**：前端回上一版即恢復舊選單（API 新端點保留不影響既有流程）；
+      API 回上一版即移除 `/api/account/*`（不影響既有端點）。**無 migration 需回退**。
+
+      - [ ] **未執行**：本階段未部署、未對 production D1／R2 寫入、未新增任何 secret／環境變數。
+
 ## 3. 認證與端點矩陣
 
 | 端點 | 認證 | 用途 |
@@ -746,6 +784,8 @@
 | `POST /api/auth/user-login` | 公開（5 次失敗鎖 15 分） | **D27**：username 或 contact_email ＋ 密碼 → owner／mailbox／user session；停權 403 `ACCOUNT_SUSPENDED`、未設密碼 400 `NO_PASSWORD_SET` |
 | `POST /api/auth/forgot-password` | 公開 | **D27**：**一律 200**（不洩漏帳號存在）；限流 3/時/identifier、10/時/IP；寄 `noreply@atwho.org` 的 30 分鐘一次性重設連結（DB 只存 SHA-256）|
 | `POST /api/auth/reset-password` | 公開（一次性 token） | **D27**：更新密碼＋`pca`（撤銷所有舊 JWT）＋寄「密碼已變更」；400 `INVALID_TOKEN`／`TOKEN_EXPIRED`、422 `WEAK_PASSWORD` |
+| `GET /api/account/settings` | owner／mailbox session | **D29**：只回自己的 `{user_id, username, role, provider, contact_email, has_password, addresses[]}`；owner＝名下全部地址、mailbox＝session 的那一個地址；**不含** `password_hash`／他人資料；app token → 403 `SCOPE_NOT_ALLOWED` |
+| `POST /api/account/password` | owner／mailbox session | **D29**：`{current_password?, new_password}`；有密碼必驗 current（錯 → 401 `INVALID_CURRENT_PASSWORD`）、無密碼（OAuth）免 current；成功更新 `pca` → 所有舊 JWT 失效；visitor 同步地址密碼；稽核 `password_changed`；app token → 403 `SCOPE_NOT_ALLOWED` |
 | `/api/apps*` | owner 或 rescue | **D26**：App Client 管理。`POST` 回一次性 `app_secret`；`GET` 不含 secret；`PATCH` 更新名稱／狀態／redirect_uris；`DELETE` 軟停用。稽核 `app_created`／`app_updated`（不記 secret） |
 | `POST /api/auth/register` | **公開**（行為依 `REGISTRATION_MODE`；預設 `invite` 需邀請碼） | 訪客註冊（Phase 1）→ mailbox session。**D21**：`email_verify` → 403 `REGISTRATION_EMAIL_VERIFY_REQUIRED`（改走下方兩端點）；`closed` → 403 `REGISTRATION_CLOSED` |
 | `GET /api/auth/registration-mode` | 公開 | **D21**：目前註冊模式 `{mode}`（僅供前端表單顯示；權限仍由後端強制）。**D22**：管理端於 `email_verify` 時據此顯示「一般註冊連結」卡片。**D23**：另回 `turnstileSiteKey`（未設／空字串 → `null`；僅供前端顯示 widget） |
@@ -755,7 +795,7 @@
 | `/api/invites*` | owner 或 rescue | 邀請碼產生／列表（**預設只回遮罩碼**；`?reveal=1` 額外回全碼並寫稽核）／撤銷 |
 | `GET /api/me` | owner 或 mailbox | 身分與寄信配額（供前端顯示） |
 | **（session 檢查）** | owner 或 mailbox | `401 TOKEN_STALE`：**查不到列**（帳號／地址已被刪除，階段 6／D10）或密碼已變更；rescue 不受影響（N5） |
-| **（app scope 邊界）** | — | **D26**：`scope='app'` 可用於 `GET /api/auth/me`；但 `/api/mail/*`、`/api/attachments/*`、`/api/email-aliases*`、`/api/forms/*`、`/api/me` 一律 **403 `SCOPE_NOT_ALLOWED`** |
+| **（app scope 邊界）** | — | **D26／D29**：`scope='app'` 可用於 `GET /api/auth/me`；但 `/api/mail/*`、`/api/attachments/*`、`/api/email-aliases*`、`/api/forms/*`、`/api/me`、`/api/account/*` 一律 **403 `SCOPE_NOT_ALLOWED`** |
 | `DELETE /api/users/:id` | owner 或 rescue（**僅 `role='visitor'`**） | **永久刪除訪客**（帳號／地址／所有信件與附件／別名／登入計數；稽核保留，階段 6／D9）；對 owner → 403 `FORBIDDEN`。**D16**：一併清除該用戶相關的 `form_responses`／`form_instances`（`form_templates` 保留）|
 | `PATCH /api/users/:id/status` | owner 或 rescue | 停權／復權（立即生效：**含既有 session 立即 403**，階段 5／D8-4；來信仍照收） |
 | `GET /api/users?role=visitor` | owner 或 rescue | 訪客清單（**只回數量與時間**：信件數／最近活動，N9） |

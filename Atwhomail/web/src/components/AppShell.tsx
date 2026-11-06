@@ -101,10 +101,13 @@ export function AppShell({
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
 
   /**
-   * 管理主控台頁面（D7 帳號設定、D4 邀請碼管理、D5 訪客管理）只在 `mail.`（admin）與本機開發（all）顯示；
-   * `app.`（public，訪客入口）不顯示。⚠️ 純 UI 收斂——後端仍以 session 的 owner scope 判定（N3）。
+   * 管理功能（地址管理、邀請碼／訪客／App Clients）只在 `mail.`（admin）與本機開發（all）顯示；
+   * `app.`（public，訪客入口）**即使是 owner 也完全隱藏**（D29，docs/29 §2.1）。
+   * ⚠️ 純 UI 收斂——後端仍以 session 的 owner scope 判定（N3）。
    */
   const canUseAdminConsole = session.kind === "owner" && showsAdminConsole(hostMode);
+  /** D29：`app.atwho.org`（public）—— 沿用 `showsAdminConsole` 的反向判斷 */
+  const publicMode = !showsAdminConsole(hostMode);
 
   const searchActive = query !== "";
   const listFolder: string = searchActive ? "all" : folder;
@@ -535,11 +538,16 @@ export function AppShell({
       return;
     }
     if (session.kind === "owner" && addresses.filter((a) => a.status === "active").length === 0) {
-      showToast("目前沒有可用的寄件地址，請先到「地址管理」建立地址", "error");
+      showToast(
+        publicMode
+          ? "目前沒有可用的寄件地址，請聯絡管理者"
+          : "目前沒有可用的寄件地址，請先到「地址管理」建立地址",
+        "error"
+      );
       return;
     }
     openDraft({ mode: "new" });
-  }, [guardDraft, openDraft, session, addresses, showToast, composeBlockedReason]);
+  }, [guardDraft, openDraft, session, addresses, showToast, composeBlockedReason, publicMode]);
 
   const openReplyLike = useCallback(
     async (mode: DraftMode) => {
@@ -666,38 +674,36 @@ export function AppShell({
         onSearchInput={setSearchInput}
         onSubmitSearch={submitSearch}
         onCompose={openCompose}
+        onOpenSettings={() => setPage("settings")}
         onOpenAddresses={() => setPage("addresses")}
-        onChangePassword={() => setPage("addresses")}
-        onOpenAccountSettings={() => setPage("account")}
         onOpenInvites={() => setPage("invites")}
         onOpenVisitors={() => setPage("visitors")}
         onOpenApps={() => setPage("apps")}
-        onOpenAliases={() => setPage("aliases")}
         showAdminConsole={canUseAdminConsole}
         onLogout={onLogout}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         composeBlockedReason={composeBlockedReason}
       />
 
-      {page === "addresses" ? (
+      {page === "addresses" && canUseAdminConsole ? (
         <AddressManager
           session={session}
           onBack={() => setPage("mail")}
           onToast={showToast}
         />
-      ) : page === "aliases" ? (
-        <AliasManager
-          session={session}
-          onBack={() => setPage("mail")}
-          onToast={showToast}
-          onChanged={() => setAliasRefreshKey((k) => k + 1)}
-        />
-      ) : page === "account" && canUseAdminConsole ? (
+      ) : page === "settings" ? (
         <AccountSettings
-          session={session}
           onBack={() => setPage("mail")}
           onLogout={onLogout}
           onToast={showToast}
+          onManageAliases={() => setPage("aliases")}
+        />
+      ) : page === "aliases" ? (
+        <AliasManager
+          session={session}
+          onBack={() => setPage("settings")}
+          onToast={showToast}
+          onChanged={() => setAliasRefreshKey((k) => k + 1)}
         />
       ) : page === "invites" && canUseAdminConsole ? (
         <InviteManager onBack={() => setPage("mail")} onToast={showToast} />
@@ -717,12 +723,12 @@ export function AppShell({
             onSelectFolder={selectFolder}
             onSelectAddress={selectAddress}
             onOpenAddresses={() => setPage("addresses")}
-            onOpenAliases={() => setPage("aliases")}
-            onOpenAccountSettings={() => setPage("account")}
+            onOpenSettings={() => setPage("settings")}
             onOpenInvites={() => setPage("invites")}
             onOpenVisitors={() => setPage("visitors")}
             onOpenApps={() => setPage("apps")}
             showAdminConsole={canUseAdminConsole}
+            publicMode={publicMode}
             onCompose={openCompose}
             open={sidebarOpen}
             quotaLine={quotaLine}

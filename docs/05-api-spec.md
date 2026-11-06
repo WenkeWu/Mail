@@ -1512,6 +1512,80 @@ GET /api/auth/oauth/google/start?redirect_after=/inbox
 **回退**：前端先回上一版（Google／忘記密碼 UI 消失）；API 回上一版即停止新端點；
 migration 0013 為純新增欄位／表，保留不影響既有流程。
 
+### 2.29 D29：`app.` 管理功能收斂 ＋ 個人設定（2026-11-06）
+
+> 設計：`docs/29`。**無新增 migration**；需部署 API 與前端（見 docs/11 §2-24）。
+> ⚠️ 本端點讀取 D27 的 `users.provider`／`contact_email`／`hasPassword()` 語意
+> → **migration `0013` 必須已套用**（若尚未套用，請先依 docs/11 §2-23 完成）。
+> ⚠️ 本階段只收斂**前端顯示**（依 hostname），**不改變既有 API 授權**（docs/16 N3）；
+> owner token 本身仍可呼叫管理端點。
+
+**`GET /api/account/settings`（owner／mailbox session）**
+
+```jsonc
+→ 200 {
+  "user_id": 2,
+  "username": "itag",
+  "role": "visitor",              // owner | visitor
+  "provider": "local",            // local | google
+  "contact_email": "ulhome@gmail.com", // Google 註冊／綁定；未綁定 = null
+  "has_password": 1,              // 0 | 1（不提供 password_hash）
+  "addresses": [
+    { "id": 10, "email": "itag@atwho.org", "status": "active",
+      "daily_send_quota": 5, "sent_today": 2 }
+  ]
+}
+```
+
+- **只回自己**：owner → 本人＋名下未刪除的全部地址；
+  mailbox → 地址所屬使用者＋**session 的那一個地址**（不列出同帳號其他地址）。
+- 不得回傳 `password_hash`、他人資料或信件內容（N9）。
+- 授權：`requireSession`；`scope='app'` → **403 `SCOPE_NOT_ALLOWED`**。
+
+**`POST /api/account/password`**
+
+```jsonc
+{ "current_password": "…", "new_password": "…" }   // 已有密碼：current 必填
+{ "new_password": "…" }                            // 無密碼（OAuth）：免 current ＝ 設定密碼
+→ 200 { "ok": true }
+```
+
+| 情境 | 結果 |
+|---|---|
+| 已有密碼、`current_password` 錯誤／未提供 | 錯誤 → **401 `INVALID_CURRENT_PASSWORD`**；未提供 → **400 `INVALID_BODY`** |
+| 新密碼不符政策（<8／>128）| **422 `WEAK_PASSWORD`** |
+| 無密碼（`has_password=0`）| 直接設定成功（免 current）|
+| 成功 | 更新 `users.password_hash` ＋ `password_changed_at`；名下 `email_addresses.password_changed_at` 同步更新 → **所有舊 JWT（owner／mailbox／app）立即 401 `TOKEN_STALE`** |
+| visitor 帳號 | 另同步更新名下地址的 `password_hash` → 「信箱＋密碼」（`mailbox-login`）立即可用；OAuth 帳號即等於「設定密碼」|
+| owner 帳號 | **不改動**地址密碼（地址密碼由地址管理獨立維護），只更新 pca 撤銷既有 mailbox session |
+| 連續錯誤 current | 沿用 `auth_attempts`（key `account:<user_id>`；5 次鎖 15 分鐘 → **429 `LOCKED`**）|
+| 稽核 | `password_changed`（user id、ip、UA、`detail.had_password`；**不記密碼／雜湊／token**）|
+
+**前端 host 收斂（僅顯示）**
+
+| 功能 | `mail.atwho.org`（admin）| `app.atwho.org`（public）|
+|---|---|---|
+| 收件匣／寄件備份／垃圾桶／撰寫 | ✅ | ✅（側欄只留這三類＋撰寫＋個人設定）|
+| 個人設定（所有 host／角色）| ✅ | ✅ |
+| 地址管理、「我的全部信箱」／地址篩選 | ✅（owner）| ❌ 完全隱藏（即使 owner）|
+| 邀請碼／訪客管理／App Clients | ✅（owner）| ❌ 完全隱藏 |
+| 頭像標籤 | owner =「管理員」| owner =「個人帳號」|
+| 別名管理 | 併入「個人設定」入口 | 併入「個人設定」入口 |
+
+- 頭像選單第一項為 **個人設定**（所有 host／角色）；舊的「帳號設定（變更密碼）」與
+  「別名管理」獨立入口已移除。
+- `AccountSettings.tsx` 顯示：AtWhoMail ID（`users.username`）、信箱地址（可複製）、
+  Google Email（`contact_email`；未綁定顯示「尚未綁定 Google」）、登入方式、
+  變更／設定密碼、別名入口（說明「別名需自行建立，系統不會自動分配」）、
+  visitor 的今日已寄／上限（owner 顯示不適用）。
+- hostname 只影響 UI；權限仍由後端 session 判定（N3）。
+
+**測試**：T173–T180（`packages/api/test/account-settings.spec.ts`、`web/test/accountSettings.dom.spec.tsx`；
+T180 既有 T1–T172 零回歸）。
+
+**部署順序（docs/11 §2-24）**：API → 前端（無 migration）。
+**回退**：前端回上一版即恢復舊選單；API 回上一版即移除 `/api/account/*`（不影響既有端點）。
+
 ## 3. 通用原則
 
 | 原則 | 說明 |

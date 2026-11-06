@@ -1,6 +1,16 @@
 import { useState, type FormEvent } from "react";
 import type { Session } from "../api/types";
-import { IconApps, IconAt, IconCompose, IconKey, IconLogout, IconMail, IconMenu, IconSearch, IconTicket, IconUsers } from "./icons";
+import {
+  IconApps,
+  IconCompose,
+  IconLogout,
+  IconMail,
+  IconMenu,
+  IconSearch,
+  IconSettings,
+  IconTicket,
+  IconUsers,
+} from "./icons";
 
 interface Props {
   session: Session;
@@ -8,21 +18,20 @@ interface Props {
   onSearchInput: (value: string) => void;
   onSubmitSearch: () => void;
   onCompose: () => void;
+  /** D29：個人設定（所有角色、所有 host 都有；選單第一項） */
+  onOpenSettings: () => void;
+  /** 地址管理：僅 `mail.`／localhost 的 owner 顯示（D29 host 收斂） */
   onOpenAddresses: () => void;
-  /** D25：別名管理（owner 與 mailbox 都可用） */
-  onOpenAliases: () => void;
-  onChangePassword: () => void;
-  /** D7：owner 的帳號設定（自行變更密碼） */
-  onOpenAccountSettings: () => void;
-  /** D4：邀請碼管理 */
+  /** D4：邀請碼管理（僅管理主控台） */
   onOpenInvites: () => void;
-  /** D5：訪客管理（清單／停權／配額） */
+  /** D5：訪客管理（清單／停權／配額；僅管理主控台） */
   onOpenVisitors: () => void;
-  /** D26：App Clients（第三方 App 登入整合） */
+  /** D26：App Clients（第三方 App 登入整合；僅管理主控台） */
   onOpenApps: () => void;
   /**
-   * 管理主控台（帳號設定／邀請碼／訪客管理）的顯示開關
-   * （`mail.`／localhost 顯示；`app.` 不顯示 —— 僅 UI 收斂，權限仍由後端判定）
+   * 管理功能（地址管理／邀請碼／訪客／App Clients）的顯示開關。
+   * `mail.`／localhost 為 true；`app.atwho.org`（public）為 false。
+   * ⚠️ 僅 UI 收斂，權限仍由後端依 session scope 判定（N3）。
    */
   showAdminConsole: boolean;
   onLogout: () => void;
@@ -31,16 +40,25 @@ interface Props {
   composeBlockedReason?: string | null;
 }
 
+/**
+ * 頂部列＋頭像選單（D29，docs/29 §3）。
+ *
+ * 選單順序：
+ * 1. **個人設定**（所有 host／角色）
+ * 2. 撰寫新信
+ * 3. 管理功能（地址管理／邀請碼／訪客／App Clients）—— 僅 `mail.` 且 owner
+ * 4. 登出
+ *
+ * ⚠️ `app.atwho.org` 即使是 owner 也不顯示任何管理功能，頭像標籤改為「個人帳號」。
+ */
 export function Header({
   session,
   searchInput,
   onSearchInput,
   onSubmitSearch,
   onCompose,
+  onOpenSettings,
   onOpenAddresses,
-  onOpenAliases,
-  onChangePassword,
-  onOpenAccountSettings,
   onOpenInvites,
   onOpenVisitors,
   onOpenApps,
@@ -51,6 +69,9 @@ export function Header({
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const identity = session.kind === "mailbox" ? session.email : session.username;
+  const adminMode = session.kind === "owner" && showAdminConsole;
+  const roleLabel =
+    session.kind === "owner" ? (adminMode ? "管理員" : "個人帳號") : "信箱帳號";
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -105,15 +126,25 @@ export function Header({
           onToggle={(e) => setMenuOpen((e.target as HTMLDetailsElement).open)}
         >
           <summary title={identity}>
-            <span className={`avatar ${session.kind === "owner" ? "avatar-owner" : ""}`}>
+            <span className={`avatar ${adminMode ? "avatar-owner" : ""}`}>
               {identity.charAt(0).toUpperCase()}
             </span>
           </summary>
           <div className="menu-pop">
             <div className="menu-identity">
               <strong>{identity}</strong>
-              <span>{session.kind === "owner" ? "管理員" : "信箱帳號"}</span>
+              <span>{roleLabel}</span>
             </div>
+            {/* D29：選單第一項 —— 所有 host／角色都有 */}
+            <button
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                onOpenSettings();
+              }}
+            >
+              <IconSettings size={16} /> 個人設定
+            </button>
             <button
               type="button"
               disabled={composeBlockedReason !== null}
@@ -125,29 +156,19 @@ export function Header({
             >
               <IconCompose size={16} /> 撰寫新信
             </button>
-            {session.kind === "owner" && (
-              <button
-                type="button"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onOpenAddresses();
-                }}
-              >
-                <IconUsers size={16} /> 地址管理
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                onOpenAliases();
-              }}
-            >
-              <IconAt size={16} /> 別名管理
-            </button>
-            {/* D4／D5／D7：管理主控台（僅 mail.／localhost 顯示；app. 不顯示） */}
-            {showAdminConsole && (
+            {/* D29：管理功能 —— 僅 mail.／localhost 的 owner（app. 完全隱藏） */}
+            {adminMode && (
               <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onOpenAddresses();
+                  }}
+                >
+                  <IconUsers size={16} /> 地址管理
+                </button>
+                <div className="menu-section">管理主控台</div>
                 <button
                   type="button"
                   onClick={() => {
@@ -175,27 +196,7 @@ export function Header({
                 >
                   <IconApps size={16} /> 應用程式（App Clients）
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onOpenAccountSettings();
-                  }}
-                >
-                  <IconKey size={16} /> 帳號設定（變更密碼）
-                </button>
               </>
-            )}
-            {session.kind === "mailbox" && (
-              <button
-                type="button"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onChangePassword();
-                }}
-              >
-                <IconUsers size={16} /> 變更密碼
-              </button>
             )}
             <button
               type="button"

@@ -2116,6 +2116,175 @@ app.get("/api/auth/me", requireSession, async (c) => {
   });
 });
 
+// ══════════════════════ D29：個人設定（docs/29）══════════════════════
+
+interface AccountSettingsUserRow {
+  id: number;
+  username: string;
+  role: string;
+  provider: string | null;
+  contact_email: string | null;
+  password_hash: string | null;
+}
+
+interface AccountSettingsAddressRow {
+  id: number;
+  email: string;
+  status: string;
+  daily_send_quota: number;
+  sent_today: number;
+}
+
+/** 目前 session 對應的 `users.id`（owner → token sub；mailbox → 地址所屬使用者） */
+async function resolveAccountUserId(env: Env, scope: Scope): Promise<number | null> {
+  if (scope.kind === "owner" || scope.kind === "app") return scope.userId;
+  const row = await env.DB.prepare("SELECT user_id FROM email_addresses WHERE id = ?1")
+    .bind(scope.addressId)
+    .first<{ user_id: number }>();
+  return row ? Number(row.user_id) : null;
+}
+
+/**
+ * GET /api/account/settings — 個人設定（D29，docs/29 §2.3）
+ *
+ * 只回**目前 session 自己**的資料：
+ * - owner：`users` 本人 ＋ 名下未刪除的全部地址
+ * - mailbox：地址所屬使用者 ＋ **該一個地址**（不列出同帳號的其他地址）
+ *
+ * ⚠️ 不得回傳 `password_hash`；`has_password` 只回 0／1。
+ * ⚠️ `scope='app'`（第三方 App token）→ 403 `SCOPE_NOT_ALLOWED`（與信件類端點一致）。
+ */
+app.get("/api/account/settings", requireSession, async (c) => {
+  const scope = c.get("scope");
+  if (scope.kind === "app") return err(c, "SCOPE_NOT_ALLOWED", "app token 不可使用此端點", 403);
+
+  const userId = await resolveAccountUserId(c.env, scope);
+  if (userId === null) return err(c, "NOT_FOUND", "user not found", 404);
+
+  const user = await c.env.DB.prepare(
+    `SELECT id, username, role, provider, contact_email, password_hash
+     FROM users WHERE id = ?1`
+  )
+    .bind(userId)
+    .first<AccountSettingsUserRow>();
+  if (!user) return err(c, "NOT_FOUND", "user not found", 404);
+
+  let addresses: AccountSettingsAddressRow[];
+  if (scope.kind === "owner") {
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, email, status, daily_send_quota, sent_today
+       FROM email_addresses
+       WHERE user_id = ?1 AND deleted_at IS NULL
+       ORDER BY id`
+    )
+      .bind(userId)
+      .all<AccountSettingsAddressRow>();
+    addresses = results;
+  } else {
+    const row = await c.env.DB.prepare(
+      `SELECT id, email, status, daily_send_quota, sent_today
+       FROM email_addresses
+       WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`
+    )
+      .bind(scope.addressId, userId)
+      .first<AccountSettingsAddressRow>();
+    addresses = row ? [row] : [];
+  }
+
+  return c.json({
+    user_id: Number(user.id),
+    username: user.username,
+    role: user.role,
+    provider: user.provider ?? "local",
+    contact_email: user.contact_email ?? null,
+    has_password: hasPassword(user.password_hash) ? 1 : 0,
+    addresses,
+  });
+});
+
+/**
+ * POST /api/account/password — 變更／設定自己的密碼（D29，docs/29 §2.3）
+ *
+ * - 已有密碼 → 必須提供並驗證 `current_password`（錯誤 → 401 `INVALID_CURRENT_PASSWORD`）
+ * - 無密碼（Google OAuth 帳號）→ 免 `current_password`＝「設定密碼」
+ * - 成功後更新 `password_changed_at`（users ＋ 名下所有地址）→ **所有舊 JWT 立即失效**
+ * - visitor 帳號同步更新名下地址的 `password_hash`，讓「信箱＋密碼」登入立刻可用；
+ *   owner 的地址密碼由地址管理獨立維護 → **不改動**
+ * - 稽核 `password_changed`（不記密碼／雜湊）
+ */
+app.post("/api/account/password", requireSession, async (c) => {
+  const scope = c.get("scope");
+  if (scope.kind === "app") return err(c, "SCOPE_NOT_ALLOWED", "app token 不可使用此端點", 403);
+
+  const userId = await resolveAccountUserId(c.env, scope);
+  if (userId === null) return err(c, "NOT_FOUND", "user not found", 404);
+
+  const user = await c.env.DB.prepare(
+    "SELECT id, username, role, password_hash FROM users WHERE id = ?1"
+  )
+    .bind(userId)
+    .first<{ id: number; username: string; role: string; password_hash: string | null }>();
+  if (!user) return err(c, "NOT_FOUND", "user not found", 404);
+
+  const body = await c.req
+    .json<{ current_password?: unknown; new_password?: unknown }>()
+    .catch(() => null);
+  if (typeof body?.new_password !== "string") {
+    return err(c, "INVALID_BODY", "new_password 必填", 400);
+  }
+
+  const currentHash = user.password_hash;
+  const hadPassword = hasPassword(currentHash);
+  if (hasPassword(currentHash)) {
+    if (typeof body.current_password !== "string" || body.current_password === "") {
+      return err(c, "INVALID_BODY", "已有密碼的帳號必須提供 current_password", 400);
+    }
+    // 沿用既有鎖定機制：防止持有一個有效 token 的人無限猜目前密碼
+    const key = `account:${user.id}`;
+    const lockedUntil = await checkLocked(c.env.DB, key);
+    if (lockedUntil) {
+      return err(c, "LOCKED", `嘗試次數過多，請於 ${new Date(lockedUntil).toISOString()} 後再試`, 429);
+    }
+    const ok = await verifyPassword(body.current_password, currentHash);
+    if (!ok) {
+      await recordFailure(c.env.DB, key);
+      return err(c, "INVALID_CURRENT_PASSWORD", "目前密碼錯誤", 401);
+    }
+    await clearFailures(c.env.DB, key);
+  }
+
+  const pwErr = validatePasswordPolicy(body.new_password);
+  if (pwErr) return err(c, "WEAK_PASSWORD", pwErr, 422);
+
+  const hash = await hashPassword(body.new_password);
+  const ts = now();
+  const userUpdate = c.env.DB.prepare(
+    "UPDATE users SET password_hash = ?1, password_changed_at = ?2, updated_at = ?2 WHERE id = ?3"
+  ).bind(hash, ts, user.id);
+  // owner：地址密碼由「地址管理」各自維護，只更新 pca 撤銷既有 mailbox session。
+  // visitor：地址就是本人的登入信箱 → 一併換成新密碼（OAuth 帳號即「設定密碼」）。
+  const addressUpdate =
+    user.role === "owner"
+      ? c.env.DB.prepare(
+          "UPDATE email_addresses SET password_changed_at = ?1, updated_at = ?1 WHERE user_id = ?2"
+        ).bind(ts, user.id)
+      : c.env.DB.prepare(
+          "UPDATE email_addresses SET password_hash = ?1, password_changed_at = ?2, updated_at = ?2 WHERE user_id = ?3"
+        ).bind(hash, ts, user.id);
+  await c.env.DB.batch([userUpdate, addressUpdate]);
+
+  auditAsync(c, {
+    event: "password_changed",
+    userId: user.id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    // N7：只記是否為首次設定；不記密碼、雜湊或 token
+    detail: { had_password: hadPassword },
+  });
+
+  return c.json({ ok: true });
+});
+
 // ══════════════════════ Phase 1：邀請碼（owner）══════════════════════
 /** POST /api/invites — 產生邀請碼（owner 或 x-admin-token）；碼為 crypto 隨機、不可預測 */
 app.post("/api/invites", requireOwner, async (c) => {

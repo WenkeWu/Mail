@@ -176,6 +176,33 @@ export interface IdCheckResult {
   suggestions?: string[];
 }
 
+// ── D29：個人設定（docs/29）──
+
+/** `GET /api/account/settings` 的地址（只含目前 session 可見的地址） */
+export interface AccountSettingsAddress {
+  id: number;
+  email: string;
+  status: "active" | "disabled" | "deleted";
+  daily_send_quota: number;
+  sent_today: number;
+}
+
+/**
+ * `GET /api/account/settings` 的回應（**只含自己的資料**）。
+ * `has_password` 以 0／1 表示（不提供 `password_hash`）。
+ */
+export interface AccountSettingsResponse {
+  user_id: number;
+  username: string;
+  role: "owner" | "visitor";
+  /** `local`＝本機密碼；`google`＝Google OAuth */
+  provider: "local" | "google";
+  /** Google 註冊／綁定的 Email；未綁定為 null */
+  contact_email: string | null;
+  has_password: 0 | 1;
+  addresses: AccountSettingsAddress[];
+}
+
 /** 登入 session（Model C：owner 或單一信箱） */
 export type Session =
   | { kind: "owner"; token: string; userId: number; username: string }
