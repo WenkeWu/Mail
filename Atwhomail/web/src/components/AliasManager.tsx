@@ -18,6 +18,11 @@ interface Props {
   onToast: (message: string, kind?: "info" | "error") => void;
   /** 建立／停用／刪除後通知上層重新載入別名快取（回覆時的 From 判斷會用到） */
   onChanged?: () => void;
+  /**
+   * D29：嵌在「個人設置」頁內（隱藏自己的頁首／返回鍵）。
+   * 功能完全相同，只是不再佔一個獨立頁面。
+   */
+  embedded?: boolean;
 }
 
 /** 可作為別名目標的地址（owner：名下 active 地址；mailbox：自己的地址） */
@@ -35,7 +40,7 @@ const EMPTY_HINT = "建立別名後，把別名給對方，對方就看不到你
  * - 建立時只需輸入名字（3–12 字母）與目標地址；流水號由後端原子分配
  * - 停用／刪除皆為**軟停用**（不刪資料列；停用後寄到別名的信回 550）
  */
-export function AliasManager({ session, onBack, onToast, onChanged }: Props) {
+export function AliasManager({ session, onBack, onToast, onChanged, embedded = false }: Props) {
   const [aliases, setAliases] = useState<EmailAlias[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [targets, setTargets] = useState<AliasTarget[]>([]);
@@ -170,13 +175,15 @@ export function AliasManager({ session, onBack, onToast, onChanged }: Props) {
   );
 
   return (
-    <section className="address-page">
-      <div className="page-head">
-        <button type="button" className="icon-btn" onClick={onBack} aria-label="返回">
-          <IconBack size={20} />
-        </button>
-        <h1>別名管理</h1>
-      </div>
+    <section className={embedded ? "address-page alias-embedded" : "address-page"}>
+      {!embedded && (
+        <div className="page-head">
+          <button type="button" className="icon-btn" onClick={onBack} aria-label="返回">
+            <IconBack size={20} />
+          </button>
+          <h1>別名管理</h1>
+        </div>
+      )}
 
       <p className="muted small">
         別名讓你對外收信時不暴露真實地址；<strong>只有回覆外部寄件者</strong>時會自動以別名寄出。

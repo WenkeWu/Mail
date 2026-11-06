@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { changeAccountPassword, getAccountSettings } from "../api/endpoints";
-import type { AccountSettingsResponse } from "../api/types";
+import type { AccountSettingsResponse, Session } from "../api/types";
+import { AliasManager } from "./AliasManager";
 import { IconAt, IconBack, IconKey, IconUsers } from "./icons";
 
 /** 錯誤碼 → 給人看的說明（其餘沿用 server 訊息，例如 LOCKED 會帶解鎖時間） */
@@ -23,23 +24,25 @@ const ADDRESS_STATUS_LABEL: Record<string, string> = {
 };
 
 interface Props {
+  session: Session;
   onBack: () => void;
   onLogout: () => void;
   onToast: (message: string, kind?: "info" | "error") => void;
-  /** 別名管理（既有 AliasManager；設定頁只保留入口，不再有獨立側欄／選單項） */
-  onManageAliases: () => void;
+  /** D29：別名建立／變更後通知上層重載別名快取（回覆時的 From 判斷會用到） */
+  onAliasChanged?: () => void;
 }
 
 /**
- * 個人設定（D29，docs/29 §2.2）
+ * 個人設置（D29，docs/29 §2.2；owner 2026-11-05 要求把「別名管理」併入本頁）
  *
  * 顯示自己的 AtWhoMail ID／地址／Google Email／登入方式／配額，
- * 並提供「變更密碼」（已有密碼）或「設定密碼」（Google OAuth 帳號）。
+ * 提供「變更密碼」（已有密碼）或「設定密碼」（Google OAuth 帳號），
+ * 並**內嵌完整的別名管理**（不再有獨立的「別名管理」入口）。
  *
  * ⚠️ 成功後 `password_changed_at` 會更新 → **所有裝置的既有登入立即失效**（預期的安全行為），
  *    因此完成畫面直接引導重新登入。
  */
-export function AccountSettings({ onBack, onLogout, onToast, onManageAliases }: Props) {
+export function AccountSettings({ session, onBack, onLogout, onToast, onAliasChanged }: Props) {
   const [data, setData] = useState<AccountSettingsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -115,7 +118,7 @@ export function AccountSettings({ onBack, onLogout, onToast, onManageAliases }: 
         <button type="button" className="icon-btn" onClick={onBack} aria-label="返回">
           <IconBack size={20} />
         </button>
-        <h1>個人設定</h1>
+        <h1>個人設置</h1>
       </div>
 
       {done ? (
@@ -238,9 +241,13 @@ export function AccountSettings({ onBack, onLogout, onToast, onManageAliases }: 
               <IconAt size={18} /> 匿名（別名）
             </h2>
             <p className="muted small">別名需自行建立，系統不會自動分配。</p>
-            <button type="button" className="btn-secondary" onClick={onManageAliases}>
-              管理別名
-            </button>
+            <AliasManager
+              embedded
+              session={session}
+              onBack={() => {}}
+              onToast={onToast}
+              onChanged={onAliasChanged}
+            />
           </section>
 
           <section className="create-address settings-card">

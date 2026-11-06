@@ -693,10 +693,11 @@ export function AppShell({
         />
       ) : page === "settings" ? (
         <AccountSettings
+          session={session}
           onBack={() => setPage("mail")}
           onLogout={onLogout}
           onToast={showToast}
-          onManageAliases={() => setPage("aliases")}
+          onAliasChanged={() => setAliasRefreshKey((k) => k + 1)}
         />
       ) : page === "aliases" ? (
         <AliasManager

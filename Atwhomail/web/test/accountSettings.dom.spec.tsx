@@ -1,12 +1,12 @@
 /**
- * accountSettings.dom.spec.tsx — D29：host 收斂 ＋ 個人設定（docs/29 §4 T173–T176、T179）
+ * accountSettings.dom.spec.tsx — D29：host 收斂 ＋ 個人設置（docs/29 §4 T173–T176、T179）
  *
  * 在 jsdom 中**真的渲染** Header／FolderSidebar／AccountSettings：
  * - T173：`app.atwho.org` ＋ owner → 看不到地址管理／我的全部信箱／邀請碼／訪客／App Clients／「管理員」
  * - T174：`mail.atwho.org` ＋ owner → 全部看得到
  * - T175：`app.atwho.org` ＋ visitor → 只看得到自己的信箱（側欄只有收件匣／寄件備份／垃圾桶）
- * - T176：頭像選單第一項為「個人設定」，所有 host／角色都有
- * - T179：個人設定頁顯示 ID／地址／Google Email／別名入口；OAuth 帳號顯示「尚未綁定 Google」與「設定密碼」
+ * - T176：頭像選單第一項為「個人設置」，所有 host／角色都有
+ * - T179：個人設置頁顯示 ID／地址／Google Email／別名入口；OAuth 帳號顯示「尚未綁定 Google」與「設定密碼」
  *
  * ⚠️ hostname 只影響**顯示**（docs/16 N3）；權限仍由後端判定。
  */
@@ -89,13 +89,13 @@ describe("T173／T174：host 收斂（owner）", () => {
     expect(screen.queryByText("管理員")).toBeNull();
     expect(screen.getByText("個人帳號")).toBeTruthy();
 
-    // 收斂後側欄只有：收件匣／寄件備份／垃圾桶（＋撰寫按鈕＋個人設定）
+    // 收斂後側欄只有：收件匣／寄件備份／垃圾桶（＋撰寫按鈕＋個人設置）
     expect(screen.getByText("收件匣")).toBeTruthy();
     expect(screen.getByText("寄件備份")).toBeTruthy();
     expect(screen.getByText("垃圾桶")).toBeTruthy();
     expect(screen.queryByText("封存")).toBeNull();
     expect(screen.queryByText("垃圾郵件")).toBeNull();
-    expect(screen.getAllByText("個人設定").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("個人設置").length).toBeGreaterThan(0);
 
     // 選單中也不應出現任何管理按鈕
     const labels = menuButtons(container).map((b) => b.textContent ?? "");
@@ -131,7 +131,7 @@ describe("T175：app＋visitor 只看得到自己的信箱", () => {
     expect(screen.queryAllByText("訪客管理")).toHaveLength(0);
     expect(screen.queryAllByText(/App Clients/)).toHaveLength(0);
 
-    // 側欄只剩收件匣／寄件備份／垃圾桶（＋撰寫／個人設定）
+    // 側欄只剩收件匣／寄件備份／垃圾桶（＋撰寫／個人設置）
     expect(screen.getByText("收件匣")).toBeTruthy();
     expect(screen.getByText("寄件備份")).toBeTruthy();
     expect(screen.getByText("垃圾桶")).toBeTruthy();
@@ -140,7 +140,7 @@ describe("T175：app＋visitor 只看得到自己的信箱", () => {
   });
 });
 
-describe("T176：頭像選單第一項是「個人設定」", () => {
+describe("T176：頭像選單第一項是「個人設置」", () => {
   const cases: Array<[string, Session]> = [
     [APP_HOST, OWNER],
     [MAIL_HOST, OWNER],
@@ -152,17 +152,20 @@ describe("T176：頭像選單第一項是「個人設定」", () => {
     const { container } = renderShell(host, session);
     const buttons = menuButtons(container);
     expect(buttons.length).toBeGreaterThan(0);
-    expect(buttons[0]!.textContent).toContain("個人設定");
+    expect(buttons[0]!.textContent).toContain("個人設置");
   });
 });
 
-// ── T179：個人設定頁內容 ──
+// ── T179：個人設置頁內容 ──
 
 function settingsFetch(body: AccountSettingsResponse, onCall?: (call: FetchCall) => void) {
   return installFetch((call) => {
     onCall?.(call);
     if (call.url === "/api/account/settings" && call.method === "GET") return { body };
     if (call.url === "/api/account/password" && call.method === "POST") return { body: { ok: true } } as FakeReply;
+    // D29：別名管理已內嵌在個人設置頁 → 需要別名與地址清單
+    if (call.url === "/api/email-aliases" && call.method === "GET") return { body: { aliases: [] } } as FakeReply;
+    if (call.url === "/api/email-addresses" && call.method === "GET") return { body: { addresses: [] } } as FakeReply;
     throw new Error(`未預期的請求：${call.method} ${call.url}`);
   });
 }
@@ -182,15 +185,16 @@ const VISITOR_SETTINGS: AccountSettingsResponse = {
 function renderSettings() {
   render(
     <AccountSettings
+      session={{ kind: "owner", token: "t", userId: 2, username: "itag" }}
       onBack={vi.fn()}
       onLogout={vi.fn()}
       onToast={vi.fn()}
-      onManageAliases={vi.fn()}
+      onAliasChanged={vi.fn()}
     />
   );
 }
 
-describe("T179：個人設定頁", () => {
+describe("T179：個人設置頁", () => {
   it("顯示 AtWhoMail ID／地址／Google Email／角色／登入方式／配額／別名入口", async () => {
     settingsFetch(VISITOR_SETTINGS);
     renderSettings();
@@ -202,9 +206,11 @@ describe("T179：個人設定頁", () => {
     expect(screen.getByText("已設定")).toBeTruthy();
     expect(screen.getByText(/今日已寄 2 \/ 5/)).toBeTruthy();
 
-    // 別名入口＋明確說明（不自動分配）
-    expect(screen.getByRole("button", { name: "管理別名" })).toBeTruthy();
+    // D29：別名管理內嵌（不再有「管理別名」按鈕）＋明確說明不自動分配
+    expect(await screen.findByRole("button", { name: "建立" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /建立別名/ })).toBeTruthy();
     expect(screen.getByText("別名需自行建立，系統不會自動分配。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "管理別名" })).toBeNull();
 
     // 有密碼 → 變更密碼表單（需要目前密碼）
     expect(screen.getByText("變更密碼")).toBeTruthy();

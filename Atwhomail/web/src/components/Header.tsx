@@ -18,7 +18,7 @@ interface Props {
   onSearchInput: (value: string) => void;
   onSubmitSearch: () => void;
   onCompose: () => void;
-  /** D29：個人設定（所有角色、所有 host 都有；選單第一項） */
+  /** D29：個人設置（所有角色、所有 host 都有；選單第一項） */
   onOpenSettings: () => void;
   /** 地址管理：僅 `mail.`／localhost 的 owner 顯示（D29 host 收斂） */
   onOpenAddresses: () => void;
@@ -44,7 +44,7 @@ interface Props {
  * 頂部列＋頭像選單（D29，docs/29 §3）。
  *
  * 選單順序：
- * 1. **個人設定**（所有 host／角色）
+ * 1. **個人設置**（所有 host／角色）
  * 2. 撰寫新信
  * 3. 管理功能（地址管理／邀請碼／訪客／App Clients）—— 僅 `mail.` 且 owner
  * 4. 登出
@@ -143,7 +143,7 @@ export function Header({
                 onOpenSettings();
               }}
             >
-              <IconSettings size={16} /> 個人設定
+              <IconSettings size={16} /> 個人設置
             </button>
             <button
               type="button"

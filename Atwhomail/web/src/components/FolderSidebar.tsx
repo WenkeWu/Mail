@@ -12,7 +12,7 @@ import {
   IconUsers,
 } from "./icons";
 
-/** 主視圖（信件／地址管理／別名／個人設定／管理主控台頁面） */
+/** 主視圖（信件／地址管理／別名／個人設置／管理主控台頁面） */
 export type AppPage = "mail" | "addresses" | "aliases" | "settings" | "invites" | "visitors" | "apps";
 
 interface Props {
@@ -26,7 +26,7 @@ interface Props {
   onSelectFolder: (folder: Folder) => void;
   onSelectAddress: (id: number | null) => void;
   onOpenAddresses: () => void;
-  /** D29：個人設定（所有角色、所有 host） */
+  /** D29：個人設置（所有角色、所有 host） */
   onOpenSettings: () => void;
   /** D4：邀請碼管理 */
   onOpenInvites: () => void;
@@ -41,7 +41,7 @@ interface Props {
   showAdminConsole: boolean;
   /**
    * D29：`app.atwho.org`（public）模式 —— 側欄只留
-   * 收件匣／寄件備份／垃圾桶／撰寫／個人設定；不顯示地址篩選、「我的全部信箱」與任何管理功能。
+   * 收件匣／寄件備份／垃圾桶／撰寫／個人設置；不顯示地址篩選、「我的全部信箱」與任何管理功能。
    */
   publicMode: boolean;
   onCompose: () => void;
@@ -127,7 +127,7 @@ export function FolderSidebar({
         })}
       </ul>
 
-      {/* D29：別名管理已併入「個人設定」，不再有獨立入口 */}
+      {/* D29：別名管理已併入「個人設置」，不再有獨立入口 */}
       {session.kind === "owner" && !publicMode && (
         <>
           <div className="sidebar-section">我的信箱</div>
@@ -209,7 +209,7 @@ export function FolderSidebar({
         </>
       )}
 
-      {/* D29：個人設定（所有角色、所有 host；選單第一項的側欄對應入口） */}
+      {/* D29：個人設置（所有角色、所有 host；選單第一項的側欄對應入口） */}
       <ul className="folder-list sidebar-settings">
         <li>
           <button
@@ -218,7 +218,7 @@ export function FolderSidebar({
             onClick={onOpenSettings}
           >
             <IconSettings size={18} />
-            <span className="folder-label">個人設定</span>
+            <span className="folder-label">個人設置</span>
           </button>
         </li>
       </ul>

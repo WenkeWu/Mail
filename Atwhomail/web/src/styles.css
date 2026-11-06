@@ -2435,3 +2435,12 @@ select {
 .settings-quota {
   margin: 0 0 4px;
 }
+
+/* D29：別名管理內嵌在「個人設置」頁（不佔獨立頁面） */
+.alias-embedded {
+  padding: 0;
+  max-width: none;
+}
+.alias-embedded .page-head {
+  display: none;
+}
