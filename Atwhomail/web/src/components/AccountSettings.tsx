@@ -9,7 +9,7 @@ import { IconAt, IconBack, IconKey, IconUsers } from "./icons";
 const ERROR_HINTS: Record<string, string> = {
   INVALID_CURRENT_PASSWORD: "目前密碼錯誤，請重新輸入",
   WEAK_PASSWORD: "新密碼不符規則：至少 8 個字元、最多 128",
-  SCOPE_NOT_ALLOWED: "此登入方式不可變更密碼",
+  SCOPE_NOT_ALLOWED: "此登入憑證不可變更密碼",
 };
 
 const ROLE_LABEL: Record<string, string> = {
@@ -35,7 +35,7 @@ interface Props {
 /**
  * 個人設置（D29，docs/29 §2.2；owner 2026-11-05 要求把「別名管理」併入本頁）
  *
- * 顯示自己的 AtWhoMail ID／地址／Google Email／登入方式／配額，
+ * 顯示自己的 AtWhoMail ID／角色／**備用電子郵件（用途：找回密碼）**／信箱地址／配額，
  * 提供「變更密碼」（已有密碼）或「設定密碼」（Google OAuth 帳號），
  * 並**內嵌完整的別名管理**（不再有獨立的「別名管理」入口）。
  *
@@ -184,18 +184,17 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
 
           <section className="create-address settings-card">
             <h2>
-              <IconKey size={18} /> 登入方式
+              <IconAt size={18} /> 備用電子郵件
             </h2>
             <dl className="settings-list">
               <div>
-                <dt>Google 帳號</dt>
-                <dd>{data.contact_email ?? "尚未綁定 Google"}</dd>
-              </div>
-              <div>
-                <dt>本機密碼</dt>
-                <dd>{data.has_password === 1 ? "已設定" : "未設定（OAuth 帳號）"}</dd>
+                <dt>備用電子郵件</dt>
+                <dd className="mono">
+                  {data.contact_email ? data.contact_email : <span className="muted">（未提供）</span>}
+                </dd>
               </div>
             </dl>
+            <p className="muted small">用於「忘記密碼」時寄送重設連結。</p>
           </section>
 
           <section className="create-address settings-card">

@@ -203,7 +203,11 @@ describe("T179：個人設置頁", () => {
     expect(screen.getAllByText("itag@atwho.org").length).toBeGreaterThan(0);
     expect(screen.getByText("ulhome@gmail.com")).toBeTruthy();
     expect(screen.getByText("一般使用者")).toBeTruthy();
-    expect(screen.getByText("已設定")).toBeTruthy();
+    // owner 2026-11-05：「登入方式」改名為「備用電子郵件」（用途：找回密碼）
+    expect(screen.getAllByText("備用電子郵件").length).toBeGreaterThan(0);
+    expect(screen.getByText("用於「忘記密碼」時寄送重設連結。")).toBeTruthy();
+    expect(screen.queryByText("登入方式")).toBeNull();
+    expect(screen.queryByText("Google 帳號")).toBeNull();
     expect(screen.getByText(/今日已寄 2 \/ 5/)).toBeTruthy();
 
     // D29：別名管理內嵌（不再有「管理別名」按鈕）＋明確說明不自動分配
@@ -230,8 +234,10 @@ describe("T179：個人設置頁", () => {
     });
     renderSettings();
 
-    expect(await screen.findByText("尚未綁定 Google")).toBeTruthy();
-    expect(screen.getByText("未設定（OAuth 帳號）")).toBeTruthy();
+    expect(await screen.findByText("（未提供）")).toBeTruthy();
+    expect(screen.queryByText("尚未綁定 Google")).toBeNull();
+    expect(screen.queryByText("登入方式")).toBeNull();
+    expect(screen.getAllByText("備用電子郵件").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "設定密碼" })).toBeTruthy();
     expect(screen.queryByPlaceholderText("目前的密碼")).toBeNull();
   });
