@@ -6,7 +6,7 @@
 
 ---
 
-## 零、實作現況與文件地圖（2026-11-04 補寫）
+## 零、實作現況與文件地圖（2026-11-04 補寫；**2026-11-05 更新至 D29**）
 
 > 原 PRD/SRS 撰寫於 2026-09。實作過程中的**決策變更與新增功能**集中記錄在本節，避免與 §一–§二十 原文衝突（原文保留作歷史依據）。
 
@@ -26,9 +26,13 @@
 | D19-1~6 | 刪除語意修正（軟刪除**不設** `deleted_at`）、複選批次、清空垃圾桶、單封還原／永久刪除、每列 checkbox、D1 參數分塊（90）、永久刪除前先刪 form 子表 | 2026-11-03~04 | docs/19 |
 | **D21** | **註冊改 Email 驗證碼**（取消邀請碼；`REGISTRATION_MODE=invite/email_verify/closed`）| 2026-11-04 | docs/21 |
 | **D22** | **可分享註冊／邀請連結**（`?register=1`、`?invite=CODE`、管理端複製按鈕）| 2026-11-04 | docs/22 |
-| D23 | Turnstile 防機器人（**待 owner 提供金鑰**）| 待做 | docs/23 |
-| D24 | 別名 ＋ 反向別名（**評估完成，待實作**；**僅對外匿名**）| 待做 | docs/24 |
-| D20 | 註冊 ID 撞二級網域偵測 ＋ 建議名稱（**設計待審**）| 待做 | docs/20 |
+| D20 | **註冊／配發 ID 撞二級網域偵測**（DoH 查 NS、25+1 TLD、fail-open、快取、建議名稱）| 2026-11-05 | docs/20 |
+| D23 | **Turnstile 防機器人**（widget `atwho-entry`、`siteverify`、未設金鑰自動跳過）| 2026-11-05 | docs/23 |
+| D24 | 別名＋反向別名**評估**（結論：**僅對外匿名**；反向別名＝選配不實作）| 2026-11-05 | docs/24 |
+| D25 | **別名（Alias）Phase 1**：使用者自訂 3–12 字母＋系統加 3 碼流水號、收信投遞、回外信自動用別名、停用回 550 | 2026-11-05 | docs/25 |
+| D26 | **跨 App 共用登入**：`auth.atwho.org` 薄代理 ＋ `app_clients`／`auth_codes` ＋ code 交換 ＋ `/api/auth/me` | 2026-11-05 | docs/26 / docs/27 |
+| D27 | **Google OAuth 登入**（免註冊、免驗證碼、自動配發地址、配額 5/日）＋ **忘記／重設密碼** | 2026-11-05 | docs/28 |
+| D29 | **`app.atwho.org` 收斂管理功能**（依網域隱藏地址管理／我的全部信箱／管理主控台）＋ **「個人設置」頁**（ID／備用電子郵件／密碼／內嵌別名）| 2026-11-05 | docs/29 |
 
 ### 0.2 與原文不同的決策（原文照留，以本節為準）
 
@@ -44,7 +48,14 @@
 | MTA-STS | 未提 | **enforce**（自建 worker）；TLS-RPT 收件人 `tlsrpt@atwho.org` |
 | DMARC | 未提 | `p=none`（**建議改 `p=quarantine`**，需 owner 於 Dashboard 操作）|
 | 備份 | 5 表 | **13 表**（D17）＋ watchdog 去抖 ＋ 重試退避 |
-| 別名 | 僅 schema 建議 | **表已存在、功能未實作**；設計見 §五 與 docs/24（**僅對外匿名**）|
+| 別名 | 僅 schema 建議 | ✅ **D25 已上線**：使用者自訂 3–12 字母＋系統 3 碼流水號；收信投遞、回外信自動用別名、停用回 550（**僅對外匿名**）|
+| 登入方式 | 僅帳密 | ✅ **四種並存**（Google OAuth／Email 驗證碼註冊／信箱＋密碼／管理員 Access）——見 §二十一 |
+| **備用電子郵件** | 未提 | ✅ `users.contact_email`，用途＝**找回密碼**；個人設置頁顯示（原「登入方式」已改名）|
+| OAuth 首登 | 未提 | ✅ **免驗證碼**（Google 已驗）；**自動建 visitor 帳號＋配發地址**（撞二級網域→加 3 碼）；配額 **5 封/日** |
+| 跨 App 共用登入 | 未提 | ✅ **D26**：`https://auth.atwho.org` 薄代理 ＋ `app_clients`／一次性 code 交換（`scope='app'` 不能碰信件 API）|
+| 網域收斂 | 未提 | ✅ **D29**：`app.`（公開）隱藏地址管理／我的全部信箱／管理主控台；`mail.`（管理）全開 |
+| 個人設置 | 未提 | ✅ **D29**：ID／角色／信箱地址／**備用電子郵件**／密碼／**內嵌別名管理**／配額 |
+| 防機器人 | 未提 | ✅ **D23 Turnstile**（widget `atwho-entry`；未設金鑰自動跳過）|
 
 ### 0.3 文件地圖
 
@@ -57,7 +68,12 @@
 | `docs/17-backup-and-restore.md` | 備份與還原（D17）|
 | `docs/18-interactive-form-mail-design.md` | 互動式表單（P1/P2、D16、D18）|
 | `docs/19-mail-ux-fixes.md` | 信箱 UX（D19-1~D19-6）|
-| `docs/20-id-vs-domain-check.md` | 註冊 ID 撞網域偵測（設計待審）|
+| `docs/20-id-vs-domain-check.md` | 註冊 ID 撞網域偵測（D20 已上線）|
+| `docs/25-alias-phase1.md` | 別名 Phase 1（D25）|
+| `docs/26-cross-app-sso.md` | 跨 App 共用登入評估與定案（D26 方案）|
+| `docs/27-d26-auth-proxy.md` | `auth.atwho.org` 薄代理 ＋ code 交換（D26）|
+| `docs/28-d27-google-oauth.md` | Google OAuth ＋ 忘記密碼（D27）|
+| `docs/29-d29-account-settings.md` | app 站收斂 ＋ 個人設置（D29）|
 | `docs/21-registration-email-verification.md` | 註冊改 Email 驗證碼（D21）|
 | `docs/22-registration-links.md` | 可分享註冊／邀請連結（D22）|
 | `docs/23-turnstile-bot-protection.md` | Turnstile 防機器人（D23）|
@@ -972,3 +988,83 @@ Local Disk = Backup Mail/Object Storage
 這份 prompt 已經把「大量虛擬地址、Cloudflare Catch-all、D1/R2、寄信、Backend 備份、PostgreSQL 災難復原」都固定下來，可以避免 Claude Agent 又把架構帶回 Postfix/Dovecot。
 
 如果要真的開始寫程式，我建議第一輪就用上面最後的「**先只做 Architecture，不直接 Coding**」，確認架構後再讓 Agent 逐 Phase 建專案，會比較不容易失控。
+
+---
+
+## 二十一、帳號與身分（D26–D29，2026-11-05 上線）
+
+> 原文 §一–§二十 沒有這一塊；本節為實作後補寫，**以本節為準**。
+
+### 21.1 四種登入方式（並存）
+
+| 方式 | 入口 | 需要驗證碼 | 首次自動建帳號 | 預設配額 |
+|---|---|---|---|---|
+| **Google OAuth** | `auth.atwho.org/api/auth/oauth/google/start` | ❌ **不需要**（Google 已驗 `email_verified`）| ✅ 建 visitor ＋ **自動配發 1 個地址** | **5 封/日** |
+| **註冊（Email 驗證碼 ✅ ＋ Turnstile）** | `app.atwho.org/?register=1` | ✅ 6 位數、15 分鐘 | ✅ 由使用者指定 ID | 20 封/日（暖機 5/24h）|
+| **信箱／帳密登入** | `POST /api/auth/user-login` | — | — | 依帳號 |
+| **管理員登入** | `mail.atwho.org`（Cloudflare Access ＋ 帳密）| — | — | — |
+
+- 帳密登入的 `identifier` **username 或 備用電子郵件 皆可**（例：`itag` 或 `itag@gmail.com`）✅
+- 純 OAuth 帳號 `password_hash` 為空字串（0001 的 `NOT NULL` 限制）→ 以「未設定密碼」處理，登入回 `400 NO_PASSWORD_SET` ✅
+- OAuth 首次登入的 ID 推導：取 email local part → 只留英文字母 → 截 12 字 → **撞二級網域則加 3 碼流水號**（`ulhome` → `ulhome001`）✅
+
+### 21.2 備用電子郵件（原「登入方式」）
+
+- 欄位：`users.contact_email`（＋ `email_verified`）
+- **用途：忘記密碼時寄送重設連結** ✅
+- OAuth 每次登入會自動比對／更新（變更寫稽核）✅
+- 個人設置頁以「**備用電子郵件**」呈現（**不再顯示「登入方式」或「Google 帳號」字樣**）✅
+
+### 21.3 忘記密碼／重設
+
+| 步驟 | 行為 |
+|---|---|
+| `POST /api/auth/forgot-password` | **一律回 200**（不洩漏帳號是否存在）✅；限流 3 次/小時/email、10 次/小時/IP |
+| 寄信 | 主旨「AtWhoMail 密碼重設」，連結 `https://app.atwho.org/?reset=<token>`，**30 分鐘**有效 |
+| `POST /api/auth/reset-password` | token 一次性（DB 只存 SHA-256(token+JWT_SECRET)）→ 更新密碼 → **更新 `pca` 撤銷所有舊 JWT** → 寄「密碼已變更」通知 |
+
+### 21.4 個人設置頁（`app.` 與 `mail.` 都有）
+
+| 卡片 | 內容 |
+|---|---|
+| 身分 | AtWhoMail ID／角色／信箱地址（可複製）|
+| **備用電子郵件** | `contact_email`（用途：找回密碼）✅ |
+| 密碼 | 變更密碼（有密碼）／設定密碼（OAuth 帳號）|
+| **匿名（別名）** | ✅ **內嵌完整別名管理**（建立／停用／刪除；系統不會自動分配）|
+| 配額 | 今日已寄／上限（visitor）|
+
+### 21.5 網域收斂（`app.` vs `mail.`）
+
+| 功能 | `mail.atwho.org` | `app.atwho.org` |
+|---|---|---|
+| 自己的信箱／撰寫／垃圾桶 | ✅ | ✅ |
+| 個人設置（含別名）| ✅ | ✅ |
+| 地址管理／「我的全部信箱」／邀請碼／訪客管理／App Clients | ✅ | ❌ **完全隱藏** |
+| 頭像「管理員」字樣 | ✅ | ❌（顯示「個人帳號」）|
+
+> ⚠️ 這是 **UI 收斂**（依 host 判斷）；後端授權仍以 session scope 判定（N3）。
+
+### 21.6 跨 App 共用登入（D26）
+
+| 端點 | 用途 |
+|---|---|
+| `POST /api/apps`（owner）| 建立 App Client，`app_secret` **只回一次**（DB 存 SHA-256(secret+JWT_SECRET)）|
+| `POST /api/auth/app-login` | 已登入者換 **60 秒一次性 code**（`redirect_uri` 需完全相符白名單）|
+| `POST /api/auth/exchange` | App 後端用 `app_id`＋`app_secret`＋`code` 換 JWT（`scope='app'`, `aud=<app_id>`）|
+| `GET /api/auth/me` | 取得 `{id, username, display_name, role}` |
+
+- 對外網址：**`https://auth.atwho.org`**（薄代理，只轉 `/api/auth/*`；其他路徑 404）✅
+- ⚠️ `scope='app'` 的 token **不可**呼叫 `/api/mail/*`（403 `SCOPE_NOT_ALLOWED`）✅
+- 其他 App 接入：登入按鈕導向 `app.atwho.org/?app=<id>&redirect_uri=…` → 回呼拿 code → 換 token ✅（每支 App 約 1–2 小時）
+
+### 21.7 別名命名規則（D25，owner 定案）
+
+| 規則 | 值 |
+|---|---|
+| 使用者輸入 | **3–12 個英文字母**（僅 a–z，存小寫；禁數字／符號／保留字）|
+| 系統附加 | 固定 `0` ＋ **3 位流水號**（`001`–`999`）|
+| 範例 | `luke` → `luke001@atwho.org`；第二人 → `luke002` |
+| 總長上限 | ≤ 16 字元 |
+| 停用 | 寄到別名回 **550**（避免退信迴圈）；資料列保留 |
+| 回信 | **只有回覆外部寄件者**時自動以別名寄出；`@atwho.org` 內部寄件者看到真實地址 ✅ |
+| 反向別名 | 🟡 **不實作**（本架構 API 直接控制 From，不需要 relay）✅ |
