@@ -19,7 +19,7 @@
 | D29 | `app.atwho.org` **收斂管理功能** ＋ **「個人設置」頁**（ID／**備用電子郵件**／密碼／內嵌別名）| ✅ 上線 | docs/29 |
 | **D31** | **三種寄信身分**：真實 ID（固定）／暱稱別名（每帳號 1 個，可變更）／Token（帳號建立時自動產生）；撰寫視窗三種隱私模式 | ✅ 上線（2026-11-06；migration 0015 @08:52 UTC、API @08:53 UTC）| docs/25、docs/29 |
 | **D32** | **全站語系與區域設定**：登入頁＋個人設置的國家／語言選擇；**10 種語言**；**國家選單依目前語言過濾**；時區優先、判斷不到才用 Cloudflare IP 國別；日期依國家格式 | ✅ 上線（2026-11-06；`bfb5fd3`／API `11dd0a3e`／Pages `9873d79f`）<br>✅ 2026-11-07 國家過濾修正（Pages `b6c8a2ee`）| docs/32 |
-| **D33** | **訪客每日配額統一 50**（既有＋新註冊＋OAuth）；管理頁可調 1–50；**超額被擋時寄提醒信給訪客的備用電子郵件**（每日最多一封） | 🟡 程式完成（2026-11-07）；migration `0016`／API／前端待部署 | docs/05 §2.32、docs/16 |
+| **D33** | **訪客每日配額統一 50**（既有＋新註冊＋OAuth）；管理頁可調 1–50；**超額被擋時寄提醒信給訪客的備用電子郵件**（每日最多一封） | ✅ 上線（2026-11-08；`a27b4e4`／API `39a9abc2`／Pages `ceef6a57`） | docs/05 §2.32、docs/16 |
 | D19 | 信箱 UX（軟刪／批次／清空垃圾桶／checkbox／D1 分塊／form FK）| ✅ 上線 | docs/19 |
 | P1/P2、D16–D18 | 互動式表單（內部限定、四道鎖、RJSF lazy-load）| ✅ 上線 | docs/18 |
 | D17 | 備份 13 表 ＋ watchdog 去抖 ＋ 退避重試 | ✅ 上線 | docs/17 |
@@ -93,7 +93,7 @@ cd packages/api && node ../../node_modules/wrangler/bin/wrangler.js d1 migration
 | Pages | `atwhomail-web` |
 | Workers | `atwhomail-api`／`-email-handler`／`-mta-sts`／`-heartbeat`／**`atwhomail-auth`** |
 | 對外網址 | `app.atwho.org`（公開）／`mail.atwho.org`（Access，owner-only）／**`auth.atwho.org`**（SSO）|
-| Migration 現況 | `0001`–`0015` 已套用 production（`0015_privacy_identities` @ 2026-11-06 08:52 UTC；token 別名已回填 6 筆）；**`0016_visitor_quota_50` 待 owner 套用** |
+| Migration 現況 | `0001`–`0016` 已套用 production（`0015` @ 2026-11-06 08:52 UTC；`0016_visitor_quota_50` @ 2026-11-08 00:19 UTC，訪客地址全部改為 50）|
 
 ---
 
