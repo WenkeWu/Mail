@@ -610,7 +610,7 @@ export const PT_MESSAGES: Record<string, string> = {
   "{username} 已復權": "{username} restaurado",
   "{username} 已停權": "{username} suspenso",
   "{username} 已永久刪除": "{username} eliminado permanentemente",
-  "每日配額需為 1–200 的整數": "A quota diária deve ser um número inteiro entre 1 e 200.",
+  "每日配額需為 1–50 的整數": "A quota diária deve ser um número inteiro entre 1 e 50.",
   "配額已更新；暖機豁免需要先套用 migration 0007":
     "Quota atualizada; a isenção de aquecimento requer a migração 0007.",
   "{username} 的寄信設定已更新": "Definições de envio de {username} atualizadas",
@@ -649,7 +649,7 @@ export const PT_MESSAGES: Record<string, string> = {
   "確定停用": "Desativar",
   "確定啟用": "Ativar",
   "{username} 的寄信設定": "Definições de envio de {username}",
-  "每日寄信配額（1–200）": "Quota diária de envio (1–200)",
+  "每日寄信配額（1–50）": "Quota diária de envio (1–50)",
   "允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）":
     "Permitir envio (desmarcar = válvula de segurança: parar imediatamente todo o envio desta conta)",
   "暖機豁免（跳過註冊後 24 小時的 5 封上限）":

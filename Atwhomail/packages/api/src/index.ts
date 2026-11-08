@@ -505,8 +505,8 @@ async function deliverLocalMail(
  * 調整配額只需改這裡；不得把 20/5/10 散落在多處。
  */
 const QUOTA = {
-  /** C1 訪客每日寄信上限（新地址的 daily_send_quota 預設值） */
-  DEFAULT_VISITOR_DAILY_QUOTA: 20,
+  /** C1 訪客每日寄信上限（新地址的 daily_send_quota 預設值；owner 2026-11-07 定為 50） */
+  DEFAULT_VISITOR_DAILY_QUOTA: 50,
   /** C2 暖機期上限（註冊後 WARMUP_HOURS 內適用） */
   WARMUP_QUOTA: 5,
   /** C2 暖機期長度（小時） */
@@ -588,6 +588,15 @@ function writeAudit(db: D1Database, e: AuditEntry): Promise<void> {
 /** 不阻塞回應地寫稽核（正式環境用 executionCtx；測試環境沒有 → 直接執行） */
 function auditAsync(c: Context<AuthEnv>, entry: AuditEntry): void {
   const p = writeAudit(c.env.DB, entry);
+  try {
+    c.executionCtx.waitUntil(p);
+  } catch {
+    void p;
+  }
+}
+
+/** 不阻塞回應的背景工作（正式環境用 executionCtx；測試環境沒有 → 直接執行） */
+function runInBackground(c: Context<AuthEnv>, p: Promise<unknown>): void {
   try {
     c.executionCtx.waitUntil(p);
   } catch {
@@ -827,6 +836,68 @@ async function sendRegistrationEmail(env: Env, to: string, code: string): Promis
     text,
     html,
   });
+}
+
+/**
+ * D33（owner 2026-11-07）：訪客每日寄信額度用完時的提醒信。
+ *
+ * - 只寄給 `role='visitor'` 且已設定**備用電子郵件**（`users.contact_email`）的訪客；
+ *   owner 或未設定備用 email 者不寄。
+ * - 同一訪客**每天最多一封**：以 `auth_attempts` 的 `quota-alert:<userId>:d:<UTC day>`
+ *   做原子去重（`ON CONFLICT DO NOTHING`），併發請求也只會有一封。
+ * - 只在「每日配額」被擋時呼叫；暖機期 5 封的上限不寄（那不是每日配額）。
+ * - 失敗只記 log，不影響 429 回應；稽核只記上限，不含信件內容（N9）。
+ */
+async function sendQuotaAlert(
+  c: Context<AuthEnv>,
+  opts: { userId: number; addressId: number; addressEmail: string; limit: number; ts: number }
+): Promise<void> {
+  try {
+    const user = await c.env.DB.prepare(
+      "SELECT role, contact_email FROM users WHERE id = ?1"
+    )
+      .bind(opts.userId)
+      .first<{ role: string; contact_email: string | null }>();
+    if (!user || user.role !== "visitor" || !user.contact_email) return;
+
+    const day = Math.floor(opts.ts / 86_400_000);
+    const claim = await c.env.DB.prepare(
+      `INSERT INTO auth_attempts (key, fail_count, locked_until, updated_at)
+       VALUES (?1, 0, 0, ?2)
+       ON CONFLICT(key) DO NOTHING`
+    )
+      .bind(`quota-alert:${opts.userId}:d:${day}`, opts.ts)
+      .run();
+    if (claim.meta.changes !== 1) return; // 今天已提醒過
+
+    const text =
+      `您今日的 AtWhoMail 寄信額度已用完（每日上限 ${opts.limit} 封）。\n\n` +
+      `額度會於 UTC 00:00（台灣時間上午 8 點）重置，隔日即可繼續寄信。\n` +
+      `若這不是您本人的操作，請登入 AtWhoMail 檢查帳號。\n\n` +
+      `地址：${opts.addressEmail}`;
+    const html =
+      `<p>您今日的 AtWhoMail 寄信額度已用完（每日上限 <strong>${opts.limit}</strong> 封）。</p>` +
+      `<p>額度會於 UTC 00:00（台灣時間上午 8 點）重置，隔日即可繼續寄信。</p>` +
+      `<p>若這不是您本人的操作，請登入 AtWhoMail 檢查帳號。</p>` +
+      `<p style="color:#666">地址：${opts.addressEmail}</p>`;
+    await c.env.EMAIL.send({
+      from: "noreply@atwho.org",
+      to: [user.contact_email],
+      subject: `AtWhoMail 寄信額度已用完（${opts.limit} 封）`,
+      text,
+      html,
+    });
+    await writeAudit(c.env.DB, {
+      event: "quota_alert_sent",
+      userId: opts.userId,
+      addressId: opts.addressId,
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+      detail: { limit: opts.limit },
+    });
+  } catch (e) {
+    console.error("[atwhomail-api] quota alert failed", { error: String(e) });
+  }
 }
 
 /**
@@ -1125,8 +1196,8 @@ app.patch("/api/auth/owner-password/self", requireSession, async (c) => {
  */
 const USER_SCOPE_AUD = "atwhomail-user";
 
-/** OAuth 首登配發地址的每日寄信配額（docs/26 §9.4：比 Email 驗證碼註冊的 20 更嚴格） */
-const OAUTH_DAILY_QUOTA = 5;
+/** OAuth 首登配發地址的每日寄信配額（owner 2026-11-07：所有訪客一律 50） */
+const OAUTH_DAILY_QUOTA = QUOTA.DEFAULT_VISITOR_DAILY_QUOTA;
 
 /** 密碼重設 token 有效期（docs/28 §5.1：30 分鐘） */
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
@@ -1418,7 +1489,7 @@ app.get("/api/auth/oauth/google/callback", async (c) => {
         .run();
     }
   } else {
-    // 5c. 自動建立 visitor 帳號（無密碼）＋ 第一個地址（配額 5）
+    // 5c. 自動建立 visitor 帳號（無密碼）＋ 第一個地址（配額 50）
     const base = oauthLocalPartFromEmail(email);
     const localPart = await assignAvailableLocalPart(c.env, base);
     if (!localPart) return err(c, "OAUTH_FAILED", "無法配發可用的信箱地址，請稍後再試", 500);
@@ -3141,7 +3212,8 @@ app.patch("/api/users/:id/status", requireOwner, async (c) => {
 
 /** 每日寄信配額值域（D5；超出 → 422） */
 const QUOTA_MIN = 1;
-const QUOTA_MAX = 200;
+/** 管理頁可調上限（owner 2026-11-07：50） */
+const QUOTA_MAX = 50;
 
 /**
  * migration `0007_warmup_exempt` 是否已套用（`email_addresses.warmup_exempt` 是否存在）。
@@ -3251,7 +3323,7 @@ app.get("/api/users", requireOwner, async (c) => {
 /**
  * PATCH /api/users/:id/quota — 調整每日寄信配額與寄信安全閥（owner；D5）
  *
- * - `daily_send_quota`：整數 **1–200**，超出 → `422 INVALID_QUOTA`
+ * - `daily_send_quota`：整數 **1–50**，超出 → `422 INVALID_QUOTA`
  * - `can_send`：boolean（或 0／1）＝安全閥 C8，`false` 立即停止該使用者的寄信
  * - 套用到該使用者名下**所有未刪除**的地址（訪客通常只有一個）
  * - 稽核：`quota_changed`（含 owner id、目標 user id 與新值）
@@ -5074,6 +5146,19 @@ app.post("/api/mail/send", requireMailSession, async (c) => {
       event: "send_rejected_quota",
       detail: { limit: effectiveLimit, warmup: warmupApplies },
     });
+    // 只有「每日配額」被擋才提醒（暖機期 5 封不是每日上限）
+    if (!warmupApplies) {
+      runInBackground(
+        c,
+        sendQuotaAlert(c, {
+          userId: fromAddr.user_id,
+          addressId: fromAddr.id,
+          addressEmail: fromAddr.email,
+          limit: effectiveLimit,
+          ts: ts0,
+        })
+      );
+    }
     return err(
       c,
       "QUOTA_EXCEEDED",
@@ -5478,6 +5563,18 @@ app.post("/api/forms/send", requireMailSession, async (c) => {
     .run();
   if (deduct.meta.changes !== 1) {
     auditAsync(c, { ...auditCtx, event: "send_rejected_quota", detail: { limit: effectiveLimit, warmup: warmupApplies } });
+    if (!warmupApplies) {
+      runInBackground(
+        c,
+        sendQuotaAlert(c, {
+          userId: fromAddr.user_id,
+          addressId: fromAddr.id,
+          addressEmail: fromAddr.email,
+          limit: effectiveLimit,
+          ts: ts0,
+        })
+      );
+    }
     return err(c, "QUOTA_EXCEEDED", `已達寄信上限（${effectiveLimit} 封）`, 429);
   }
   const recent = await c.env.DB.prepare(

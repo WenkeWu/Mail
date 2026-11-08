@@ -33,7 +33,7 @@
 | Me | GET | `/api/me` | 目前 session 的 role／username／各地址寄信配額 |
 | 使用者 | GET | `/api/users?role=visitor` | **訪客清單（owner；只回數量與時間）**（docs/16 D5） |
 | 使用者 | PATCH | `/api/users/:id/status` | 停權／復權（owner；C7 立即生效） |
-| 使用者 | PATCH | `/api/users/:id/quota` | **調整每日配額（1–200）＋寄信安全閥**（docs/16 D5） |
+| 使用者 | PATCH | `/api/users/:id/quota` | **調整每日配額（1–50）＋寄信安全閥**（docs/16 D5；D33） |
 | 使用者 | PATCH | `/api/users/:id/warmup` | **暖機豁免**（需 migration 0007；docs/16 D5） |
 | 使用者 | DELETE | `/api/users/:id` | **永久刪除訪客**（owner；僅 `role='visitor'`，不可復原、稽核保留，docs/16 D9） |
 | 地址 | PATCH | `/api/email-addresses/:id/status` | **停用／啟用訪客地址**（owner 專用；解 404 缺口，docs/16 D5） |
@@ -293,7 +293,7 @@ PATCH /api/users/:id/status             Authorization: owner
 | 6 | 每小時限流（近 60 分鐘寄件備份 ≥ 10，C3）→ 不通過（**並回補步驟 5 的扣額**） | `429 RATE_LIMITED` |
 | 7 | 實際寄送（既有邏輯）；寄送失敗 → 回補配額 | 既有錯誤（502 `SEND_FAILED`） |
 
-配額常數單一來源：`packages/api/src/index.ts` 的 `QUOTA`（每日 20／暖機 5 封 24 小時／每小時 10；`13` §6.5 C1–C3）。
+配額常數單一來源：`packages/api/src/index.ts` 的 `QUOTA`（**每日 50**／暖機 5 封 24 小時／每小時 10；`13` §6.5 C1–C3；D33 於 2026-11-07 將每日配額改為 50）。
 
 **新增錯誤碼**
 
@@ -365,7 +365,7 @@ GET /api/users?role=visitor               Authorization: owner（訪客 JWT → 
 → 200 { "users": [ {
         "id": 2, "username": "friend01", "status": "active"|"suspended", "created_at": 1789…,
         "address": { "id": 12, "email": "friend01@atwho.org", "status": "active"|"disabled"|"deleted",
-                     "can_send": 1, "daily_send_quota": 20, "sent_today": 3, "warmup_exempt": 0 },
+                     "can_send": 1, "daily_send_quota": 50, "sent_today": 3, "warmup_exempt": 0 },
         "mail_count": 17,                 // 該地址信件數（僅數量）
         "last_activity_at": 1789…         // 最近活動時間（最近一封信；無信 → 帳號 updated_at）
       } ] }
@@ -375,7 +375,7 @@ GET /api/users?role=visitor               Authorization: owner（訪客 JWT → 
 PATCH /api/users/:id/quota                Authorization: owner
 { "daily_send_quota": 30, "can_send": true }     // 兩者可單獨提供，至少一個
 → 200 { "ok": true, "user_id": 2, "addresses": 1, "daily_send_quota": 30, "can_send": 1 }
-  // daily_send_quota 值域 **1–200**，超出／非整數 → 422 INVALID_QUOTA
+  // daily_send_quota 值域 **1–50**，超出／非整數 → 422 INVALID_QUOTA
   // can_send＝安全閥（C8）：false → 該使用者立即無法寄信（403 SEND_NOT_ALLOWED）
   // 套用到該使用者名下所有未刪除地址；稽核：quota_changed
 
@@ -404,7 +404,7 @@ PATCH /api/email-addresses/:id/status     Authorization: owner（mailbox → 403
 | 碼 | HTTP | 情境 |
 |---|---|---|
 | `INVALID_ROLE` | 400 | `GET /api/users` 的 `role` 不是 `visitor` |
-| `INVALID_QUOTA` | 422 | `daily_send_quota` 不在 1–200（或非整數） |
+| `INVALID_QUOTA` | 422 | `daily_send_quota` 不在 1–50（或非整數） |
 | `MIGRATION_REQUIRED` | 409 | 暖機豁免需要 migration 0007（`warmup_exempt` 欄位不存在） |
 | `NO_ADDRESS` | 404 | 目標使用者沒有任何未刪除的地址（配額／暖機無處可套用） |
 
@@ -999,7 +999,7 @@ POST /api/mail/batch                       Authorization: owner 或 mailbox
 - **錯誤 5 次即作廢**：第 5 次起回 `CODE_LOCKED`（429），之後即使輸入正確碼也無效。
 - 驗碼通過**才**檢查 ID 是否仍可用；ID 在 request 後被搶走 → 409 且**不消耗**驗證碼。
 - 成功後以單一 D1 `batch`（交易）建立 `users(role='visitor')` ＋ `email_addresses(status='active')`；
-  `created_at=now` → 既有 **24 小時暖機期／5 封** 自動生效；`daily_send_quota=20`。
+  `created_at=now` → 既有 **24 小時暖機期／5 封** 自動生效；`daily_send_quota=50`（D33）。
 - 錯誤：`EMAIL_INVALID`(400)、`INVALID_LOCAL_PART`(400)、`CODE_INVALID`(400)、`CODE_EXPIRED`(400)、`CODE_LOCKED`(429)、`ID_MATCHES_DOMAIN`(422，含 `suggestions`)、`ID_RESERVED`(422)、`ID_TAKEN`(409)、`WEAK_PASSWORD`(422)、`REGISTRATION_CLOSED`(403)、`REGISTRATION_INVITE_ONLY`(403)、`REGISTER_FAILED`(500)。
 
 **速率限制（沿用 `auth_attempts`，固定視窗 UTC）**
@@ -1623,8 +1623,43 @@ Cache-Control: no-store
 - 只取國別代碼；不記錄 IP、不送第三方。標頭缺漏（本機開發）→ `null`。
 - 前端判斷順序：已存偏好 → 瀏覽器時區對照 → 時區判斷不到才呼叫本端點 → 該國第一語言；
   都無法判斷 → English。
-- 國家選單只列 10 種支援語系的主要國家；自動判斷結果不寫入 localStorage。
+- 國家選單**依目前語言過濾**（只列該語言為第一語言的國家）；自動判斷結果不寫入 localStorage。
 - 完整設計與限制見 `docs/32-i18n-locale.md`。
+
+### 2.32 D33：訪客每日配額 50 與超額提醒信（2026-11-07）
+
+> 決策（owner）：**所有訪客每日寄信配額一律 50**；超過被擋時**寄一封提醒信給訪客本人**
+> （`users.contact_email`／個人設置的「備用電子郵件」）。
+
+**配額規則**
+
+| 對象 | 每日配額 | 說明 |
+|---|---|---|
+| Email 驗證碼註冊 | **50** | `QUOTA.DEFAULT_VISITOR_DAILY_QUOTA` |
+| 邀請碼註冊 | **50** | 同上 |
+| Google OAuth 首登 | **50** | `OAUTH_DAILY_QUOTA` 改用同一常數 |
+| 既有訪客 | **50** | migration `0016_visitor_quota_50.sql` 統一更新（owner 地址不動） |
+| owner 自行建立地址 | 不變（DB 預設 20） | 不屬於訪客配額政策 |
+
+- `PATCH /api/users/:id/quota` 值域改為 **1–50**；`>50` → `422 INVALID_QUOTA`。
+- 暖機期規則不變：註冊後 24 小時內有效上限 `min(daily_send_quota, 5)`；每小時上限仍 10。
+- 部署順序：**先套 migration 0016 → 再部署 API → 再部署前端**。
+
+**超額提醒信**
+
+```http
+POST /api/mail/send        → 429 QUOTA_EXCEEDED
+POST /api/forms/send       → 429 QUOTA_EXCEEDED
+```
+
+- 觸發時機：**每日配額**已滿、該次寄送被原子扣額擋下時（暖機期 5 封被擋**不寄**）。
+- 收件人：`users.contact_email`；訪客沒有備用電子郵件 → 不寄。
+- 只針對 `role='visitor'`；owner 帳號不寄。
+- 去重：同一訪客**每個 UTC 日最多一封**（`auth_attempts` key `quota-alert:<userId>:d:<day>`）。
+- 寄件者 `noreply@atwho.org`；內容只有每日上限、重置時間（UTC 00:00）、地址；
+  **不含**任何信件內容或收件人（N9）。
+- 背景執行（`waitUntil`）；寄送失敗只記 log，不影響 429 回應。
+- 稽核：`quota_alert_sent`（detail 只有 `{ limit }`）。
 
 ## 3. 通用原則
 

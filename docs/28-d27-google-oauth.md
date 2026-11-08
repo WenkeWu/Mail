@@ -122,7 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
 - T161 `start`：302 到 Google，含正確 client_id／redirect_uri／state（並設 cookie）
 - T162 `callback` state 不符 → 400 `INVALID_STATE`
 - T163 `callback` `email_verified=false` → 403 `EMAIL_NOT_VERIFIED`
-- T164 `callback` 新使用者 → 建 user（visitor、無密碼）＋ 地址（配額 5）＋ 稽核
+- T164 `callback` 新使用者 → 建 user（visitor、無密碼）＋ 地址（配額 50；D33 統一）＋ 稽核
 - T165 `callback` 既有 contact_email → 連結（不重複建）＋ `oauth_linked`
 - T166 `callback` 第二次登入 → 同一 user；contact_email 變更時更新
 - T167 `user-login` 以 username → 200；以 contact_email → 200

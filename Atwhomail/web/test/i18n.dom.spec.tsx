@@ -1,7 +1,8 @@
 /**
  * i18n.dom.spec.tsx — D32 語系／區域設定的純函式測試。
  *
- * 支援 10 種語言；國家清單只包含這些語言的「主要國家」。
+ * 支援 10 種語言；國家清單只包含這些語言的「主要國家」，
+ * 且國家選單依目前語言過濾（只列該語言為第一語言的國家）。
  * 預設：時區 → 國家；時區判斷不到才由 Provider 呼叫 `/api/geo`；語言＝該國第一語言。
  */
 import { describe, expect, it } from "vitest";
@@ -9,6 +10,7 @@ import {
   COUNTRY_CODES_LIST,
   LANGUAGE_STORAGE_KEY,
   COUNTRY_STORAGE_KEY,
+  countriesForLanguage,
   detectCountry,
   detectLanguage,
   formatLocaleFor,
@@ -34,6 +36,18 @@ describe("D32：語言與國家預設", () => {
     // 第一語言不是這 10 種（例：泰語）→ 不列入
     expect(isSupportedCountry("TH")).toBe(false);
     expect(isSupportedCountry("ZZ")).toBe(false);
+  });
+
+  it("國家選單依語言過濾：只含該語言為第一語言的國家", () => {
+    expect(countriesForLanguage("zh-TW").slice().sort()).toEqual(["HK", "MO", "TW"]);
+    expect(countriesForLanguage("zh-CN")).toEqual(["CN"]);
+    expect(countriesForLanguage("ja")).toEqual(["JP"]);
+    expect(countriesForLanguage("en").slice().sort()).toEqual(["AU", "CA", "GB", "IE", "NZ", "SG", "US"]);
+    expect(countriesForLanguage("de").slice().sort()).toEqual(["AT", "CH", "DE", "LI"]);
+    expect(countriesForLanguage("it").slice().sort()).toEqual(["IT", "SM", "VA"]);
+    for (const code of COUNTRY_CODES_LIST) {
+      expect(countriesForLanguage(languageForCountry(code)!)).toContain(code);
+    }
   });
 
   it("國家第一語言對應", () => {

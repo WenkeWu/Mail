@@ -163,7 +163,7 @@
             pnpm --filter @atwhomail/api exec wrangler d1 migrations apply mail-d1 --remote
             ```
       - [ ] **配額值確認**（單一來源：`packages/api/src/index.ts` 的 `QUOTA`）：
-            每日 **20**／暖機期前 24 小時 **5**／每小時 **10**。要調整就改這一處（`docs/13` §6.5 C1–C3）
+            每日 **50**／暖機期前 24 小時 **5**／每小時 **10**。要調整就改這一處（`docs/13` §6.5 C1–C3；D33 於 2026-11-07 改為 50）
       - [ ] **既有 owner 地址也受配額約束**（migration 預設 `daily_send_quota=20`）→
             若某地址要不受限，調高該地址的 `daily_send_quota`（或 `can_send=0` 立即關閉寄信）
       - [ ] **暖機期行為驗收**：新註冊帳號前 24 小時只能寄 5 封（第 6 封 → `429 QUOTA_EXCEEDED`）
@@ -209,7 +209,7 @@
             ① `GET /api/users?role=visitor`（owner）回訪客清單，含 `mail_count`／`last_activity_at`；
                訪客 JWT → 403 ✅
             ② owner 以訪客地址 id 呼叫 `/api/mail/*` → **403／404**（N9：不得讀取訪客信件內容）✅
-            ③ `PATCH /api/users/:id/quota`：值域 1–200（超出 422）、成功寫稽核 `quota_changed` ✅
+            ③ `PATCH /api/users/:id/quota`：值域 1–50（超出 422）、成功寫稽核 `quota_changed` ✅
             ④ `PATCH /api/email-addresses/:id/status`：owner 可停用訪客地址（**不再 404**）；
                停用後該訪客無法登入、無法寄信（皆 403 `ADDRESS_DISABLED`，D8-1／D8-4）✅
             ⑤ `GET /api/invites?reveal=1`（owner）回全碼並寫稽核 `invite_revealed`；未帶 reveal 仍只回遮罩碼 ✅
@@ -473,8 +473,9 @@
             ⑤ 錯碼 5 次 → `CODE_LOCKED`；過期 → `CODE_EXPIRED`；60 秒內重寄 → `CODE_COOLDOWN`；
                同一碼第二次 → `CODE_INVALID`；ID 重複 → `409 ID_TAKEN`；保留字 → `422 ID_RESERVED`
                （D20 起；另見 §2-20 的 `422 ID_MATCHES_DOMAIN`）。
-            ⑥ 成功後：`users.role='visitor'`、`email_addresses.status='active'`、`daily_send_quota=20`、
+            ⑥ 成功後：`users.role='visitor'`、`email_addresses.status='active'`、`daily_send_quota=50`、
                `created_at` 為當下（**24 小時暖機 5 封**自動生效）；回傳 token 可讀 `/api/me`／`/api/mail/*`。
+               （D33）超過每日 50 封被擋時，寄提醒信到 `users.contact_email`，每訪客每日最多一封。
             ⑦ 限流：同 IP `register-request` 第 6 次／小時 → `429 RATE_LIMITED`；同 Email 第 6 封／日 →
                `429 CODE_DAILY_LIMIT`。
             ⑧ 稽核：`register_requested`／`register_verified`／`register_rejected` 的 detail **只含**
@@ -780,7 +781,7 @@
 | `POST /api/auth/exchange` | 公開，但需 `app_secret` | **D26**：App 後端以 secret＋code 換 JWT（`scope='app'`、`aud=app_id`、`sub=users.id`）；一次性、60 秒；限流 30/分/app。錯誤：401 `INVALID_CLIENT`／400 `INVALID_CODE`／409 `CODE_ALREADY_USED`／400 `INVALID_REDIRECT_URI` |
 | `GET /api/auth/me` | owner／mailbox／**app** session | **D26**：目前使用者身分（id／username／display_name／role／created_at；**不含** `password_hash`） |
 | `GET /api/auth/oauth/google/start` | 公開 | **D27**：302 到 Google OAuth；`redirect_uri` **固定** `OAUTH_REDIRECT_URI`；`state` 存 cookie（HttpOnly／Secure／SameSite=Lax／600 秒）；`redirect_after` 只接受站內相對路徑 |
-| `GET /api/auth/oauth/google/callback` | 公開 | **D27**：驗 state＋`email_verified=true` → 以 provider_sub／contact_email（連結）／自動建立 visitor＋地址（配額 5）比對 → 簽 session 後以 `#oauth_token=…` fragment 導回前端。稽核 `oauth_registered`／`oauth_linked`／`oauth_login`（不記 Email 全文／token） |
+| `GET /api/auth/oauth/google/callback` | 公開 | **D27**：驗 state＋`email_verified=true` → 以 provider_sub／contact_email（連結）／自動建立 visitor＋地址（配額 50）比對 → 簽 session 後以 `#oauth_token=…` fragment 導回前端。稽核 `oauth_registered`／`oauth_linked`／`oauth_login`（不記 Email 全文／token） |
 | `POST /api/auth/user-login` | 公開（5 次失敗鎖 15 分） | **D27**：username 或 contact_email ＋ 密碼 → owner／mailbox／user session；停權 403 `ACCOUNT_SUSPENDED`、未設密碼 400 `NO_PASSWORD_SET` |
 | `POST /api/auth/forgot-password` | 公開 | **D27**：**一律 200**（不洩漏帳號存在）；限流 3/時/identifier、10/時/IP；寄 `noreply@atwho.org` 的 30 分鐘一次性重設連結（DB 只存 SHA-256）|
 | `POST /api/auth/reset-password` | 公開（一次性 token） | **D27**：更新密碼＋`pca`（撤銷所有舊 JWT）＋寄「密碼已變更」；400 `INVALID_TOKEN`／`TOKEN_EXPIRED`、422 `WEAK_PASSWORD` |
@@ -799,7 +800,7 @@
 | `DELETE /api/users/:id` | owner 或 rescue（**僅 `role='visitor'`**） | **永久刪除訪客**（帳號／地址／所有信件與附件／別名／登入計數；稽核保留，階段 6／D9）；對 owner → 403 `FORBIDDEN`。**D16**：一併清除該用戶相關的 `form_responses`／`form_instances`（`form_templates` 保留）|
 | `PATCH /api/users/:id/status` | owner 或 rescue | 停權／復權（立即生效：**含既有 session 立即 403**，階段 5／D8-4；來信仍照收） |
 | `GET /api/users?role=visitor` | owner 或 rescue | 訪客清單（**只回數量與時間**：信件數／最近活動，N9） |
-| `PATCH /api/users/:id/quota` | owner 或 rescue | 調整每日配額（1–200）＋寄信安全閥（階段 3／D5） |
+| `PATCH /api/users/:id/quota` | owner 或 rescue | 調整每日配額（1–50）＋寄信安全閥（階段 3／D5；D33） |
 | `PATCH /api/users/:id/warmup` | owner 或 rescue | 暖機豁免（需 migration 0007；階段 3／D5） |
 | `/api/email-addresses*`（含密碼） | owner 或 rescue | 地址管理（**自身名下**，越權／訪客地址一律 404） |
 | `GET /api/email-addresses?deleted=1` | owner 或 rescue | **已軟刪除**（垃圾桶）的地址清單（階段 7／D11-5）：`deleted_at`／`messages`，供網頁「已刪除的地址」區塊；未帶參數＝既有清單（僅未刪除的列） |

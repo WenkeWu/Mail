@@ -320,7 +320,7 @@ describe("T6–T10：寄信配額與限流", { timeout: 90_000 }, () => {
       await req("/api/me", {}, token)
     );
     expect(me.addresses[0]!.sent_today).toBe(1);
-    expect(me.addresses[0]!.daily_send_quota).toBe(20);
+    expect(me.addresses[0]!.daily_send_quota).toBe(50);
   });
 
   it("T7 暖機期第 6 封 → 429 QUOTA_EXCEEDED，且稽核留下 send_rejected_quota", async () => {
@@ -512,7 +512,7 @@ describe("T11–T13：停權、隔離、/api/me", { timeout: 90_000 }, () => {
     expect(me.session).toBe("mailbox");
     expect(me.username).toBe("me01");
     expect(me.addresses).toHaveLength(1);
-    expect(me.addresses[0]).toMatchObject({ email: "me01@atwho.org", can_send: 1, daily_send_quota: 20, sent_today: 0 });
+    expect(me.addresses[0]).toMatchObject({ email: "me01@atwho.org", can_send: 1, daily_send_quota: 50, sent_today: 0 });
 
     const owner = await json<{ role: string; session: string; addresses: unknown[] }>(
       await req("/api/me", {}, await ownerToken())

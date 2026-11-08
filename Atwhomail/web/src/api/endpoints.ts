@@ -355,7 +355,7 @@ export const listVisitors = () => request<{ users: VisitorUser[] }>("/api/users?
 export const setUserStatus = (id: number, status: "active" | "suspended") =>
   request<{ ok: boolean; id: number; status: string }>(`/api/users/${id}/status`, { method: "PATCH", json: { status } });
 
-/** 調整每日寄信配額（1–200）與寄信安全閥 can_send（docs/16 D5） */
+/** 調整每日寄信配額（1–50）與寄信安全閥 can_send（docs/16 D5） */
 export const setUserQuota = (id: number, payload: { daily_send_quota?: number; can_send?: boolean }) =>
   request<{ ok: boolean; user_id: number; daily_send_quota: number | null; can_send: number | null }>(
     `/api/users/${id}/quota`,

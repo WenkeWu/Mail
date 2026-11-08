@@ -10,8 +10,9 @@
  * 3. 語言：該國家的**第一語言**；沒有對應 → English
  * 4. 國家仍判斷不到 → 英文；國家選單顯示「請選擇」placeholder
  *
- * 國家只影響「區域格式」（日期／數字）與首次預設語言；
- * 使用者手動選了語言之後，兩者各自獨立。
+ * 國家選單**依目前語言過濾**：只列該語言為第一語言的國家。
+ * 因此切換語言時，若目前國家不屬於新語言，會自動改為該語言的第一個國家
+ * （例：繁體中文→台灣；日語→日本）；國家選擇不會再反向改語言。
  *
  * 翻譯 key 直接使用**繁體中文原文**：zh-TW 原樣回傳，其他語言由 `messages.ts` 對照。
  */
@@ -28,6 +29,7 @@ import { getGeo } from "../api/endpoints";
 import {
   COUNTRY_LANGUAGE,
   TIMEZONE_COUNTRY,
+  countriesForLanguage,
   languageForCountry,
 } from "./countries";
 import { EN_MESSAGES } from "./en";
@@ -35,7 +37,7 @@ import { MESSAGES } from "./messages";
 import type { Language } from "./types";
 
 export type { Language } from "./types";
-export { COUNTRY_CODES_LIST, languageForCountry } from "./countries";
+export { COUNTRY_CODES_LIST, countriesForLanguage, languageForCountry } from "./countries";
 
 export type TranslationVars = Record<string, string | number>;
 
@@ -189,8 +191,16 @@ const fallbackValue: I18nValue = {
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [prefs, setPrefs] = useState(() => {
-    const country = detectCountry();
-    return { country, language: detectLanguage(country) };
+    const detectedCountry = detectCountry();
+    const language = detectLanguage(detectedCountry);
+    // 國家選單依語言過濾：舊資料或「只有語言偏好」時，修正為該語言的第一個國家
+    if (detectedCountry !== "" && languageForCountry(detectedCountry) === language) {
+      return { country: detectedCountry, language };
+    }
+    if (isSupportedLanguage(safeGet(LANGUAGE_STORAGE_KEY))) {
+      return { country: countriesForLanguage(language)[0] ?? "", language };
+    }
+    return { country: detectedCountry, language };
   });
   /**
    * 只有「時區無法對應到支援的國家」時才需要 IP 國別。
@@ -204,23 +214,22 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const setLanguage = useCallback((next: Language) => {
     if (!isSupportedLanguage(next)) return;
     safeSet(LANGUAGE_STORAGE_KEY, next);
-    setPrefs((prev) => ({ ...prev, language: next }));
+    setPrefs((prev) => {
+      if (languageForCountry(prev.country) === next) return { ...prev, language: next };
+      // 切換語言時，國家自動改為該語言的第一個國家（例：日語→日本）
+      const nextCountry = countriesForLanguage(next)[0] ?? "";
+      if (nextCountry !== "") safeSet(COUNTRY_STORAGE_KEY, nextCountry);
+      return { country: nextCountry, language: next };
+    });
   }, []);
 
   const setCountry = useCallback((next: string) => {
     if (!isSupportedCountry(next)) return;
+    // 國家選單已依語言過濾；防禦性拒絕對不相容的國家
+    if (languageForCountry(next) !== prefs.language) return;
     safeSet(COUNTRY_STORAGE_KEY, next);
-    setPrefs((prev) => {
-      // 使用者若從未手動選語言，換國家時跟著該國第一語言；手動選過則保持不變
-      const savedLang = safeGet(LANGUAGE_STORAGE_KEY);
-      return {
-        country: next,
-        language: isSupportedLanguage(savedLang)
-          ? prev.language
-          : (languageForCountry(next) ?? prev.language),
-      };
-    });
-  }, []);
+    setPrefs((prev) => ({ ...prev, country: next }));
+  }, [prefs.language]);
 
   // 時區判斷不到 → 以 Cloudflare CF-IPCountry 補救（不覆蓋手動選擇）
   useEffect(() => {
@@ -233,14 +242,17 @@ export function I18nProvider({ children }: { children: ReactNode }) {
         if (!isSupportedCountry(ipCountry)) return;
         // 等待期間使用者已手動選國家 → 不覆蓋
         if (isSupportedCountry(safeGet(COUNTRY_STORAGE_KEY))) return;
-        setPrefs((prev) => {
+        setPrefs(() => {
           const savedLang = safeGet(LANGUAGE_STORAGE_KEY);
-          return {
-            country: ipCountry,
-            language: isSupportedLanguage(savedLang)
-              ? prev.language
-              : (languageForCountry(ipCountry) ?? "en"),
-          };
+          const language = isSupportedLanguage(savedLang)
+            ? savedLang
+            : (languageForCountry(ipCountry) ?? "en");
+          // 語言與國家必須相符（國家選單依語言過濾）
+          const country =
+            languageForCountry(ipCountry) === language
+              ? ipCountry
+              : (countriesForLanguage(language)[0] ?? "");
+          return { country, language };
         });
       })
       .catch(() => {

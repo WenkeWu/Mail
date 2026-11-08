@@ -15,15 +15,16 @@
 | D23 | **Turnstile 防機器人**（widget `atwho-entry`，site key 在 wrangler vars、secret 在 Worker secret）| ✅ 上線 | docs/23 |
 | D25 | **別名 Alias Phase 1**（3–12 字母 ＋ 3 碼流水號；收信投遞；回外信自動用別名）| ✅ 上線 | docs/25 |
 | D26 | **跨 App 共用登入**：`https://auth.atwho.org` 薄代理 ＋ `app_clients`／一次性 code 交換 | ✅ 上線 | docs/26、27 |
-| D27 | **Google OAuth**（免註冊／免驗證碼、自動配發地址、配額 5/日）＋ **忘記／重設密碼** | ✅ 上線 | docs/28 |
+| D27 | **Google OAuth**（免註冊／免驗證碼、自動配發地址、配額 50/日）＋ **忘記／重設密碼** | ✅ 上線 | docs/28 |
 | D29 | `app.atwho.org` **收斂管理功能** ＋ **「個人設置」頁**（ID／**備用電子郵件**／密碼／內嵌別名）| ✅ 上線 | docs/29 |
 | **D31** | **三種寄信身分**：真實 ID（固定）／暱稱別名（每帳號 1 個，可變更）／Token（帳號建立時自動產生）；撰寫視窗三種隱私模式 | ✅ 上線（2026-11-06；migration 0015 @08:52 UTC、API @08:53 UTC）| docs/25、docs/29 |
-| **D32** | **全站語系與區域設定**：登入頁＋個人設置的國家／語言選擇；**10 種語言**；只列這些語系的主要國家；時區優先、判斷不到才用 Cloudflare IP 國別；日期依國家格式 | ✅ 上線（2026-11-06；`bfb5fd3`／API `11dd0a3e`／Pages `9873d79f`）| docs/32 |
+| **D32** | **全站語系與區域設定**：登入頁＋個人設置的國家／語言選擇；**10 種語言**；**國家選單依目前語言過濾**；時區優先、判斷不到才用 Cloudflare IP 國別；日期依國家格式 | ✅ 上線（2026-11-06；`bfb5fd3`／API `11dd0a3e`／Pages `9873d79f`）<br>✅ 2026-11-07 國家過濾修正（Pages `b6c8a2ee`）| docs/32 |
+| **D33** | **訪客每日配額統一 50**（既有＋新註冊＋OAuth）；管理頁可調 1–50；**超額被擋時寄提醒信給訪客的備用電子郵件**（每日最多一封） | 🟡 程式完成（2026-11-07）；migration `0016`／API／前端待部署 | docs/05 §2.32、docs/16 |
 | D19 | 信箱 UX（軟刪／批次／清空垃圾桶／checkbox／D1 分塊／form FK）| ✅ 上線 | docs/19 |
 | P1/P2、D16–D18 | 互動式表單（內部限定、四道鎖、RJSF lazy-load）| ✅ 上線 | docs/18 |
 | D17 | 備份 13 表 ＋ watchdog 去抖 ＋ 退避重試 | ✅ 上線 | docs/17 |
 
-**測試基準**：`pnpm test` → **578**（workerd 456 ＋ web DOM 122）；`pnpm lint` 8/8；`pnpm build` 8/8。
+**測試基準**：`pnpm test` → **585**（workerd 462 ＋ web DOM 123）；`pnpm lint` 8/8；`pnpm build` 8/8。
 
 ---
 
@@ -32,7 +33,7 @@
 | 主題 | 定案 |
 |---|---|
 | OAuth 語意 | 「**只是少註冊步驟、直接註冊**」——Google 已驗證 email，**不再發驗證碼** |
-| OAuth 首登 | **自動建立 visitor 帳號 ＋ 自動配發 1 個地址**；配額 **5 封/日** |
+| OAuth 首登 | **自動建立 visitor 帳號 ＋ 自動配發 1 個地址**；配額 **50 封/日**（D33 統一） |
 | ID 推導 | email local part → 只留英文字母 → 截 12 字 → **撞二級網域加 3 碼流水號**（`ulhome` → `ulhome001`）|
 | **備用電子郵件** | `users.contact_email`，**用途＝找回密碼**；個人設置頁以「備用電子郵件」呈現（**不要**出現「登入方式／Google 帳號」字樣）|
 | 登入識別 | `itag` 或 `itag@gmail.com` **都接受** |
@@ -42,7 +43,8 @@
 | 網域收斂 | `app.`（公開）**不得**出現地址管理／我的全部信箱／管理主控台；`mail.` 全開 |
 | 別名位置 | **內嵌在「個人設置」頁**（不再有獨立「別名管理」入口）|
 | **三種寄信身分**（D31） | **真實 ID**（固定）／**暱稱**（每帳號 1 個啟用中，可變更，舊的立即停用）／**隱身代號**（Token；帳號建立時自動產生 16 hex，不隨暱稱變更）|
-| **語系預設**（D32） | 語言：已存偏好 → 該國第一語言 → English；國家：已存偏好 → **時區** → 時區判斷不到才用 **Cloudflare `CF-IPCountry`**（`/api/geo`）→ English fallback |
+| **語系預設**（D32） | 語言：已存偏好 → 該國第一語言 → English；國家：已存偏好 → **時區** → 時區判斷不到才用 **Cloudflare `CF-IPCountry`**（`/api/geo`）→ English fallback。國家選單**依語言過濾**（例：繁中→台港澳、日語→日本） |
+| **訪客配額**（D33） | **所有訪客每日 50 封**；管理頁可調 1–50。超過每日配額被擋時，寄提醒信到**訪客的備用電子郵件**（`users.contact_email`），每訪客每日最多一封；暖機期 5 封被擋不寄 |
 
 ---
 
@@ -64,7 +66,7 @@
 ## 4. 常用指令（在 `D:\Mail\Atwhomail`）
 
 ```bash
-pnpm test                 # 578 tests
+pnpm test                 # 585 tests
 pnpm lint                 # 8 workspace
 pnpm build                # 8 workspace
 pnpm secret:scan          # push 前必跑（PUBLIC repo）
@@ -91,7 +93,7 @@ cd packages/api && node ../../node_modules/wrangler/bin/wrangler.js d1 migration
 | Pages | `atwhomail-web` |
 | Workers | `atwhomail-api`／`-email-handler`／`-mta-sts`／`-heartbeat`／**`atwhomail-auth`** |
 | 對外網址 | `app.atwho.org`（公開）／`mail.atwho.org`（Access，owner-only）／**`auth.atwho.org`**（SSO）|
-| Migration 現況 | `0001`–`0015` 已套用 production（`0015_privacy_identities` @ 2026-11-06 08:52 UTC；token 別名已回填 6 筆）|
+| Migration 現況 | `0001`–`0015` 已套用 production（`0015_privacy_identities` @ 2026-11-06 08:52 UTC；token 別名已回填 6 筆）；**`0016_visitor_quota_50` 待 owner 套用** |
 
 ---
 
@@ -119,6 +121,7 @@ cd packages/api && node ../../node_modules/wrangler/bin/wrangler.js d1 migration
 | 4 | 手機原生 SDK（iOS/Android OAuth client）| 3h | 目前手機可用系統瀏覽器走同一套 Web client ✅ |
 | 5 | `provider` 欄位改成可多值（local＋google 並存）| 2h | 目前連結 Google 後 `provider` 會變 `google`（但仍可用密碼登入 ✅）|
 | 6 | 別名 Phase 2（反向別名）| 9h | **已決議不實作** ✅ |
+| 7 | **D33 部署**：套用 `0016` → 部署 API → 部署前端 | — | 由 owner 套 migration；完成後配額 50 與超額提醒才生效 |
 
 ---
 

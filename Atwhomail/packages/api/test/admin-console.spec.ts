@@ -318,19 +318,19 @@ describe("T13：owner 以訪客的地址／信件 id 呼叫 /api/mail/* → 403�
 
 // ══════════════════════ T14：配額調整（值域／稽核／安全閥）══════════════════════
 describe("T14：PATCH /api/users/:id/quota", () => {
-  it("值域 1–200：超出（0／201／-1／非整數）→ 422；邊界 1 與 200 → 200", async () => {
+  it("值域 1–50：超出（0／51／-1／非整數）→ 422；邊界 1 與 50 → 200", async () => {
     const { userId } = await seedVisitor({ email: "v4@atwho.org" });
     const token = await ownerToken();
     const patch = (body: unknown) =>
       req(`/api/users/${userId}/quota`, { method: "PATCH", body: JSON.stringify(body) }, token);
 
-    for (const bad of [0, 201, -1, 1.5, "abc", null]) {
+    for (const bad of [0, 51, -1, 1.5, "abc", null]) {
       const res = await patch({ daily_send_quota: bad });
       expect(res.status, `daily_send_quota=${String(bad)} 應為 422`).toBe(422);
       expect((await json<{ error: { code: string } }>(res)).error.code).toBe("INVALID_QUOTA");
     }
 
-    for (const ok of [1, 200]) {
+    for (const ok of [1, 50]) {
       const res = await patch({ daily_send_quota: ok });
       expect(res.status).toBe(200);
       expect(await json<{ daily_send_quota: number }>(res)).toMatchObject({ daily_send_quota: ok });

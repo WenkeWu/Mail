@@ -6,7 +6,7 @@
 | **依據** | `docs/13-open-registration-design.md` **v0.2**（設計已定案：D1–D7 見該文件 §10.3） |
 | **狀態** | 🟡 待 owner final review → 交實作 |
 | **範圍** | **Phase 1 後端 ＋ 前端（註冊／配額）**；**不含**部署、不含 Access 設定變更 |
-| **預設配額** | C1 = **20 封/日**、C2 = **前 24 小時 5 封**、C3 = **10 封/小時**（見 §4.3；皆須**可調**，不得寫死於多處） |
+| **預設配額** | C1 = **50 封/日**（D33；原 20）、C2 = **前 24 小時 5 封**、C3 = **10 封/小時**（見 §4.3；皆須**可調**，不得寫死於多處） |
 
 > ⚠️ **改名提醒**：本專案有兩個「mail」概念 —— **郵件收發**（MX/DKIM/DMARC，不經 Access）與 **網頁 UI**（`mail.atwho.org`，經 Access）。本文件只涉及**應用層（API ＋ web）**，**不得**更動任何郵件路由或 DNS。
 
@@ -145,7 +145,7 @@ CREATE INDEX idx_reg_audit_event ON registration_audit(event, created_at DESC);
 | 4 | 驗 `username` 與 `local_part`（預設＝`username`）：格式用既有 `LOCAL_PART_RE`、且不重複 | `400 ADDRESS_TAKEN` / `400 INVALID_LOCAL_PART` |
 | 5 | 驗密碼強度（建議：≥10 字元，非純數字；**與既有註冊／改密碼規則一致**） | `400 WEAK_PASSWORD` |
 | 6 | **原子**：`UPDATE invites SET used_count = used_count + 1, updated_at = ? WHERE id = ? AND status='active' AND used_count < max_uses` → 依 `meta.changes === 1` 判定成功 | 失敗 → `400 INVITE_EXHAUSTED` |
-| 7 | 建 `users`（`role='visitor'`, `access_email` = 請求標頭帶入或空）→ 建 1 個 `email_addresses`（`can_send=1`, `daily_send_quota`=預設 20）→ 以**既有**密碼雜湊實作寫 `password_hash` | 任何失敗 → 回 500 並記錄 |
+| 7 | 建 `users`（`role='visitor'`, `access_email` = 請求標頭帶入或空）→ 建 1 個 `email_addresses`（`can_send=1`, `daily_send_quota`=預設 50；D33）→ 以**既有**密碼雜湊實作寫 `password_hash` | 任何失敗 → 回 500 並記錄 |
 | 8 | 簽發 **mailbox scope** JWT（沿用既有 JWT 簽發路徑與 24h 效期） | — |
 | 9 | 稽核 `register_ok`（含 invite id／address id／ip／ua） | — |
 
@@ -402,7 +402,7 @@ pnpm exec wrangler pages deploy web/dist --project-name atwhomail-web --branch m
 | 線上 `GET /api/health` | 200 `{"ok":true,"db":"ok"}` ✅ |
 | 線上 `POST /api/invites` / `POST /api/auth/register` | 201／201 ✅ |
 | 重複使用邀請碼 | 400 `INVITE_EXHAUSTED` ✅ |
-| 訪客 `/api/me` | `role=visitor`、`daily_send_quota=20`、`can_send=1` ✅ |
+| 訪客 `/api/me` | `role=visitor`、`daily_send_quota=50`（D33）、`can_send=1` ✅ |
 | CORS（來源 `https://app.atwho.org`） | preflight 204 ＋ ACAO 回顯 ✅ |
 | 本地 migration／測試 | 已套用；129 tests 全綠 ✅ |
 | `app.atwho.org` | 200 ＋ App HTML（非 Access 登入頁）✅ |

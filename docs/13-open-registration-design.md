@@ -226,7 +226,7 @@ flowchart LR
 
 | # | 控制 | 建議值（可調） | 作用 |
 |---|---|---|---|
-| C1 | **每日寄信配額** `daily_send_quota` | **20 封/日** | 硬上限，防大量寄送 |
+| C1 | **每日寄信配額** `daily_send_quota` | **50 封/日**（2026-11-07 D33；原 20） | 硬上限，防大量寄送 |
 | C2 | **新帳號暖機期** | 註冊後 **前 24 小時 5 封** | 防「註冊即轟炸」 |
 | C3 | **每小時限流** | **10 封/小時** | 防瞬間爆發 |
 | C4 | **每封收件人上限** | 沿用既有 **≤50** | 既有 ✅ |
@@ -441,7 +441,7 @@ curl -sS https://atwhomail-api.ulhome.workers.dev/api/mail/inbox -H "Authorizati
 | API | ✅ `pnpm deploy:api` 已部署（Version `05c4ef22-…`） |
 | D1 | ✅ migration `0006` 已套用（`invites`、`registration_audit`、`role`、配額欄位） |
 | CORS 白名單 | ✅ 含 `https://app.atwho.org`，preflight 204 ＋ ACAO 回顯 |
-| 配額（C1–C8） | ✅ 端到端驗證：暖機 5/日、每日 20、每小時 10、`can_send=0`、停權、稽核 |
+| 配額（C1–C8） | ✅ 端到端驗證：暖機 5/日、每日 50（D33）、每小時 10、`can_send=0`、停權、稽核 |
 | owner 帳號 | ✅ 由 `owner` 改名為 **`itag`**（D11 上線後執行；救援通道不受影響） |
 
 詳細部署紀錄、驗收證據與後續待辦見 `docs/14` 附錄 B。

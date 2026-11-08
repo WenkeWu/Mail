@@ -314,7 +314,7 @@ describe("T163：callback email_verified=false", () => {
 
 // ══════════════════════ T164 ══════════════════════
 describe("T164：callback 新使用者", () => {
-  it("建立 visitor（無密碼）＋地址（配額 5）＋稽核；回 mailbox session", async () => {
+  it("建立 visitor（無密碼）＋地址（配額 50）＋稽核；回 mailbox session", async () => {
     const res = await oauthLogin();
     expect(res.status).toBe(302);
     const location = res.headers.get("location")!;
@@ -363,7 +363,7 @@ describe("T164：callback 新使用者", () => {
     expect(address).not.toBeNull();
     expect(address!.email).toBe("luke@atwho.org");
     expect(address!.password_hash).toBeNull();
-    expect(Number(address!.daily_send_quota)).toBe(5);
+    expect(Number(address!.daily_send_quota)).toBe(50);
     expect(Number(address!.warmup_exempt)).toBe(0);
     expect(address!.status).toBe("active");
     expect(frag.get("oauth_address_id")).toBe(String(address!.id));

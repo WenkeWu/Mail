@@ -4,7 +4,8 @@
  * 原則：
  * - 只列「第一語言」在上述 10 種語言的**主要國家**；其他國家暫不列入。
  * - 多官方語言國家一律依該國第一語言（例：瑞士→德語、加拿大→英語、新加坡→英語）。
- * - 這些國家同時是國家選單的唯一來源。
+ * - 國家選單**依目前語言過濾**：只顯示該語言為第一語言的國家
+ *   （例：繁體中文→台／港／澳；簡體中文→中國；日語→日本）。
  */
 import type { Language } from "./types";
 
@@ -98,6 +99,11 @@ export function languageForCountry(country: string): Language | null {
   return Object.prototype.hasOwnProperty.call(COUNTRY_LANGUAGE, country)
     ? COUNTRY_LANGUAGE[country]!
     : null;
+}
+
+/** 以該語言為第一語言的國家（依 COUNTRY_LANGUAGE 宣告順序） */
+export function countriesForLanguage(language: Language): readonly string[] {
+  return COUNTRY_CODES_LIST.filter((code) => COUNTRY_LANGUAGE[code] === language);
 }
 
 /**

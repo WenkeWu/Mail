@@ -1,10 +1,11 @@
 /**
  * 國家／語言選擇器（D32）。
- * 顯示名稱依目前語言由 `Intl.DisplayNames` 產生；國家選單依名稱排序。
+ * 顯示名稱依目前語言由 `Intl.DisplayNames` 產生；
+ * 國家選單**只列該語言為第一語言的國家**，並依名稱排序。
  */
 import { useMemo } from "react";
 import {
-  COUNTRY_CODES_LIST,
+  countriesForLanguage,
   LANGUAGES,
   useI18n,
   type Language,
@@ -20,7 +21,7 @@ export function LocaleSelectors({ className = "" }: { className?: string }) {
     } catch {
       display = null;
     }
-    return [...COUNTRY_CODES_LIST]
+    return [...countriesForLanguage(language)]
       .map((code) => ({ code, name: display?.of(code) ?? code }))
       .sort((a, b) => a.name.localeCompare(b.name, language));
   }, [language]);

@@ -158,12 +158,12 @@ export function VisitorManager({ onBack, onToast }: Props) {
     });
   };
 
-  /** 套用配額（1–200）＋寄信安全閥；暖機豁免為選配（migration 0007 未套用時回 409） */
+  /** 套用配額（1–50）＋寄信安全閥；暖機豁免為選配（migration 0007 未套用時回 409） */
   const submitEdit = async () => {
     if (!edit) return;
     const quota = Number(edit.quota);
-    if (!Number.isInteger(quota) || quota < 1 || quota > 200) {
-      onToast(t("每日配額需為 1–200 的整數"), "error");
+    if (!Number.isInteger(quota) || quota < 1 || quota > 50) {
+      onToast(t("每日配額需為 1–50 的整數"), "error");
       return;
     }
     setBusyId(edit.user.id);
@@ -410,11 +410,11 @@ export function VisitorManager({ onBack, onToast }: Props) {
       {edit && (
         <Modal title={t("{username} 的寄信設定", { username: edit.user.username })} onClose={() => setEdit(null)}>
           <label className="field-row">
-            <span>{t("每日寄信配額（1–200）")}</span>
+            <span>{t("每日寄信配額（1–50）")}</span>
             <input
               type="number"
               min={1}
-              max={200}
+              max={50}
               value={edit.quota}
               onChange={(e) => setEdit({ ...edit, quota: e.target.value })}
             />
