@@ -652,8 +652,10 @@ export const ES_MESSAGES: Record<string, string> = {
   "每日寄信配額（1–50）": "Cuota diaria de envío (1–50)",
   "允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）":
     "Permitir envío (desmarcar = válvula de seguridad: detener de inmediato todo envío de esta cuenta)",
-  "暖機豁免（跳過註冊後 24 小時的 5 封上限）":
-    "Exención de calentamiento (omitir el límite de 5 mensajes durante las primeras 24 horas)",
+  "暖機期上限（1–50，預設 5）": "Límite de calentamiento (1–50, predeterminado 5)",
+  "暖機配額需為 1–50 的整數": "La cuota de calentamiento debe ser un número entero de 1 a 50.",
+  "暖機豁免（跳過註冊後 24 小時的暖機上限）":
+    "Exención de calentamiento (omitir el límite de calentamiento de las primeras 24 horas)",
   "⚠️ 暖機豁免會讓新帳號立刻能寄到每日配額上限，可能影響寄信聲譽（新網域尤其敏感）。豁免後仍受每日配額與每小時限流約束，不是無上限；此外需要 migration 0007 已套用。":
     "⚠️ La exención de calentamiento permite que una cuenta nueva envíe hasta su cuota diaria de inmediato y puede dañar la reputación de envío (especialmente en un dominio nuevo). Sigue limitada por la cuota diaria y el límite por hora; no es ilimitada. Además, debe estar aplicada la migración 0007.",
   "套用中…": "Aplicando…",

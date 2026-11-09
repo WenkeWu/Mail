@@ -6,7 +6,7 @@
 | **依據** | `docs/13-open-registration-design.md` **v0.2**（設計已定案：D1–D7 見該文件 §10.3） |
 | **狀態** | 🟡 待 owner final review → 交實作 |
 | **範圍** | **Phase 1 後端 ＋ 前端（註冊／配額）**；**不含**部署、不含 Access 設定變更 |
-| **預設配額** | C1 = **50 封/日**（D33；原 20）、C2 = **前 24 小時 5 封**、C3 = **10 封/小時**（見 §4.3；皆須**可調**，不得寫死於多處） |
+| **預設配額** | C1 = **50 封/日**（D33；原 20）、C2 = **前 24 小時暖機上限預設 5**（D35 可調 1–50）、C3 = **10 封/小時**（見 §4.3；皆須**可調**，不得寫死於多處） |
 
 > ⚠️ **改名提醒**：本專案有兩個「mail」概念 —— **郵件收發**（MX/DKIM/DMARC，不經 Access）與 **網頁 UI**（`mail.atwho.org`，經 Access）。本文件只涉及**應用層（API ＋ web）**，**不得**更動任何郵件路由或 DNS。
 
@@ -185,7 +185,7 @@ CREATE INDEX idx_reg_audit_event ON registration_audit(event, created_at DESC);
 | 常數 | 預設 | 放哪裡 |
 |---|---|---|
 | `DEFAULT_VISITOR_DAILY_QUOTA` | `20` | 程式內單一 const（或用 Worker var `DEFAULT_VISITOR_DAILY_QUOTA`，字串轉數字） |
-| `WARMUP_QUOTA` | `5` | 同上 |
+| `WARMUP_QUOTA` | `5` | 暖機上限**預設值**；D35 起每地址可調（`email_addresses.warmup_quota`） |
 | `WARMUP_HOURS` | `24` | 同上 |
 | `HOURLY_SEND_LIMIT` | `10` | 同上 |
 

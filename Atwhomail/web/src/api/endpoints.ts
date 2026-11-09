@@ -356,11 +356,17 @@ export const setUserStatus = (id: number, status: "active" | "suspended") =>
   request<{ ok: boolean; id: number; status: string }>(`/api/users/${id}/status`, { method: "PATCH", json: { status } });
 
 /** 調整每日寄信配額（1–50）與寄信安全閥 can_send（docs/16 D5） */
-export const setUserQuota = (id: number, payload: { daily_send_quota?: number; can_send?: boolean }) =>
-  request<{ ok: boolean; user_id: number; daily_send_quota: number | null; can_send: number | null }>(
-    `/api/users/${id}/quota`,
-    { method: "PATCH", json: payload }
-  );
+export const setUserQuota = (
+  id: number,
+  payload: { daily_send_quota?: number; warmup_quota?: number; can_send?: boolean }
+) =>
+  request<{
+    ok: boolean;
+    user_id: number;
+    daily_send_quota: number | null;
+    warmup_quota: number | null;
+    can_send: number | null;
+  }>(`/api/users/${id}/quota`, { method: "PATCH", json: payload });
 
 /** 暖機豁免（需 migration 0007；未套用時後端回 409 MIGRATION_REQUIRED） */
 export const setUserWarmup = (id: number, warmupExempt: boolean) =>

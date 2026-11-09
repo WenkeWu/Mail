@@ -213,6 +213,7 @@ describe("T12：GET /api/users?role=visitor", () => {
       can_send: 1,
       daily_send_quota: 20,
       sent_today: 0,
+      warmup_quota: 5,
     });
     expect(v.mail_count).toBe(2);
     expect(v.last_activity_at).toBe(t2);
@@ -339,6 +340,38 @@ describe("T14：PATCH /api/users/:id/quota", () => {
         .first<{ daily_send_quota: number }>();
       expect(row?.daily_send_quota).toBe(ok);
     }
+  });
+
+  it("D35：warmup_quota 值域 1–50；成功寫入 DB 與稽核", async () => {
+    const { userId } = await seedVisitor({ email: "v4w@atwho.org" });
+    const token = await ownerToken();
+    const patch = (body: unknown) =>
+      req(`/api/users/${userId}/quota`, { method: "PATCH", body: JSON.stringify(body) }, token);
+
+    for (const bad of [0, 51, -1, 1.5, "abc", null]) {
+      const res = await patch({ warmup_quota: bad });
+      expect(res.status, `warmup_quota=${String(bad)} 應為 422`).toBe(422);
+      expect((await json<{ error: { code: string } }>(res)).error.code).toBe("INVALID_WARMUP_QUOTA");
+    }
+
+    for (const ok of [1, 50]) {
+      const res = await patch({ warmup_quota: ok });
+      expect(res.status).toBe(200);
+      expect(await json<{ warmup_quota: number }>(res)).toMatchObject({ warmup_quota: ok });
+      const row = await E.DB.prepare("SELECT warmup_quota FROM email_addresses WHERE user_id = ?1")
+        .bind(userId)
+        .first<{ warmup_quota: number }>();
+      expect(row?.warmup_quota).toBe(ok);
+    }
+
+    // 與每日配額一起更新 → 同一筆稽核包含兩者
+    const res = await patch({ daily_send_quota: 7, warmup_quota: 3, can_send: true });
+    expect(res.status).toBe(200);
+    expect(await json(res)).toMatchObject({ daily_send_quota: 7, warmup_quota: 3, can_send: 1 });
+    const audit = await E.DB.prepare(
+      "SELECT detail FROM registration_audit WHERE event = 'quota_changed' ORDER BY id DESC LIMIT 1"
+    ).first<{ detail: string }>();
+    expect(JSON.parse(audit!.detail)).toMatchObject({ daily_send_quota: 7, warmup_quota: 3, can_send: 1 });
   });
 
   it("成功寫入稽核 quota_changed（含 owner id 與新值）；空 body → 400；未知 user → 404", async () => {

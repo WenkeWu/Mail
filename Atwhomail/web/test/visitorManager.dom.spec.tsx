@@ -12,7 +12,7 @@
  *
  * ⚠️ 全程只 mock `fetch`（網路邊界），元件、狀態、`ApiError` 轉換、DOM 事件都是真的。
  */
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { VisitorManager } from "../src/components/VisitorManager";
 import type { VisitorUser } from "../src/api/types";
@@ -42,6 +42,7 @@ const VISITOR: VisitorUser = {
     daily_send_quota: 50,
     sent_today: 3,
     warmup_exempt: 0,
+    warmup_quota: 5,
   },
   mail_count: 4,
   last_activity_at: Date.UTC(2026, 9, 13, 12, 0),
@@ -164,5 +165,42 @@ describe("T33-5：訪客清單載入失敗不影響整頁", () => {
     expect(screen.getByText(/管理者看不到訪客信件的主旨、寄件者或內文/)).toBeTruthy();
     // 清單壞掉時不得顯示任何訪客列（不殘留舊資料）
     expect(screen.queryByText(VISITOR.username)).toBeNull();
+  });
+});
+
+describe("D35：暖機期上限可調", () => {
+  it("寄信設定預設顯示 5，儲存時一并送出 warmup_quota", async () => {
+    const spy = installFetch((call) => {
+      if (call.url === VISITORS_URL) return { body: { users: [VISITOR] } };
+      if (call.url === `/api/users/${VISITOR.id}/quota` && call.method === "PATCH") {
+        return {
+          body: {
+            ok: true,
+            user_id: VISITOR.id,
+            daily_send_quota: 40,
+            warmup_quota: 8,
+            can_send: 1,
+          },
+        };
+      }
+      throw new Error(`未預期的請求：${call.method} ${call.url}`);
+    });
+    renderManager();
+
+    fireEvent.click(await screen.findByRole("button", { name: "寄信設定" }));
+    const dialog = screen.getByRole("dialog", { name: `${VISITOR.username} 的寄信設定` });
+    const daily = within(dialog).getByLabelText("每日寄信配額（1–50）") as HTMLInputElement;
+    const warmup = within(dialog).getByLabelText("暖機期上限（1–50，預設 5）") as HTMLInputElement;
+    expect(daily.value).toBe("50");
+    expect(warmup.value).toBe("5");
+
+    fireEvent.change(daily, { target: { value: "40" } });
+    fireEvent.change(warmup, { target: { value: "8" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "套用" }));
+
+    await waitFor(() => {
+      const patch = spy.calls.find((c) => c.method === "PATCH");
+      expect(patch?.body).toMatchObject({ daily_send_quota: 40, warmup_quota: 8 });
+    });
   });
 });

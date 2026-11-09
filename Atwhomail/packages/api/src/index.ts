@@ -519,22 +519,29 @@ const QUOTA = {
  * D34：回傳**有效**每日配額（暖機期已折算）。
  *
  * - 暖機期＝地址建立後 `WARMUP_HOURS` 內，且未被 owner 設為 `warmup_exempt=1`
- * - 暖機中有效上限 = `min(daily_send_quota, WARMUP_QUOTA)`，並附上暖機結束時間
+ * - 暖機中有效上限 = `min(daily_send_quota, warmup_quota)`（每地址可調，預設 5），
+ *   並附上暖機結束時間
  * - `warmup_until = null` 表示目前不受暖機限制（有效上限 = `daily_send_quota`）
  *
  * ⚠️ 只影響**回傳給前端的顯示值**；寄信時的實際判定仍走 `/api/mail/send` 的
- *    `effectiveLimit`（同一組常數，兩邊語意必須一致）。
+ *    `effectiveLimit`（同一組設定，兩邊語意必須一致）。
  */
 function quotaView(
-  row: { daily_send_quota: number; created_at?: number | null; warmup_exempt?: number | null },
+  row: {
+    daily_send_quota: number;
+    created_at?: number | null;
+    warmup_exempt?: number | null;
+    warmup_quota?: number | null;
+  },
   ts: number
 ): { effective_daily_quota: number; warmup_until: number | null } {
   const quota = Number(row.daily_send_quota);
+  const warmupQuota = Number(row.warmup_quota ?? QUOTA.WARMUP_QUOTA);
   const createdAt = Number(row.created_at ?? 0);
   const warmupUntil = createdAt > 0 ? createdAt + QUOTA.WARMUP_HOURS * 3600_000 : 0;
   const applies = warmupUntil > ts && row.warmup_exempt !== 1;
   return {
-    effective_daily_quota: applies ? Math.min(quota, QUOTA.WARMUP_QUOTA) : quota,
+    effective_daily_quota: applies ? Math.min(quota, warmupQuota) : quota,
     warmup_until: applies ? warmupUntil : null,
   };
 }
@@ -869,12 +876,22 @@ async function sendRegistrationEmail(env: Env, to: string, code: string): Promis
  *   owner 或未設定備用 email 者不寄。
  * - 同一訪客**每天最多一封**：以 `auth_attempts` 的 `quota-alert:<userId>:d:<UTC day>`
  *   做原子去重（`ON CONFLICT DO NOTHING`），併發請求也只會有一封。
- * - 只在「每日配額」被擋時呼叫；暖機期 5 封的上限不寄（那不是每日配額）。
- * - 失敗只記 log，不影響 429 回應；稽核只記上限，不含信件內容（N9）。
+ * - **暖機期上限被擋也寄**（2026-11-09 修正）：內容標明暖機期上限與結束時間；
+ *   每日配額被擋則標明每日上限與 UTC 00:00 重置。
+ * - 失敗只記 log，不影響 429 回應；稽核只記上限與是否暖機，不含信件內容（N9）。
  */
 async function sendQuotaAlert(
   c: Context<AuthEnv>,
-  opts: { userId: number; addressId: number; addressEmail: string; limit: number; ts: number }
+  opts: {
+    userId: number;
+    addressId: number;
+    addressEmail: string;
+    limit: number;
+    dailyLimit: number;
+    warmup: boolean;
+    warmupUntil: number | null;
+    ts: number;
+  }
 ): Promise<void> {
   try {
     const user = await c.env.DB.prepare(
@@ -894,20 +911,34 @@ async function sendQuotaAlert(
       .run();
     if (claim.meta.changes !== 1) return; // 今天已提醒過
 
-    const text =
-      `您今日的 AtWhoMail 寄信額度已用完（每日上限 ${opts.limit} 封）。\n\n` +
-      `額度會於 UTC 00:00（台灣時間上午 8 點）重置，隔日即可繼續寄信。\n` +
-      `若這不是您本人的操作，請登入 AtWhoMail 檢查帳號。\n\n` +
-      `地址：${opts.addressEmail}`;
-    const html =
-      `<p>您今日的 AtWhoMail 寄信額度已用完（每日上限 <strong>${opts.limit}</strong> 封）。</p>` +
-      `<p>額度會於 UTC 00:00（台灣時間上午 8 點）重置，隔日即可繼續寄信。</p>` +
-      `<p>若這不是您本人的操作，請登入 AtWhoMail 檢查帳號。</p>` +
-      `<p style="color:#666">地址：${opts.addressEmail}</p>`;
+    const warmupEnd =
+      opts.warmupUntil !== null
+        ? `${new Date(opts.warmupUntil).toISOString().slice(0, 16).replace("T", " ")} UTC`
+        : "";
+    const text = opts.warmup
+      ? `您今日的 AtWhoMail 寄信額度已用完（暖機期上限 ${opts.limit} 封）。\n\n` +
+        `暖機期將於 ${warmupEnd} 結束；結束後每日上限為 ${opts.dailyLimit} 封。\n` +
+        `若這不是您本人的操作，請登入 AtWhoMail 檢查帳號。\n\n` +
+        `地址：${opts.addressEmail}`
+      : `您今日的 AtWhoMail 寄信額度已用完（每日上限 ${opts.limit} 封）。\n\n` +
+        `額度會於 UTC 00:00（台灣時間上午 8 點）重置，隔日即可繼續寄信。\n` +
+        `若這不是您本人的操作，請登入 AtWhoMail 檢查帳號。\n\n` +
+        `地址：${opts.addressEmail}`;
+    const html = opts.warmup
+      ? `<p>您今日的 AtWhoMail 寄信額度已用完（暖機期上限 <strong>${opts.limit}</strong> 封）。</p>` +
+        `<p>暖機期將於 ${warmupEnd} 結束；結束後每日上限為 ${opts.dailyLimit} 封。</p>` +
+        `<p>若這不是您本人的操作，請登入 AtWhoMail 檢查帳號。</p>` +
+        `<p style="color:#666">地址：${opts.addressEmail}</p>`
+      : `<p>您今日的 AtWhoMail 寄信額度已用完（每日上限 <strong>${opts.limit}</strong> 封）。</p>` +
+        `<p>額度會於 UTC 00:00（台灣時間上午 8 點）重置，隔日即可繼續寄信。</p>` +
+        `<p>若這不是您本人的操作，請登入 AtWhoMail 檢查帳號。</p>` +
+        `<p style="color:#666">地址：${opts.addressEmail}</p>`;
     await c.env.EMAIL.send({
       from: "noreply@atwho.org",
       to: [user.contact_email],
-      subject: `AtWhoMail 寄信額度已用完（${opts.limit} 封）`,
+      subject: opts.warmup
+        ? `AtWhoMail 暖機期寄信額度已用完（${opts.limit} 封）`
+        : `AtWhoMail 寄信額度已用完（${opts.limit} 封）`,
       text,
       html,
     });
@@ -917,7 +948,7 @@ async function sendQuotaAlert(
       addressId: opts.addressId,
       ip: clientIp(c),
       userAgent: c.req.header("user-agent") ?? null,
-      detail: { limit: opts.limit },
+      detail: { limit: opts.limit, warmup: opts.warmup },
     });
   } catch (e) {
     console.error("[atwhomail-api] quota alert failed", { error: String(e) });
@@ -2289,6 +2320,7 @@ interface AccountSettingsAddressRow {
   sent_today: number;
   created_at?: number;
   warmup_exempt?: number;
+  warmup_quota?: number | null;
 }
 
 /** 目前 session 對應的 `users.id`（owner → token sub；mailbox → 地址所屬使用者） */
@@ -2325,10 +2357,12 @@ app.get("/api/account/settings", requireSession, async (c) => {
     .first<AccountSettingsUserRow>();
   if (!user) return err(c, "NOT_FOUND", "user not found", 404);
 
+  const warmupQuotaCol = await warmupQuotaColumn(c.env.DB);
   let addresses: AccountSettingsAddressRow[];
   if (scope.kind === "owner") {
     const { results } = await c.env.DB.prepare(
-      `SELECT id, email, status, daily_send_quota, sent_today, created_at, warmup_exempt
+      `SELECT id, email, status, daily_send_quota, sent_today, created_at, warmup_exempt,
+              ${warmupQuotaCol} AS warmup_quota
        FROM email_addresses
        WHERE user_id = ?1 AND deleted_at IS NULL
        ORDER BY id`
@@ -2338,7 +2372,8 @@ app.get("/api/account/settings", requireSession, async (c) => {
     addresses = results;
   } else {
     const row = await c.env.DB.prepare(
-      `SELECT id, email, status, daily_send_quota, sent_today, created_at, warmup_exempt
+      `SELECT id, email, status, daily_send_quota, sent_today, created_at, warmup_exempt,
+              ${warmupQuotaCol} AS warmup_quota
        FROM email_addresses
        WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`
     )
@@ -2349,7 +2384,11 @@ app.get("/api/account/settings", requireSession, async (c) => {
 
   // D34：附上暖機期折算後的有效配額（前端顯示「暖機期上限 5（至 …）」而不是 50）
   const ts = now();
-  const settingsAddresses = addresses.map((a) => ({ ...a, ...quotaView(a, ts) }));
+  const settingsAddresses = addresses.map((a) => ({
+    ...a,
+    warmup_quota: Number(a.warmup_quota ?? QUOTA.WARMUP_QUOTA),
+    ...quotaView(a, ts),
+  }));
 
   return c.json({
     user_id: Number(user.id),
@@ -3172,8 +3211,10 @@ app.get("/api/me", requireMailSession, async (c) => {
     const user = await c.env.DB.prepare("SELECT username, role FROM users WHERE id = ?1")
       .bind(scope.userId)
       .first<{ username: string; role: string }>();
+    const warmupQuotaCol = await warmupQuotaColumn(c.env.DB);
     const { results } = await c.env.DB.prepare(
-      `SELECT id, email, can_send, daily_send_quota, sent_today, quota_reset_at, created_at, warmup_exempt
+      `SELECT id, email, can_send, daily_send_quota, sent_today, quota_reset_at, created_at, warmup_exempt,
+              ${warmupQuotaCol} AS warmup_quota
        FROM email_addresses WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY id`
     )
       .bind(scope.userId)
@@ -3183,15 +3224,25 @@ app.get("/api/me", requireMailSession, async (c) => {
       role: user?.role ?? "owner",
       session: "owner",
       username: user?.username ?? null,
-      addresses: (results as Array<{ daily_send_quota: number; created_at: number; warmup_exempt: number }>).map(
-        (a) => ({ ...a, ...quotaView(a, ts) })
-      ),
+      addresses: (
+        results as Array<{
+          daily_send_quota: number;
+          created_at: number;
+          warmup_exempt: number;
+          warmup_quota: number | null;
+        }>
+      ).map((a) => ({
+        ...a,
+        warmup_quota: Number(a.warmup_quota ?? QUOTA.WARMUP_QUOTA),
+        ...quotaView(a, ts),
+      })),
     });
   }
 
+  const warmupQuotaCol = await warmupQuotaColumn(c.env.DB, "a.");
   const row = await c.env.DB.prepare(
     `SELECT a.id, a.email, a.can_send, a.daily_send_quota, a.sent_today, a.quota_reset_at,
-            a.created_at, a.warmup_exempt, u.username, u.role
+            a.created_at, a.warmup_exempt, ${warmupQuotaCol} AS warmup_quota, u.username, u.role
      FROM email_addresses a JOIN users u ON u.id = a.user_id
      WHERE a.id = ?1 AND a.deleted_at IS NULL`
   )
@@ -3205,6 +3256,7 @@ app.get("/api/me", requireMailSession, async (c) => {
       quota_reset_at: number | null;
       created_at: number;
       warmup_exempt: number;
+      warmup_quota: number | null;
       username: string;
       role: string;
     }>();
@@ -3223,6 +3275,7 @@ app.get("/api/me", requireMailSession, async (c) => {
         quota_reset_at: row.quota_reset_at,
         created_at: row.created_at,
         warmup_exempt: row.warmup_exempt,
+        warmup_quota: Number(row.warmup_quota ?? QUOTA.WARMUP_QUOTA),
         ...quotaView(row, now()),
       },
     ],
@@ -3268,6 +3321,26 @@ async function hasWarmupExemptColumn(db: D1Database): Promise<boolean> {
   }
 }
 
+/**
+ * migration `0017_warmup_quota` 是否已套用（`email_addresses.warmup_quota`）。
+ *
+ * ⚠️ 與 `warmup_exempt` 相同：程式可能先部署、migration 後套用。欄位不存在時
+ *    查詢用 `NULL` 取代，`quotaView`／寄信路徑一律回退 `QUOTA.WARMUP_QUOTA`（5）。
+ */
+async function hasWarmupQuotaColumn(db: D1Database): Promise<boolean> {
+  try {
+    await db.prepare("SELECT warmup_quota FROM email_addresses LIMIT 1").first();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 取暖機配額欄位（未套 migration 0017 → `NULL`，程式回退預設 5） */
+async function warmupQuotaColumn(db: D1Database, prefix = ""): Promise<string> {
+  return (await hasWarmupQuotaColumn(db)) ? `${prefix}warmup_quota` : "NULL";
+}
+
 /** 單一地址是否暖機豁免（欄位不存在／查詢失敗 → false，回退為一般暖機限制） */
 async function isWarmupExempt(db: D1Database, addressId: number): Promise<boolean> {
   try {
@@ -3297,12 +3370,14 @@ app.get("/api/users", requireOwner, async (c) => {
   if (role !== "visitor") return err(c, "INVALID_ROLE", 'role 只能是 "visitor"', 400);
 
   const warmupCol = (await hasWarmupExemptColumn(c.env.DB)) ? "a.warmup_exempt" : "0";
+  const warmupQuotaCol = await warmupQuotaColumn(c.env.DB, "a.");
   const { results } = await c.env.DB.prepare(
     `SELECT u.id AS id, u.username AS username, u.status AS status,
             u.created_at AS created_at, u.updated_at AS updated_at,
             a.id AS address_id, a.email AS email, a.status AS address_status,
             a.can_send AS can_send, a.daily_send_quota AS daily_send_quota,
             a.sent_today AS sent_today, ${warmupCol} AS warmup_exempt,
+            ${warmupQuotaCol} AS warmup_quota,
             (SELECT COUNT(*) FROM messages m
               WHERE m.address_id = a.id AND m.deleted_at IS NULL) AS mail_count,
             (SELECT MAX(m.received_at) FROM messages m
@@ -3324,6 +3399,7 @@ app.get("/api/users", requireOwner, async (c) => {
     daily_send_quota: number | null;
     sent_today: number | null;
     warmup_exempt: number;
+    warmup_quota: number | null;
     mail_count: number;
     last_mail_at: number | null;
   }>();
@@ -3350,6 +3426,7 @@ app.get("/api/users", requireOwner, async (c) => {
               daily_send_quota: r.daily_send_quota,
               sent_today: r.sent_today,
               warmup_exempt: r.warmup_exempt,
+              warmup_quota: Number(r.warmup_quota ?? QUOTA.WARMUP_QUOTA),
             },
       mail_count: Number(r.mail_count ?? 0),
       last_activity_at: r.last_mail_at ?? r.updated_at ?? null,
@@ -3362,6 +3439,7 @@ app.get("/api/users", requireOwner, async (c) => {
  * PATCH /api/users/:id/quota — 調整每日寄信配額與寄信安全閥（owner；D5）
  *
  * - `daily_send_quota`：整數 **1–50**，超出 → `422 INVALID_QUOTA`
+ * - `warmup_quota`：暖機期上限，整數 **1–50**（預設 5；D35），超出 → `422 INVALID_WARMUP_QUOTA`
  * - `can_send`：boolean（或 0／1）＝安全閥 C8，`false` 立即停止該使用者的寄信
  * - 套用到該使用者名下**所有未刪除**的地址（訪客通常只有一個）
  * - 稽核：`quota_changed`（含 owner id、目標 user id 與新值）
@@ -3372,10 +3450,15 @@ app.patch("/api/users/:id/quota", requireOwner, async (c) => {
   if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
 
   const body = await c.req
-    .json<{ daily_send_quota?: unknown; can_send?: unknown }>()
+    .json<{ daily_send_quota?: unknown; warmup_quota?: unknown; can_send?: unknown }>()
     .catch(() => null);
-  if (!body || (body.daily_send_quota === undefined && body.can_send === undefined)) {
-    return err(c, "NO_UPDATE_FIELD", "需提供 daily_send_quota 或 can_send", 400);
+  if (
+    !body ||
+    (body.daily_send_quota === undefined &&
+      body.warmup_quota === undefined &&
+      body.can_send === undefined)
+  ) {
+    return err(c, "NO_UPDATE_FIELD", "需提供 daily_send_quota、warmup_quota 或 can_send", 400);
   }
 
   let quota: number | null = null;
@@ -3385,6 +3468,14 @@ app.patch("/api/users/:id/quota", requireOwner, async (c) => {
       return err(c, "INVALID_QUOTA", `daily_send_quota 需為 ${QUOTA_MIN}–${QUOTA_MAX} 的整數`, 422);
     }
     quota = n;
+  }
+  let warmupQuota: number | null = null;
+  if (body.warmup_quota !== undefined) {
+    const n = Number(body.warmup_quota);
+    if (!Number.isInteger(n) || n < QUOTA_MIN || n > QUOTA_MAX) {
+      return err(c, "INVALID_WARMUP_QUOTA", `warmup_quota 需為 ${QUOTA_MIN}–${QUOTA_MAX} 的整數`, 422);
+    }
+    warmupQuota = n;
   }
   let canSend: number | null = null;
   if (body.can_send !== undefined) {
@@ -3397,15 +3488,30 @@ app.patch("/api/users/:id/quota", requireOwner, async (c) => {
   const user = await c.env.DB.prepare("SELECT id FROM users WHERE id = ?1").bind(id).first<{ id: number }>();
   if (!user) return err(c, "NOT_FOUND", "user not found", 404);
 
-  const res = await c.env.DB.prepare(
-    `UPDATE email_addresses
-     SET daily_send_quota = COALESCE(?1, daily_send_quota),
-         can_send         = COALESCE(?2, can_send),
-         updated_at       = ?3
-     WHERE user_id = ?4 AND deleted_at IS NULL`
-  )
-    .bind(quota, canSend, now(), id)
-    .run();
+  const hasWarmupQuota = await hasWarmupQuotaColumn(c.env.DB);
+  if (warmupQuota !== null && !hasWarmupQuota) {
+    return err(c, "MIGRATION_REQUIRED", "暖機配額需要先套用 migration 0017", 409);
+  }
+  const res = hasWarmupQuota
+    ? await c.env.DB.prepare(
+        `UPDATE email_addresses
+         SET daily_send_quota = COALESCE(?1, daily_send_quota),
+             warmup_quota     = COALESCE(?2, warmup_quota),
+             can_send         = COALESCE(?3, can_send),
+             updated_at       = ?4
+         WHERE user_id = ?5 AND deleted_at IS NULL`
+      )
+        .bind(quota, warmupQuota, canSend, now(), id)
+        .run()
+    : await c.env.DB.prepare(
+        `UPDATE email_addresses
+         SET daily_send_quota = COALESCE(?1, daily_send_quota),
+             can_send         = COALESCE(?2, can_send),
+             updated_at       = ?3
+         WHERE user_id = ?4 AND deleted_at IS NULL`
+      )
+        .bind(quota, canSend, now(), id)
+        .run();
   if (res.meta.changes < 1) return err(c, "NO_ADDRESS", "此使用者沒有可設定的地址", 404);
 
   auditAsync(c, {
@@ -3417,6 +3523,7 @@ app.patch("/api/users/:id/quota", requireOwner, async (c) => {
       by: scope.kind === "owner" ? scope.userId : null,
       addresses: res.meta.changes,
       daily_send_quota: quota,
+      warmup_quota: warmupQuota,
       can_send: canSend,
     },
   });
@@ -3425,6 +3532,7 @@ app.patch("/api/users/:id/quota", requireOwner, async (c) => {
     user_id: id,
     addresses: res.meta.changes,
     daily_send_quota: quota,
+    warmup_quota: warmupQuota,
     can_send: canSend,
   });
 });
@@ -5057,8 +5165,12 @@ app.post("/api/mail/send", requireMailSession, async (c) => {
     sent_today: number;
     quota_reset_at: number | null;
     created_at: number;
+    warmup_quota: number | null;
   };
-  const fromCols = "id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at";
+  const warmupQuotaCol = await warmupQuotaColumn(c.env.DB);
+  const fromCols =
+    `id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at, ` +
+    `${warmupQuotaCol} AS warmup_quota`;
   let fromAddr: FromRow | null =
     scope.kind === "owner"
       ? await c.env.DB.prepare(
@@ -5085,7 +5197,7 @@ app.post("/api/mail/send", requireMailSession, async (c) => {
   if (!fromAddr) {
     const aliasRow = await c.env.DB.prepare(
       `SELECT a.alias_address, e.id, e.email, e.user_id, e.can_send, e.daily_send_quota,
-              e.sent_today, e.quota_reset_at, e.created_at
+              e.sent_today, e.quota_reset_at, e.created_at, ${warmupQuotaCol} AS warmup_quota
          FROM email_aliases a
          JOIN email_addresses e ON e.id = a.target_email_address_id
         WHERE a.alias_address = ?1 AND a.status = 'active'
@@ -5166,8 +5278,9 @@ app.post("/api/mail/send", requireMailSession, async (c) => {
   //    但仍受 daily_send_quota（每日上限）約束；migration 未套用時此查詢回 false（行為不變）。
   const inWarmup = ts0 < Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000;
   const warmupApplies = inWarmup && !(await isWarmupExempt(c.env.DB, fromAddr.id));
+  const warmupQuota = Number(fromAddr.warmup_quota ?? QUOTA.WARMUP_QUOTA);
   const effectiveLimit = warmupApplies
-    ? Math.min(Number(fromAddr.daily_send_quota), QUOTA.WARMUP_QUOTA)
+    ? Math.min(Number(fromAddr.daily_send_quota), warmupQuota)
     : Number(fromAddr.daily_send_quota);
 
   // 5) 原子扣配額（硬性要求：不得寫成「先 SELECT 再 UPDATE」→ 併發下才不會超額）
@@ -5184,19 +5297,22 @@ app.post("/api/mail/send", requireMailSession, async (c) => {
       event: "send_rejected_quota",
       detail: { limit: effectiveLimit, warmup: warmupApplies },
     });
-    // 只有「每日配額」被擋才提醒（暖機期 5 封不是每日上限）
-    if (!warmupApplies) {
-      runInBackground(
-        c,
-        sendQuotaAlert(c, {
-          userId: fromAddr.user_id,
-          addressId: fromAddr.id,
-          addressEmail: fromAddr.email,
-          limit: effectiveLimit,
-          ts: ts0,
-        })
-      );
-    }
+    // 每日配額或暖機期上限被擋都提醒；內容會標明是哪一種
+    runInBackground(
+      c,
+      sendQuotaAlert(c, {
+        userId: fromAddr.user_id,
+        addressId: fromAddr.id,
+        addressEmail: fromAddr.email,
+        limit: effectiveLimit,
+        dailyLimit: Number(fromAddr.daily_send_quota),
+        warmup: warmupApplies,
+        warmupUntil: warmupApplies
+          ? Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000
+          : null,
+        ts: ts0,
+      })
+    );
     return err(
       c,
       "QUOTA_EXCEEDED",
@@ -5506,20 +5622,23 @@ app.post("/api/forms/send", requireMailSession, async (c) => {
     return err(c, "INVALID_FROM", "from 必填且需為完整地址", 400);
   }
   const fromEmail = body.from.trim().toLowerCase();
+  const warmupQuotaCol = await warmupQuotaColumn(c.env.DB);
   const fromAddr =
     scope.kind === "owner"
       ? await c.env.DB.prepare(
-          `SELECT id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at
+          `SELECT id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at,
+                  ${warmupQuotaCol} AS warmup_quota
            FROM email_addresses WHERE email = ?1 AND user_id = ?2 AND status = 'active' AND deleted_at IS NULL`
         )
           .bind(fromEmail, scope.userId)
-          .first<{ id: number; email: string; user_id: number; can_send: number; daily_send_quota: number; sent_today: number; quota_reset_at: number | null; created_at: number }>()
+          .first<{ id: number; email: string; user_id: number; can_send: number; daily_send_quota: number; sent_today: number; quota_reset_at: number | null; created_at: number; warmup_quota: number | null }>()
       : await c.env.DB.prepare(
-          `SELECT id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at
+          `SELECT id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at,
+                  ${warmupQuotaCol} AS warmup_quota
            FROM email_addresses WHERE email = ?1 AND id = ?2 AND status = 'active' AND deleted_at IS NULL`
         )
           .bind(fromEmail, scope.addressId)
-          .first<{ id: number; email: string; user_id: number; can_send: number; daily_send_quota: number; sent_today: number; quota_reset_at: number | null; created_at: number }>();
+          .first<{ id: number; email: string; user_id: number; can_send: number; daily_send_quota: number; sent_today: number; quota_reset_at: number | null; created_at: number; warmup_quota: number | null }>();
   if (!fromAddr) return err(c, "FROM_NOT_ALLOWED", "from 不屬於此 session 的 active 地址", 403);
 
   const toList = normalizeRecipients(body.to);
@@ -5589,8 +5708,9 @@ app.post("/api/forms/send", requireMailSession, async (c) => {
   }
   const inWarmup = ts0 < Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000;
   const warmupApplies = inWarmup && !(await isWarmupExempt(c.env.DB, fromAddr.id));
+  const warmupQuota = Number(fromAddr.warmup_quota ?? QUOTA.WARMUP_QUOTA);
   const effectiveLimit = warmupApplies
-    ? Math.min(Number(fromAddr.daily_send_quota), QUOTA.WARMUP_QUOTA)
+    ? Math.min(Number(fromAddr.daily_send_quota), warmupQuota)
     : Number(fromAddr.daily_send_quota);
   const deduct = await c.env.DB.prepare(
     `UPDATE email_addresses
@@ -5601,18 +5721,21 @@ app.post("/api/forms/send", requireMailSession, async (c) => {
     .run();
   if (deduct.meta.changes !== 1) {
     auditAsync(c, { ...auditCtx, event: "send_rejected_quota", detail: { limit: effectiveLimit, warmup: warmupApplies } });
-    if (!warmupApplies) {
-      runInBackground(
-        c,
-        sendQuotaAlert(c, {
-          userId: fromAddr.user_id,
-          addressId: fromAddr.id,
-          addressEmail: fromAddr.email,
-          limit: effectiveLimit,
-          ts: ts0,
-        })
-      );
-    }
+    runInBackground(
+      c,
+      sendQuotaAlert(c, {
+        userId: fromAddr.user_id,
+        addressId: fromAddr.id,
+        addressEmail: fromAddr.email,
+        limit: effectiveLimit,
+        dailyLimit: Number(fromAddr.daily_send_quota),
+        warmup: warmupApplies,
+        warmupUntil: warmupApplies
+          ? Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000
+          : null,
+        ts: ts0,
+      })
+    );
     return err(c, "QUOTA_EXCEEDED", `已達寄信上限（${effectiveLimit} 封）`, 429);
   }
   const recent = await c.env.DB.prepare(

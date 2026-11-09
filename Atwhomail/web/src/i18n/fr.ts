@@ -652,8 +652,10 @@ export const FR_MESSAGES: Record<string, string> = {
   "每日寄信配額（1–50）": "Quota d’envoi quotidien (1–50)",
   "允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）":
     "Autoriser l’envoi (décocher = soupape de sécurité : arrêter immédiatement tout envoi de ce compte)",
-  "暖機豁免（跳過註冊後 24 小時的 5 封上限）":
-    "Exemption de préchauffage (ignorer la limite de 5 messages pendant les 24 heures suivant l’inscription)",
+  "暖機期上限（1–50，預設 5）": "Limite de préchauffage (1–50, par défaut 5)",
+  "暖機配額需為 1–50 的整數": "Le quota de préchauffage doit être un entier de 1 à 50.",
+  "暖機豁免（跳過註冊後 24 小時的暖機上限）":
+    "Exemption de préchauffage (ignorer la limite de préchauffage des 24 premières heures)",
   "⚠️ 暖機豁免會讓新帳號立刻能寄到每日配額上限，可能影響寄信聲譽（新網域尤其敏感）。豁免後仍受每日配額與每小時限流約束，不是無上限；此外需要 migration 0007 已套用。":
     "⚠️ Une exemption de préchauffage permet à un nouveau compte d’envoyer immédiatement jusqu’à son quota quotidien et peut nuire à la réputation d’envoi (surtout pour un nouveau domaine). Elle reste limitée par le quota quotidien et la limite horaire ; elle n’est pas illimitée. La migration 0007 doit en outre être appliquée.",
   "套用中…": "Application…",

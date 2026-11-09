@@ -652,8 +652,10 @@ export const EN_MESSAGES: Record<string, string> = {
   "每日寄信配額（1–50）": "Daily sending quota (1–50)",
   "允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）":
     "Allow sending (uncheck = safety switch: stop all sending for this account immediately)",
-  "暖機豁免（跳過註冊後 24 小時的 5 封上限）":
-    "Warm-up exemption (skip the 5-message limit for the first 24 hours)",
+  "暖機期上限（1–50，預設 5）": "Warm-up limit (1–50, default 5)",
+  "暖機配額需為 1–50 的整數": "The warm-up quota must be an integer from 1 to 50.",
+  "暖機豁免（跳過註冊後 24 小時的暖機上限）":
+    "Warm-up exemption (skip the warm-up limit for the first 24 hours)",
   "⚠️ 暖機豁免會讓新帳號立刻能寄到每日配額上限，可能影響寄信聲譽（新網域尤其敏感）。豁免後仍受每日配額與每小時限流約束，不是無上限；此外需要 migration 0007 已套用。":
     "⚠️ A warm-up exemption lets a new account send up to its daily quota immediately and may hurt sending reputation (especially for a new domain). It is still limited by the daily quota and hourly rate limit; migration 0007 must be applied.",
   "套用中…": "Applying…",

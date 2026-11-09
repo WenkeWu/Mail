@@ -64,6 +64,7 @@ function formatActivity(ts: number | null): string {
 interface EditState {
   user: VisitorUser;
   quota: string;
+  warmupQuota: string;
   canSend: boolean;
   warmupExempt: boolean;
 }
@@ -153,12 +154,13 @@ export function VisitorManager({ onBack, onToast }: Props) {
     setEdit({
       user,
       quota: String(user.address?.daily_send_quota ?? ""),
+      warmupQuota: String(user.address?.warmup_quota ?? 5),
       canSend: (user.address?.can_send ?? 1) === 1,
       warmupExempt: (user.address?.warmup_exempt ?? 0) === 1,
     });
   };
 
-  /** 套用配額（1–50）＋寄信安全閥；暖機豁免為選配（migration 0007 未套用時回 409） */
+  /** 套用每日配額／暖機上限（皆 1–50）＋寄信安全閥；暖機豁免為選配（migration 0007 未套用時回 409） */
   const submitEdit = async () => {
     if (!edit) return;
     const quota = Number(edit.quota);
@@ -166,9 +168,18 @@ export function VisitorManager({ onBack, onToast }: Props) {
       onToast(t("每日配額需為 1–50 的整數"), "error");
       return;
     }
+    const warmupQuota = Number(edit.warmupQuota);
+    if (!Number.isInteger(warmupQuota) || warmupQuota < 1 || warmupQuota > 50) {
+      onToast(t("暖機配額需為 1–50 的整數"), "error");
+      return;
+    }
     setBusyId(edit.user.id);
     try {
-      await setUserQuota(edit.user.id, { daily_send_quota: quota, can_send: edit.canSend });
+      await setUserQuota(edit.user.id, {
+        daily_send_quota: quota,
+        warmup_quota: warmupQuota,
+        can_send: edit.canSend,
+      });
       const wasExempt = (edit.user.address?.warmup_exempt ?? 0) === 1;
       if (edit.warmupExempt !== wasExempt) {
         try {
@@ -419,6 +430,16 @@ export function VisitorManager({ onBack, onToast }: Props) {
               onChange={(e) => setEdit({ ...edit, quota: e.target.value })}
             />
           </label>
+          <label className="field-row">
+            <span>{t("暖機期上限（1–50，預設 5）")}</span>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={edit.warmupQuota}
+              onChange={(e) => setEdit({ ...edit, warmupQuota: e.target.value })}
+            />
+          </label>
           <label className="field-row checkbox-row">
             <input
               type="checkbox"
@@ -433,7 +454,7 @@ export function VisitorManager({ onBack, onToast }: Props) {
               checked={edit.warmupExempt}
               onChange={(e) => setEdit({ ...edit, warmupExempt: e.target.checked })}
             />
-            <span>{t("暖機豁免（跳過註冊後 24 小時的 5 封上限）")}</span>
+            <span>{t("暖機豁免（跳過註冊後 24 小時的暖機上限）")}</span>
           </label>
           <p className="warn-text">
             {t("⚠️ 暖機豁免會讓新帳號立刻能寄到每日配額上限，可能影響寄信聲譽（新網域尤其敏感）。豁免後仍受每日配額與每小時限流約束，不是無上限；此外需要 migration 0007 已套用。")}

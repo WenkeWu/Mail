@@ -90,6 +90,7 @@ async function seedAddress(opts: {
   contactEmail?: string | null;
   quota?: number;
   sentToday?: number;
+  warmupQuota?: number;
   createdAt?: number;
 }): Promise<{ userId: number; addressId: number }> {
   const ts = opts.createdAt ?? Date.now() - 2 * 24 * 3600_000; // 預設已過暖機期
@@ -104,11 +105,12 @@ async function seedAddress(opts: {
   const userId = Number(userRes.meta.last_row_id);
   const localPart = opts.email.split("@")[0]!;
   const quota = opts.quota ?? 2;
+  const warmupQuota = opts.warmupQuota ?? 5;
   const addrRes = await E.DB.prepare(
     `INSERT INTO email_addresses
        (user_id, local_part, domain, email, password_hash, password_changed_at, status,
-        can_send, daily_send_quota, sent_today, quota_reset_at, created_at, updated_at)
-     VALUES (?1, ?2, 'atwho.org', ?3, ?4, ?4, 'active', 1, ?5, ?6, ?7, ?8, ?8)`
+        can_send, daily_send_quota, sent_today, warmup_quota, quota_reset_at, created_at, updated_at)
+     VALUES (?1, ?2, 'atwho.org', ?3, ?4, ?4, 'active', 1, ?5, ?6, ?7, ?8, ?9, ?9)`
   )
     .bind(
       userId,
@@ -117,6 +119,7 @@ async function seedAddress(opts: {
       await hash(),
       quota,
       opts.sentToday ?? quota,
+      warmupQuota,
       Date.now() + 86_400_000,
       ts
     )
@@ -161,7 +164,7 @@ describe("D33：訪客超額提醒信", () => {
     const audit = await E.DB.prepare(
       "SELECT detail FROM registration_audit WHERE event = 'quota_alert_sent'"
     ).first<{ detail: string }>();
-    expect(JSON.parse(audit!.detail)).toEqual({ limit: 2 });
+    expect(JSON.parse(audit!.detail)).toEqual({ limit: 2, warmup: false });
   });
 
   it("同一訪客同一天重複超額 → 只寄一封", async () => {
@@ -194,7 +197,7 @@ describe("D33：訪客超額提醒信", () => {
     expect(sentMails).toHaveLength(0);
   });
 
-  it("暖機期 5 封上限被擋 → 不寄提醒信（那不是每日配額）", async () => {
+  it("暖機期 5 封上限被擋 → 也寄提醒信（內容標明暖機期與結束時間）", async () => {
     await seedAddress({
       email: "warm@atwho.org",
       quota: 50,
@@ -206,7 +209,38 @@ describe("D33：訪客超額提醒信", () => {
     const res = await sendMail(token, "warm@atwho.org");
     expect(res.status).toBe(429);
     expect((await json<{ error: { message: string } }>(res)).error.message).toContain("暖機");
-    expect(sentMails).toHaveLength(0);
+
+    expect(sentMails).toHaveLength(1);
+    const mail = sentMails[0]!;
+    expect(mail.subject).toContain("暖機期");
+    expect(mail.text).toContain("暖機期上限 5 封");
+    expect(mail.text).toContain("結束後每日上限為 50 封");
+    expect(mail.text).toContain(" UTC");
+
+    const audit = await E.DB.prepare(
+      "SELECT detail FROM registration_audit WHERE event = 'quota_alert_sent'"
+    ).first<{ detail: string }>();
+    expect(JSON.parse(audit!.detail)).toEqual({ limit: 5, warmup: true });
+  });
+
+  it("D35：暖機上限改為 10 → 第 11 封被擋，提醒信標明 10 封", async () => {
+    await seedAddress({
+      email: "warm10@atwho.org",
+      quota: 50,
+      sentToday: 10,
+      warmupQuota: 10,
+      createdAt: Date.now(),
+    });
+    const token = await login("warm10@atwho.org");
+
+    const res = await sendMail(token, "warm10@atwho.org");
+    expect(res.status).toBe(429);
+    expect((await json<{ error: { message: string } }>(res)).error.message).toContain("10");
+
+    expect(sentMails).toHaveLength(1);
+    expect(sentMails[0]!.subject).toContain("10");
+    expect(sentMails[0]!.text).toContain("暖機期上限 10 封");
+    expect(sentMails[0]!.text).toContain("結束後每日上限為 50 封");
   });
 
   it("互動式表單寄送超過配額 → 同樣寄提醒信", async () => {

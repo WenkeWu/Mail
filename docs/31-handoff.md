@@ -21,11 +21,12 @@
 | **D32** | **全站語系與區域設定**：登入頁＋個人設置的國家／語言選擇；**10 種語言**；**國家選單依目前語言過濾**；時區優先、判斷不到才用 Cloudflare IP 國別；日期依國家格式 | ✅ 上線（2026-11-06；`bfb5fd3`／API `11dd0a3e`／Pages `9873d79f`）<br>✅ 2026-11-07 國家過濾修正（Pages `b6c8a2ee`）| docs/32 |
 | **D33** | **訪客每日配額統一 50**（既有＋新註冊＋OAuth）；管理頁可調 1–50；**超額被擋時寄提醒信給訪客的備用電子郵件**（每日最多一封；暖機期被擋也寄） | ✅ 上線（2026-11-08；`a27b4e4`／API `39a9abc2`／Pages `ceef6a57`）<br>✅ 2026-11-09 暖機期提醒修正（API `1796328d`） | docs/05 §2.32、docs/16 |
 | D19 | 信箱 UX（軟刪／批次／清空垃圾桶／checkbox／D1 分塊／form FK）| ✅ 上線 | docs/19 |
-| **D34** | **配額顯示與實際一致**：`/api/me`、`/api/account/settings` 多回 `effective_daily_quota`（暖機中 = min(配額,5)）＋ `warmup_until`；個人設置／側欄顯示「暖機期上限 5（至 …）」而不是 50；撰寫鈕的額度判斷同步改用有效值 | ✅ 上線（2026-11-08；`168b03c`／API `29a1c860`／Pages `59de8e9d`）| docs/05 §2.32 |
+| **D34** | **配額顯示與實際一致**：`/api/me`、`/api/account/settings` 多回 `effective_daily_quota`（暖機中 = min(配額, 暖機配額)）＋ `warmup_until`；個人設置／側欄顯示有效上限；撰寫鈕的額度判斷同步改用有效值 | ✅ 上線（2026-11-08；`168b03c`／API `29a1c860`／Pages `59de8e9d`）| docs/05 §2.32 |
+| **D35** | **暖機期上限可調**：每地址 `warmup_quota`（預設 **5**、1–50）；`mail.atwho.org` 訪客管理「寄信設定」可調整；暖機期有效上限 = `min(每日配額, 暖機配額)` | 🟡 程式完成（2026-11-09）；migration `0017`／API／前端待部署 | docs/05 §2.33、docs/16 |
 | P1/P2、D16–D18 | 互動式表單（內部限定、四道鎖、RJSF lazy-load）| ✅ 上線 | docs/18 |
 | D17 | 備份 13 表 ＋ watchdog 去抖 ＋ 退避重試 | ✅ 上線 | docs/17 |
 
-**測試基準**：`pnpm test` → **591**（workerd 467 ＋ web DOM 124）；`pnpm lint` 8/8；`pnpm build` 8/8。
+**測試基準**：`pnpm test` → **595**（workerd 470 ＋ web DOM 125）；`pnpm lint` 8/8；`pnpm build` 8/8。
 
 ---
 
@@ -46,6 +47,7 @@
 | **三種寄信身分**（D31） | **真實 ID**（固定）／**暱稱**（每帳號 1 個啟用中，可變更，舊的立即停用）／**隱身代號**（Token；帳號建立時自動產生 16 hex，不隨暱稱變更）|
 | **語系預設**（D32） | 語言：已存偏好 → 該國第一語言 → English；國家：已存偏好 → **時區** → 時區判斷不到才用 **Cloudflare `CF-IPCountry`**（`/api/geo`）→ English fallback。國家選單**依語言過濾**（例：繁中→台港澳、日語→日本） |
 | **訪客配額**（D33） | **所有訪客每日 50 封**；管理頁可調 1–50。超過**每日配額或暖機期上限**被擋時，寄提醒信到**訪客的備用電子郵件**（`users.contact_email`），每訪客每日最多一封；暖機期信件標明暖機上限與結束時間 |
+| **暖機配額**（D35） | 每地址 `warmup_quota` 預設 **5**、可調 **1–50**；暖機期有效上限 `min(每日配額, 暖機配額)`；訪客管理的「寄信設定」可調整；`warmup_exempt=1` 仍可整個跳過 |
 
 ---
 
@@ -67,7 +69,7 @@
 ## 4. 常用指令（在 `D:\Mail\Atwhomail`）
 
 ```bash
-pnpm test                 # 591 tests
+pnpm test                 # 595 tests
 pnpm lint                 # 8 workspace
 pnpm build                # 8 workspace
 pnpm secret:scan          # push 前必跑（PUBLIC repo）
@@ -94,7 +96,7 @@ cd packages/api && node ../../node_modules/wrangler/bin/wrangler.js d1 migration
 | Pages | `atwhomail-web` |
 | Workers | `atwhomail-api`／`-email-handler`／`-mta-sts`／`-heartbeat`／**`atwhomail-auth`** |
 | 對外網址 | `app.atwho.org`（公開）／`mail.atwho.org`（Access，owner-only）／**`auth.atwho.org`**（SSO）|
-| Migration 現況 | `0001`–`0016` 已套用 production（`0015` @ 2026-11-06 08:52 UTC；`0016_visitor_quota_50` @ 2026-11-08 00:19 UTC，訪客地址全部改為 50）|
+| Migration 現況 | `0001`–`0016` 已套用 production（`0015` @ 2026-11-06 08:52 UTC；`0016_visitor_quota_50` @ 2026-11-08 00:19 UTC，訪客地址全部改為 50）；**`0017_warmup_quota` 待 owner 套用** |
 
 ---
 
@@ -123,7 +125,8 @@ cd packages/api && node ../../node_modules/wrangler/bin/wrangler.js d1 migration
 | 5 | `provider` 欄位改成可多值（local＋google 並存）| 2h | 目前連結 Google 後 `provider` 會變 `google`（但仍可用密碼登入 ✅）|
 | 6 | 別名 Phase 2（反向別名）| 9h | **已決議不實作** ✅ |
 | 7 | **D33 部署**：套用 `0016` → 部署 API → 部署前端 | — | ✅ 完成（2026-11-08；migration `0016` @00:19 UTC、API `39a9abc2`、Pages `ceef6a57`；後續 D34 API `29a1c860`／Pages `59de8e9d`） |
-| 8 | **D33／D34 生產環境驗收**：配額顯示（暖機期 5）與超額提醒信 | 0.5h | 暖機期或每日配額被擋都會寄；用現有測試訪客重試即可（每日最多一封） |
+| 8 | **D33／D34 生產環境驗收**：配額顯示（暖機期上限）與超額提醒信 | 0.5h | 暖機期或每日配額被擋都會寄；用現有測試訪客重試即可（每日最多一封） |
+| 9 | **D35 部署**：套用 `0017` → 部署 API → 部署前端 | — | 由 owner 套 migration；完成後訪客管理才會出現「暖機期上限」（未套前 API 以預設 5 運作） |
 
 ---
 

@@ -34,6 +34,7 @@ async function req(path: string, token: string): Promise<Response> {
 interface MeAddressView {
   id: number;
   daily_send_quota: number;
+  warmup_quota: number;
   effective_daily_quota: number;
   warmup_until: number | null;
 }
@@ -114,6 +115,13 @@ describe("D34：有效每日配額（暖機期折算）", () => {
          VALUES (12, 2, 'exempt', 'atwho.org', 'exempt@atwho.org', NULL, 0, 'active', 1, ?1, 0, ?2, ?2)`
       ).bind(QUOTA, warmupStart),
       E.DB.prepare("UPDATE email_addresses SET warmup_exempt = 1 WHERE id = 12"),
+      // D35：暖機期上限改為 10 → 有效 10
+      E.DB.prepare(
+        `INSERT INTO email_addresses (id, user_id, local_part, domain, email, password_hash,
+                                      password_changed_at, status, can_send, daily_send_quota, sent_today,
+                                      warmup_quota, created_at, updated_at)
+         VALUES (13, 2, 'custom', 'atwho.org', 'custom@atwho.org', NULL, 0, 'active', 1, ?1, 0, 10, ?2, ?2)`
+      ).bind(QUOTA, warmupStart),
     ]);
   });
 
@@ -144,6 +152,18 @@ describe("D34：有效每日配額（暖機期折算）", () => {
     expect(a).toMatchObject({
       effective_daily_quota: QUOTA,
       warmup_until: null,
+    });
+  });
+
+  it("D35：每地址暖機上限可調（10 → effective=10）", async () => {
+    const token = await signMailboxToken(E, 13, "custom@atwho.org", 0);
+    const [a] = await meAddresses(token);
+    expect(a).toMatchObject({
+      id: 13,
+      daily_send_quota: QUOTA,
+      warmup_quota: 10,
+      effective_daily_quota: 10,
+      warmup_until: warmupStart + 24 * HOUR,
     });
   });
 

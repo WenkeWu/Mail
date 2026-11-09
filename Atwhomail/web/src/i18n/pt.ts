@@ -652,8 +652,10 @@ export const PT_MESSAGES: Record<string, string> = {
   "每日寄信配額（1–50）": "Quota diária de envio (1–50)",
   "允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）":
     "Permitir envio (desmarcar = válvula de segurança: parar imediatamente todo o envio desta conta)",
-  "暖機豁免（跳過註冊後 24 小時的 5 封上限）":
-    "Isenção de aquecimento (ignorar o limite de 5 mensagens nas primeiras 24 horas)",
+  "暖機期上限（1–50，預設 5）": "Limite de aquecimento (1–50, padrão 5)",
+  "暖機配額需為 1–50 的整數": "A quota de aquecimento deve ser um número inteiro entre 1 e 50.",
+  "暖機豁免（跳過註冊後 24 小時的暖機上限）":
+    "Isenção de aquecimento (ignorar o limite de aquecimento das primeiras 24 horas)",
   "⚠️ 暖機豁免會讓新帳號立刻能寄到每日配額上限，可能影響寄信聲譽（新網域尤其敏感）。豁免後仍受每日配額與每小時限流約束，不是無上限；此外需要 migration 0007 已套用。":
     "⚠️ Uma isenção de aquecimento permite que uma conta nova envie imediatamente até à sua quota diária e pode prejudicar a reputação de envio (especialmente num domínio novo). Continua sujeita à quota diária e ao limite horário; não é ilimitada. Além disso, a migração 0007 tem de estar aplicada.",
   "套用中…": "A aplicar…",

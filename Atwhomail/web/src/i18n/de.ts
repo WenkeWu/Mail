@@ -652,8 +652,10 @@ export const DE_MESSAGES: Record<string, string> = {
   "每日寄信配額（1–50）": "Tägliches Sendekontingent (1–50)",
   "允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）":
     "Versand erlauben (Häkchen entfernen = Sicherheitsschalter: Versand für dieses Konto sofort stoppen)",
-  "暖機豁免（跳過註冊後 24 小時的 5 封上限）":
-    "Warm-up-Ausnahme (das Limit von 5 Nachrichten in den ersten 24 Stunden überspringen)",
+  "暖機期上限（1–50，預設 5）": "Aufwärmlimit (1–50, Standard 5)",
+  "暖機配額需為 1–50 的整數": "Das Aufwärmkontingent muss eine ganze Zahl von 1 bis 50 sein.",
+  "暖機豁免（跳過註冊後 24 小時的暖機上限）":
+    "Warm-up-Ausnahme (das Aufwärmlimit der ersten 24 Stunden überspringen)",
   "⚠️ 暖機豁免會讓新帳號立刻能寄到每日配額上限，可能影響寄信聲譽（新網域尤其敏感）。豁免後仍受每日配額與每小時限流約束，不是無上限；此外需要 migration 0007 已套用。":
     "⚠️ Eine Warm-up-Ausnahme ermöglicht einem neuen Konto sofort den Versand bis zum Tageskontingent und kann die Sende-Reputation beeinträchtigen (besonders kritisch bei einer neuen Domain). Es gilt weiterhin das Tageskontingent und das stündliche Ratenlimit; es gibt keine unbegrenzte Menge. Außerdem muss Migration 0007 angewendet sein.",
   "套用中…": "Wird angewendet…",
