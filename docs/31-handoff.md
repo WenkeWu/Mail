@@ -22,7 +22,7 @@
 | **D33** | **訪客每日配額統一 50**（既有＋新註冊＋OAuth）；管理頁可調 1–50；**超額被擋時寄提醒信給訪客的備用電子郵件**（每日最多一封；暖機期被擋也寄） | ✅ 上線（2026-11-08；`a27b4e4`／API `39a9abc2`／Pages `ceef6a57`）<br>✅ 2026-11-09 暖機期提醒修正（API `1796328d`） | docs/05 §2.32、docs/16 |
 | D19 | 信箱 UX（軟刪／批次／清空垃圾桶／checkbox／D1 分塊／form FK）| ✅ 上線 | docs/19 |
 | **D34** | **配額顯示與實際一致**：`/api/me`、`/api/account/settings` 多回 `effective_daily_quota`（暖機中 = min(配額, 暖機配額)）＋ `warmup_until`；個人設置／側欄顯示有效上限；撰寫鈕的額度判斷同步改用有效值 | ✅ 上線（2026-11-08；`168b03c`／API `29a1c860`／Pages `59de8e9d`）| docs/05 §2.32 |
-| **D35** | **暖機期上限可調**：每地址 `warmup_quota`（預設 **5**、1–50）；`mail.atwho.org` 訪客管理「寄信設定」可調整；暖機期有效上限 = `min(每日配額, 暖機配額)` | 🟡 程式完成（2026-11-09）；migration `0017`／API／前端待部署 | docs/05 §2.33、docs/16 |
+| **D35** | **暖機期上限可調**：每地址 `warmup_quota`（預設 **5**、1–50）；`mail.atwho.org` 訪客管理「寄信設定」可調整；暖機期有效上限 = `min(每日配額, 暖機配額)` | ✅ 上線（2026-11-09；`48e20c9`／migration `0017` @ 06:47 UTC／API `4dbac525`／Pages `dcb1da60`）| docs/05 §2.33、docs/16 |
 | P1/P2、D16–D18 | 互動式表單（內部限定、四道鎖、RJSF lazy-load）| ✅ 上線 | docs/18 |
 | D17 | 備份 13 表 ＋ watchdog 去抖 ＋ 退避重試 | ✅ 上線 | docs/17 |
 
@@ -96,7 +96,7 @@ cd packages/api && node ../../node_modules/wrangler/bin/wrangler.js d1 migration
 | Pages | `atwhomail-web` |
 | Workers | `atwhomail-api`／`-email-handler`／`-mta-sts`／`-heartbeat`／**`atwhomail-auth`** |
 | 對外網址 | `app.atwho.org`（公開）／`mail.atwho.org`（Access，owner-only）／**`auth.atwho.org`**（SSO）|
-| Migration 現況 | `0001`–`0016` 已套用 production（`0015` @ 2026-11-06 08:52 UTC；`0016_visitor_quota_50` @ 2026-11-08 00:19 UTC，訪客地址全部改為 50）；**`0017_warmup_quota` 待 owner 套用** |
+| Migration 現況 | `0001`–`0016` 已套用 production（`0015` @ 2026-11-06 08:52 UTC；`0016_visitor_quota_50` @ 2026-11-08 00:19 UTC，訪客地址全部改為 50）；`0017_warmup_quota` @ 2026-11-09（`warmup_quota` 預設 5）|
 
 ---
 
@@ -126,7 +126,7 @@ cd packages/api && node ../../node_modules/wrangler/bin/wrangler.js d1 migration
 | 6 | 別名 Phase 2（反向別名）| 9h | **已決議不實作** ✅ |
 | 7 | **D33 部署**：套用 `0016` → 部署 API → 部署前端 | — | ✅ 完成（2026-11-08；migration `0016` @00:19 UTC、API `39a9abc2`、Pages `ceef6a57`；後續 D34 API `29a1c860`／Pages `59de8e9d`） |
 | 8 | **D33／D34 生產環境驗收**：配額顯示（暖機期上限）與超額提醒信 | 0.5h | 暖機期或每日配額被擋都會寄；用現有測試訪客重試即可（每日最多一封） |
-| 9 | **D35 部署**：套用 `0017` → 部署 API → 部署前端 | — | 由 owner 套 migration；完成後訪客管理才會出現「暖機期上限」（未套前 API 以預設 5 運作） |
+| 9 | ~~**D35 部署**~~ ✅ 2026-11-09 完成（`0017` → API → 前端；訪客管理「寄信設定」已可調暖機期上限）| — | — |
 
 ---
 
