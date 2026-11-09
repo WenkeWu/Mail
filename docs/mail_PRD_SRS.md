@@ -37,7 +37,7 @@
 | **D32** | **全站語系與區域設定**：登入頁＋個人設置可選國家／語言；**10 種語言**（英／西／德／日／法／葡／俄／義／簡中／繁中）；**國家選單依目前語言過濾**（只列該語言為第一語言的國家）；時區優先、判斷不到才用 Cloudflare IP 國別；多官方語言國家用該國第一語言 | 2026-11-06（2026-11-07 國家過濾修正） | docs/32 |
 | **D33** | **訪客每日配額統一 50**（既有＋新註冊＋Google OAuth）；管理頁可調 1–50；**超過每日配額或暖機上限被擋時寄提醒信給訪客的備用電子郵件**（每訪客每日最多一封） | 2026-11-07（2026-11-09 暖機期提醒修正） | docs/05 §2.32、docs/16 |
 | **D34** | **配額顯示與實際一致**：`effective_daily_quota`（暖機期折算）＋ `warmup_until`；個人設置／側欄顯示有效上限 | 2026-11-08 | docs/05 §2.32 |
-| **D35** | **暖機期上限可調**：每地址 `warmup_quota` 預設 **5**、可調 1–50；訪客管理的「寄信設定」可調整；暖機期有效上限 `min(每日配額, 暖機配額)` | 2026-11-09 | docs/05 §2.33、docs/16 |
+| **D35** | **暖機期上限可調**：每地址 `warmup_quota` 預設 **20**、可調 1–50；訪客管理的「寄信設定」可調整；暖機期有效上限 `min(每日配額, 暖機配額)` | 2026-11-09（預設 20 調整） | docs/05 §2.33、docs/16 |
 
 ### 0.2 與原文不同的決策（原文照留，以本節為準）
 
@@ -47,7 +47,7 @@
 | 入口 | 單一入口 | **mail.atwho.org**（Cloudflare Access，owner-only）＋ **app.atwho.org**（公開訪客）|
 | 管理員登入 | 帳號密碼 | 需 **Cloudflare Access JWT**（`/api/auth/login` 強制驗證）|
 | 帳號模型 | Model C | ✅ 已實作（地址可獨立登入）；另加 `users.role = owner / visitor` |
-| 寄信配額 | 未訂 | 每日 **50**（D33）／每小時 **10**／暖機 24h 預設 **5 封**（D35 可調 1–50）；`warmup_exempt` 可豁免 |
+| 寄信配額 | 未訂 | 每日 **50**（D33）／每小時 **10**／暖機 24h 預設 **20 封**（D35 可調 1–50）；`warmup_exempt` 可豁免 |
 | 信件刪除 | 未訂 | `folder='trash'`＝**軟刪除（可還原）**；`deleted_at`＝**永久刪除（全站隱藏）** |
 | 郵件分類 | 未訂 | `origin`(external/internal)＋`kind`(normal/interactive_form)＋`delivery_scope`＋`suspicious_form_claim` |
 | MTA-STS | 未提 | **enforce**（自建 worker）；TLS-RPT 收件人 `tlsrpt@atwho.org` |
@@ -357,7 +357,7 @@ ALTER TABLE messages ADD COLUMN reply_to    TEXT;  -- 反向別名（僅外部�
 
 * **每帳號最多 1 個「啟用中」的暱稱別名**；變更時舊的立即停用（來信回 550），同一交易完成
 * **每個真實地址 1 個隱身代號（Token）**（一般帳號只有 1 個地址 → 1 個）：建立帳號／地址時自動產生（16 hex），不隨暱稱變更，由系統管理（不可停用／刪除）
-* 以別名寄信**計入目標地址**的每日（50）／每小時（10）／暖機（24h，預設 5 封、D35 可調）配額
+* 以別名寄信**計入目標地址**的每日（50）／每小時（10）／暖機（24h，預設 20 封、D35 可調）配額
 * 反向別名 token **不可枚舉**（256-bit）；每個 (別名, 寄件者) 只有一個 token
 * 別名被騷擾 → **單獨停用該別名**，不影響真實地址
 
@@ -1019,7 +1019,7 @@ Local Disk = Backup Mail/Object Storage
 | 方式 | 入口 | 需要驗證碼 | 首次自動建帳號 | 預設配額 |
 |---|---|---|---|---|
 | **Google OAuth** | `auth.atwho.org/api/auth/oauth/google/start` | ❌ **不需要**（Google 已驗 `email_verified`）| ✅ 建 visitor ＋ **自動配發 1 個地址** | **50 封/日** |
-| **註冊（Email 驗證碼 ✅ ＋ Turnstile）** | `app.atwho.org/?register=1` | ✅ 6 位數、15 分鐘 | ✅ 由使用者指定 ID | 50 封/日（暖機 5/24h）|
+| **註冊（Email 驗證碼 ✅ ＋ Turnstile）** | `app.atwho.org/?register=1` | ✅ 6 位數、15 分鐘 | ✅ 由使用者指定 ID | 50 封/日（暖機 20/24h，可調）|
 | **信箱／帳密登入** | `POST /api/auth/user-login` | — | — | 依帳號 |
 | **管理員登入** | `mail.atwho.org`（Cloudflare Access ＋ 帳密）| — | — | — |
 

@@ -652,7 +652,7 @@ export const ES_MESSAGES: Record<string, string> = {
   "每日寄信配額（1–50）": "Cuota diaria de envío (1–50)",
   "允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）":
     "Permitir envío (desmarcar = válvula de seguridad: detener de inmediato todo envío de esta cuenta)",
-  "暖機期上限（1–50，預設 5）": "Límite de calentamiento (1–50, predeterminado 5)",
+  "暖機期上限（1–50，預設 20）": "Límite de calentamiento (1–50, predeterminado 20)",
   "暖機配額需為 1–50 的整數": "La cuota de calentamiento debe ser un número entero de 1 a 50.",
   "暖機豁免（跳過註冊後 24 小時的暖機上限）":
     "Exención de calentamiento (omitir el límite de calentamiento de las primeras 24 horas)",

@@ -423,7 +423,7 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
             <IconMail size={26} />
           </span>
           <div>
-            <h1>AtWhoMail</h1>
+            <h1>AtWho</h1>
             <p>{mode === "admin" ? t("管理員入口") : t("虛擬地址收發信")}</p>
           </div>
         </div>

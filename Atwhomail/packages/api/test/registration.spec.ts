@@ -323,7 +323,7 @@ describe("T6–T10：寄信配額與限流", { timeout: 90_000 }, () => {
     expect(me.addresses[0]!.daily_send_quota).toBe(50);
   });
 
-  it("T7 暖機期第 6 封 → 429 QUOTA_EXCEEDED，且稽核留下 send_rejected_quota", async () => {
+  it("T7 暖機期（自訂上限 5）第 6 封 → 429 QUOTA_EXCEEDED，且稽核留下 send_rejected_quota", async () => {
     const { addressId } = await seedVisitor({ email: "warmup01@atwho.org", createdAt: Date.now() });
     const token = (await json<{ token: string }>(
       await req("/api/auth/mailbox-login", {
@@ -340,7 +340,7 @@ describe("T6–T10：寄信配額與限流", { timeout: 90_000 }, () => {
       );
 
     for (let i = 1; i <= 5; i++) {
-      expect((await send(i)).status, `第 ${i} 封應成功（暖機上限 5）`).toBe(200);
+      expect((await send(i)).status, `第 ${i} 封應成功（自訂暖機上限 5）`).toBe(200);
     }
     const sixth = await send(6);
     expect(sixth.status).toBe(429);

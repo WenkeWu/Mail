@@ -321,12 +321,19 @@ describe("T97–T98：驗證成功與一次性", { timeout: 90_000 }, () => {
     expect(settings.provider).toBe("local");
 
     const addr = await E.DB.prepare(
-      `SELECT status, can_send, daily_send_quota, created_at FROM email_addresses WHERE email = 'newuser@atwho.org'`
-    ).first<{ status: string; can_send: number; daily_send_quota: number; created_at: number }>();
+      `SELECT status, can_send, daily_send_quota, warmup_quota, created_at FROM email_addresses WHERE email = 'newuser@atwho.org'`
+    ).first<{
+      status: string;
+      can_send: number;
+      daily_send_quota: number;
+      warmup_quota: number;
+      created_at: number;
+    }>();
     expect(addr!.status).toBe("active");
     expect(addr!.can_send).toBe(1);
     expect(addr!.daily_send_quota).toBe(50);
-    // 暖機期：created_at 起 24 小時內（寄信上限 min(50, 5)）
+    expect(addr!.warmup_quota).toBe(20);
+    // 暖機期：created_at 起 24 小時內（寄信上限 min(50, 20)）
     expect(Number(addr!.created_at)).toBeGreaterThan(Date.now() - 60_000);
     expect(Number(addr!.created_at) + 24 * 3600_000).toBeGreaterThan(Date.now());
 

@@ -5,7 +5,7 @@
  * - 所有訪客（Email 驗證碼／邀請碼／OAuth）每日配額 50；管理頁可調 1–50。
  * - 訪客嘗試超過每日配額被 429 擋下時，寄提醒信到其「備用電子郵件」
  *   （users.contact_email）；同一訪客每天最多一封。
- * - 暖機期 5 封上限、owner 帳號、沒有備用 email 者都不寄。
+ * - 暖機期上限（預設 20，D35 可調）、owner 帳號、沒有備用 email 者都不寄。
  *
  * 測試在 workerd 內以真實 D1 執行；EMAIL binding 以 mock 注入。
  */
@@ -105,7 +105,7 @@ async function seedAddress(opts: {
   const userId = Number(userRes.meta.last_row_id);
   const localPart = opts.email.split("@")[0]!;
   const quota = opts.quota ?? 2;
-  const warmupQuota = opts.warmupQuota ?? 5;
+  const warmupQuota = opts.warmupQuota ?? 20;
   const addrRes = await E.DB.prepare(
     `INSERT INTO email_addresses
        (user_id, local_part, domain, email, password_hash, password_changed_at, status,
@@ -197,11 +197,11 @@ describe("D33：訪客超額提醒信", () => {
     expect(sentMails).toHaveLength(0);
   });
 
-  it("暖機期 5 封上限被擋 → 也寄提醒信（內容標明暖機期與結束時間）", async () => {
+  it("暖機期上限 20 被擋 → 也寄提醒信（內容標明暖機期與結束時間）", async () => {
     await seedAddress({
       email: "warm@atwho.org",
       quota: 50,
-      sentToday: 5,
+      sentToday: 20,
       createdAt: Date.now(), // 仍在註冊後 24 小時內
     });
     const token = await login("warm@atwho.org");
@@ -213,14 +213,14 @@ describe("D33：訪客超額提醒信", () => {
     expect(sentMails).toHaveLength(1);
     const mail = sentMails[0]!;
     expect(mail.subject).toContain("暖機期");
-    expect(mail.text).toContain("暖機期上限 5 封");
+    expect(mail.text).toContain("暖機期上限 20 封");
     expect(mail.text).toContain("結束後每日上限為 50 封");
     expect(mail.text).toContain(" UTC");
 
     const audit = await E.DB.prepare(
       "SELECT detail FROM registration_audit WHERE event = 'quota_alert_sent'"
     ).first<{ detail: string }>();
-    expect(JSON.parse(audit!.detail)).toEqual({ limit: 5, warmup: true });
+    expect(JSON.parse(audit!.detail)).toEqual({ limit: 20, warmup: true });
   });
 
   it("D35：暖機上限改為 10 → 第 11 封被擋，提醒信標明 10 封", async () => {

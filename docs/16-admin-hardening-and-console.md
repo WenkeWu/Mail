@@ -119,7 +119,7 @@
 | `GET /api/users?role=visitor`（新） | 回傳每位訪客：`id`、`username`、`status`、`created_at`、地址（`id`／`email`／`status`／`can_send`／`daily_send_quota`／`sent_today`／`warmup_quota`）、**信件數量**、**最近活動時間** |
 | `PATCH /api/users/:id/status`（既有） | 停權／復權（`active`／`suspended`／`disabled`）|
 | `PATCH /api/email-addresses/:id/status`（新，owner 專用） | 停用／啟用**訪客**地址（解 404 缺口）|
-| `PATCH /api/users/:id/quota`（新） | 調整 `daily_send_quota`（1–50；D33）＋ `warmup_quota`（1–50，預設 5；D35）＋ `can_send` 安全閥；寫稽核 `quota_changed` |
+| `PATCH /api/users/:id/quota`（新） | 調整 `daily_send_quota`（1–50；D33）＋ `warmup_quota`（1–50，預設 20；D35）＋ `can_send` 安全閥；寫稽核 `quota_changed` |
 | `PATCH /api/users/:id/warmup`（新，可選） | 設定 `warmup_exempt`（跳過註冊後 24 小時的暖機上限）；需 migration `0007` 新增欄位 `email_addresses.warmup_exempt INTEGER NOT NULL DEFAULT 0` |
 
 **UI（僅 `mail.`／localhost 顯示）**：訪客表格（帳號／地址／狀態／配額／今日已寄／信件數／最近活動）＋ 一鍵**停權／復權**＋**地址停用／啟用**＋**配額調整**（每日配額＋**暖機期上限**）＋（可選）**暖機豁免**勾選（附警示文字）
@@ -129,7 +129,7 @@
 （`users.contact_email`），同一訪客每天最多一封；暖機期信件會標明暖機上限與結束時間。
 owner 帳號、沒有備用 email 者不寄。
 
-**D35（2026-11-09）**：`email_addresses.warmup_quota`（migration `0017`，預設 **5**）讓每個訪客的
+**D35（2026-11-09）**：`email_addresses.warmup_quota`（migration `0017`，系統預設 **20**；migration `0018` 將舊預設 5 改為 20）讓每個訪客的
 暖機期上限可調（1–50）。暖機期內有效上限 = `min(daily_send_quota, warmup_quota)`；
 管理者在「寄信設定」可同時調整每日配額與暖機上限，`warmup_exempt=1` 仍可整個跳過暖機限制。
 
@@ -386,7 +386,7 @@ owner 帳號、沒有備用 email 者不寄。
 | T12 | `GET /api/users?role=visitor` 僅 owner 可用（訪客 JWT → 403）；回傳含信件數與最近活動時間 |
 | T13 | owner 以訪客的地址 id 呼叫 `/api/mail/*` → **403／404**（不得讀取訪客信件內容，N9）|
 | T14 | `PATCH /api/users/:id/quota` 值域 1–50；超出 → 422；成功 → 稽核 `quota_changed` |
-| T15 | `warmup_exempt=1` 的地址不受註冊後 24 小時暖機上限（預設 5，可調）限制（仍受 `daily_send_quota` 限制）|
+| T15 | `warmup_exempt=1` 的地址不受註冊後 24 小時暖機上限（預設 20，可調）限制（仍受 `daily_send_quota` 限制）|
 | T16 | `GET /api/invites?reveal=1` 僅 owner 可用；使用時寫入稽核（記錄 owner id 與時間）|
 | T17 | 使用者被停權後，**既有** mailbox JWT 立即失效 → 403 `ACCOUNT_SUSPENDED`（不必等 token 過期）|
 | T18 | 地址被停用後，**既有** mailbox JWT 立即失效 → 403 `ADDRESS_DISABLED` |

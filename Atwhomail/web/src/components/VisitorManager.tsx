@@ -154,7 +154,7 @@ export function VisitorManager({ onBack, onToast }: Props) {
     setEdit({
       user,
       quota: String(user.address?.daily_send_quota ?? ""),
-      warmupQuota: String(user.address?.warmup_quota ?? 5),
+      warmupQuota: String(user.address?.warmup_quota ?? 20),
       canSend: (user.address?.can_send ?? 1) === 1,
       warmupExempt: (user.address?.warmup_exempt ?? 0) === 1,
     });
@@ -431,7 +431,7 @@ export function VisitorManager({ onBack, onToast }: Props) {
             />
           </label>
           <label className="field-row">
-            <span>{t("暖機期上限（1–50，預設 5）")}</span>
+            <span>{t("暖機期上限（1–50，預設 20）")}</span>
             <input
               type="number"
               min={1}

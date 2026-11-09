@@ -77,6 +77,7 @@ async function seedVisitor(opts: {
   quota?: number;
   sentToday?: number;
   warmupExempt?: number;
+  warmupQuota?: number;
   createdAt?: number;
 }): Promise<{ userId: number; addressId: number }> {
   const ts = opts.createdAt ?? Date.now();
@@ -90,8 +91,8 @@ async function seedVisitor(opts: {
   const addrRes = await E.DB.prepare(
     `INSERT INTO email_addresses
        (user_id, local_part, domain, email, password_hash, password_changed_at, status,
-        can_send, daily_send_quota, sent_today, quota_reset_at, warmup_exempt, created_at, updated_at)
-     VALUES (?1, ?2, 'atwho.org', ?3, ?4, ?5, 'active', ?6, ?7, ?8, ?9, ?10, ?5, ?5)`
+        can_send, daily_send_quota, sent_today, quota_reset_at, warmup_exempt, warmup_quota, created_at, updated_at)
+     VALUES (?1, ?2, 'atwho.org', ?3, ?4, ?5, 'active', ?6, ?7, ?8, ?9, ?10, ?11, ?5, ?5)`
   )
     .bind(
       userId,
@@ -103,7 +104,8 @@ async function seedVisitor(opts: {
       opts.quota ?? 20,
       opts.sentToday ?? 0,
       Date.now() + 3600_000,
-      opts.warmupExempt ?? 0
+      opts.warmupExempt ?? 0,
+      opts.warmupQuota ?? 20
     )
     .run();
   return { userId, addressId: Number(addrRes.meta.last_row_id) };
@@ -213,7 +215,7 @@ describe("T12：GET /api/users?role=visitor", () => {
       can_send: 1,
       daily_send_quota: 20,
       sent_today: 0,
-      warmup_quota: 5,
+      warmup_quota: 20,
     });
     expect(v.mail_count).toBe(2);
     expect(v.last_activity_at).toBe(t2);
@@ -444,8 +446,8 @@ describe("T15：warmup_exempt（migration 0007）", { timeout: 120_000 }, () => 
     return out;
   }
 
-  it("未豁免：註冊後 24 小時內上限 5 封（第 6 封 429 QUOTA_EXCEEDED）", async () => {
-    await seedVisitor({ email: "warm@atwho.org", quota: 20, createdAt: Date.now() });
+  it("未豁免：註冊後 24 小時內使用自訂暖機上限 5（第 6 封 429 QUOTA_EXCEEDED）", async () => {
+    await seedVisitor({ email: "warm@atwho.org", quota: 20, warmupQuota: 5, createdAt: Date.now() });
     const token = await login("/api/auth/mailbox-login", { email: "warm@atwho.org", password: VISITOR_PW });
 
     const codes = await sendTimes(token, "warm@atwho.org", 6);
@@ -453,11 +455,17 @@ describe("T15：warmup_exempt（migration 0007）", { timeout: 120_000 }, () => 
     expect(codes[5]).toBe(429);
   });
 
-  it("豁免後不受 5 封暖機上限，但**仍受 daily_send_quota** 限制", async () => {
-    const { userId } = await seedVisitor({ email: "exempt@atwho.org", quota: 20, warmupExempt: 1, createdAt: Date.now() });
+  it("豁免後不受自訂暖機上限 5 限制，但**仍受 daily_send_quota** 限制", async () => {
+    const { userId } = await seedVisitor({
+      email: "exempt@atwho.org",
+      quota: 20,
+      warmupExempt: 1,
+      warmupQuota: 5,
+      createdAt: Date.now(),
+    });
     const token = await login("/api/auth/mailbox-login", { email: "exempt@atwho.org", password: VISITOR_PW });
 
-    // 第 6 封（暖機上限 5）仍可寄出 → 證明豁免生效
+    // 第 6 封（自訂暖機上限 5）仍可寄出 → 證明豁免生效
     const six = await sendTimes(token, "exempt@atwho.org", 6);
     expect(six).toEqual([200, 200, 200, 200, 200, 200]);
 

@@ -190,7 +190,7 @@ export interface AccountSettingsAddress {
   status: "active" | "disabled" | "deleted";
   daily_send_quota: number;
   sent_today: number;
-  /** D35：暖機期上限（每地址可調，預設 5） */
+  /** D35：暖機期上限（每地址可調，預設 20） */
   warmup_quota: number;
   /** D34：暖機期折算後的**有效**每日上限（暖機中 = min(每日配額, 暖機配額)） */
   effective_daily_quota: number;
@@ -255,7 +255,7 @@ export interface MeAddress {
   daily_send_quota: number;
   sent_today: number;
   quota_reset_at: number | null;
-  /** D35：暖機期上限（每地址可調，預設 5） */
+  /** D35：暖機期上限（每地址可調，預設 20） */
   warmup_quota: number;
   /** D34：暖機期折算後的**有效**每日上限（暖機中 = min(每日配額, 暖機配額)） */
   effective_daily_quota: number;
@@ -298,7 +298,7 @@ export interface VisitorAddress {
   sent_today: number;
   /** 1 = 不受註冊後 24 小時的暖機上限（migration 0007） */
   warmup_exempt: number;
-  /** D35：暖機期上限（預設 5；migration 0017） */
+  /** D35：暖機期上限（預設 20；migration 0017） */
   warmup_quota: number;
 }
 

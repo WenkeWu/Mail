@@ -2,14 +2,15 @@
  * quota-view.spec.ts — D34：有效每日配額（暖機期折算）
  *
  * 背景（owner 2026-11-08）：
- *   D33 把訪客配額統一為 50，但暖機期（建立後 24h）的實際上限是 `min(配額, 5)`。
- *   前端原本直接顯示 `daily_send_quota`（50），與寄信時真正會被擋的 5 不一致 →
+ *   D33 把訪客配額統一為 50，但暖機期（建立後 24h）的實際上限是
+ *   `min(每日配額, 暖機配額)`（暖機配額預設 20，D35 起每地址可調）。
+ *   前端原本直接顯示 `daily_send_quota`（50），與寄信時真正會被擋的值不一致 →
  *   `GET /api/me` 與 `GET /api/account/settings` 改為回**有效**上限：
- *     - `effective_daily_quota`：暖機中 = min(配額, 5)，否則 = 配額
+ *     - `effective_daily_quota`：暖機中 = min(配額, 暖機配額)，否則 = 配額
  *     - `warmup_until`：暖機結束時間（ms）；`null` = 不受暖機限制
  *
  * 涵蓋：
- *   - 暖機中（建立 1 小時前）→ 5／有 `warmup_until`
+ *   - 暖機中（建立 1 小時前）→ 20／有 `warmup_until`
  *   - 暖機結束（建立 48 小時前）→ 配額原值／`null`
  *   - `warmup_exempt=1` → 立即為配額原值／`null`
  *   - owner（/api/me 的 owner 分支）與 mailbox 分支、以及 /api/account/settings 三者一致
@@ -22,7 +23,7 @@ import { signMailboxToken, signOwnerToken, type Env } from "../src/auth";
 const E = env as unknown as Env;
 const HOUR = 3600_000;
 const QUOTA = 50;
-const WARMUP_QUOTA = 5;
+const WARMUP_QUOTA = 20;
 
 async function req(path: string, token: string): Promise<Response> {
   const ctx = createExecutionContext();
@@ -86,33 +87,33 @@ describe("D34：有效每日配額（暖機期折算）", () => {
                             contact_email, email_verified, password_changed_at, created_at, updated_at)
          VALUES (2, 'warm', 'Warm', '', 'active', 'visitor', 'local', NULL, 0, 0, ?1, ?1)`
       ).bind(warmupStart),
-      // owner 名下的地址（建立 1 小時前 → 也應折算成 5）
+      // owner 名下的地址（建立 1 小時前 → 也應折算成暖機配額 20）
       E.DB.prepare(
         `INSERT INTO email_addresses (id, user_id, local_part, domain, email, password_hash,
                                       password_changed_at, status, can_send, daily_send_quota, sent_today,
-                                      created_at, updated_at)
-         VALUES (1, 1, 'owner', 'atwho.org', 'owner@atwho.org', NULL, 0, 'active', 1, 20, 0, ?1, ?1)`
+                                      warmup_quota, created_at, updated_at)
+         VALUES (1, 1, 'owner', 'atwho.org', 'owner@atwho.org', NULL, 0, 'active', 1, 50, 0, 20, ?1, ?1)`
       ).bind(warmupStart),
-      // 暖機中：配額 50 → 有效 5
+      // 暖機中：每日配額 50 → 有效 20
       E.DB.prepare(
         `INSERT INTO email_addresses (id, user_id, local_part, domain, email, password_hash,
                                       password_changed_at, status, can_send, daily_send_quota, sent_today,
-                                      created_at, updated_at)
-         VALUES (10, 2, 'warm', 'atwho.org', 'warm@atwho.org', NULL, 0, 'active', 1, ?1, 0, ?2, ?2)`
+                                      warmup_quota, created_at, updated_at)
+         VALUES (10, 2, 'warm', 'atwho.org', 'warm@atwho.org', NULL, 0, 'active', 1, ?1, 0, 20, ?2, ?2)`
       ).bind(QUOTA, warmupStart),
       // 暖機已結束 → 有效 50
       E.DB.prepare(
         `INSERT INTO email_addresses (id, user_id, local_part, domain, email, password_hash,
                                       password_changed_at, status, can_send, daily_send_quota, sent_today,
-                                      created_at, updated_at)
-         VALUES (11, 2, 'old', 'atwho.org', 'old@atwho.org', NULL, 0, 'active', 1, ?1, 0, ?2, ?2)`
+                                      warmup_quota, created_at, updated_at)
+         VALUES (11, 2, 'old', 'atwho.org', 'old@atwho.org', NULL, 0, 'active', 1, ?1, 0, 20, ?2, ?2)`
       ).bind(QUOTA, oldStart),
       // 暖機期但 owner 已豁免 → 有效 50
       E.DB.prepare(
         `INSERT INTO email_addresses (id, user_id, local_part, domain, email, password_hash,
                                       password_changed_at, status, can_send, daily_send_quota, sent_today,
-                                      created_at, updated_at)
-         VALUES (12, 2, 'exempt', 'atwho.org', 'exempt@atwho.org', NULL, 0, 'active', 1, ?1, 0, ?2, ?2)`
+                                      warmup_quota, created_at, updated_at)
+         VALUES (12, 2, 'exempt', 'atwho.org', 'exempt@atwho.org', NULL, 0, 'active', 1, ?1, 0, 20, ?2, ?2)`
       ).bind(QUOTA, warmupStart),
       E.DB.prepare("UPDATE email_addresses SET warmup_exempt = 1 WHERE id = 12"),
       // D35：暖機期上限改為 10 → 有效 10
@@ -125,7 +126,7 @@ describe("D34：有效每日配額（暖機期折算）", () => {
     ]);
   });
 
-  it("mailbox：暖機中 → effective=5，且 warmup_until = 建立時間 + 24h", async () => {
+  it("mailbox：暖機中 → effective=20，且 warmup_until = 建立時間 + 24h", async () => {
     const token = await signMailboxToken(E, 10, "warm@atwho.org", 0);
     const [a] = await meAddresses(token);
     expect(a).toMatchObject({
@@ -167,12 +168,12 @@ describe("D34：有效每日配額（暖機期折算）", () => {
     });
   });
 
-  it("owner：/api/me 的 owner 分支同樣折算（配額 20 → 5）", async () => {
+  it("owner：/api/me 的 owner 分支同樣折算（配額 50 → 20）", async () => {
     const token = await signOwnerToken(E, 1, 0);
     const [a] = await meAddresses(token);
     expect(a).toMatchObject({
       id: 1,
-      daily_send_quota: 20,
+      daily_send_quota: 50,
       effective_daily_quota: WARMUP_QUOTA,
     });
     expect(a!.warmup_until).toBe(warmupStart + 24 * HOUR);

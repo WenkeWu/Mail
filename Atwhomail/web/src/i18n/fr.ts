@@ -652,7 +652,7 @@ export const FR_MESSAGES: Record<string, string> = {
   "每日寄信配額（1–50）": "Quota d’envoi quotidien (1–50)",
   "允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）":
     "Autoriser l’envoi (décocher = soupape de sécurité : arrêter immédiatement tout envoi de ce compte)",
-  "暖機期上限（1–50，預設 5）": "Limite de préchauffage (1–50, par défaut 5)",
+  "暖機期上限（1–50，預設 20）": "Limite de préchauffage (1–50, par défaut 20)",
   "暖機配額需為 1–50 的整數": "Le quota de préchauffage doit être un entier de 1 à 50.",
   "暖機豁免（跳過註冊後 24 小時的暖機上限）":
     "Exemption de préchauffage (ignorer la limite de préchauffage des 24 premières heures)",

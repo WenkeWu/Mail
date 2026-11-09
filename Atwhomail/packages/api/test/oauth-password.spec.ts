@@ -351,13 +351,14 @@ describe("T164：callback 新使用者", () => {
     expect(user!.password_hash).toBe("");
 
     const address = await E.DB.prepare(
-      "SELECT id, email, password_hash, daily_send_quota, warmup_exempt, status FROM email_addresses"
+      "SELECT id, email, password_hash, daily_send_quota, warmup_exempt, warmup_quota, status FROM email_addresses"
     ).first<{
       id: number;
       email: string;
       password_hash: string | null;
       daily_send_quota: number;
       warmup_exempt: number;
+      warmup_quota: number;
       status: string;
     }>();
     expect(address).not.toBeNull();
@@ -365,6 +366,7 @@ describe("T164：callback 新使用者", () => {
     expect(address!.password_hash).toBeNull();
     expect(Number(address!.daily_send_quota)).toBe(50);
     expect(Number(address!.warmup_exempt)).toBe(0);
+    expect(Number(address!.warmup_quota)).toBe(20);
     expect(address!.status).toBe("active");
     expect(frag.get("oauth_address_id")).toBe(String(address!.id));
 

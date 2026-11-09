@@ -42,7 +42,7 @@ const VISITOR: VisitorUser = {
     daily_send_quota: 50,
     sent_today: 3,
     warmup_exempt: 0,
-    warmup_quota: 5,
+    warmup_quota: 20,
   },
   mail_count: 4,
   last_activity_at: Date.UTC(2026, 9, 13, 12, 0),
@@ -190,9 +190,9 @@ describe("D35：暖機期上限可調", () => {
     fireEvent.click(await screen.findByRole("button", { name: "寄信設定" }));
     const dialog = screen.getByRole("dialog", { name: `${VISITOR.username} 的寄信設定` });
     const daily = within(dialog).getByLabelText("每日寄信配額（1–50）") as HTMLInputElement;
-    const warmup = within(dialog).getByLabelText("暖機期上限（1–50，預設 5）") as HTMLInputElement;
+    const warmup = within(dialog).getByLabelText("暖機期上限（1–50，預設 20）") as HTMLInputElement;
     expect(daily.value).toBe("50");
-    expect(warmup.value).toBe("5");
+    expect(warmup.value).toBe("20");
 
     fireEvent.change(daily, { target: { value: "40" } });
     fireEvent.change(warmup, { target: { value: "8" } });

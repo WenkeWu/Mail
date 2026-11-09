@@ -507,8 +507,8 @@ async function deliverLocalMail(
 const QUOTA = {
   /** C1 訪客每日寄信上限（新地址的 daily_send_quota 預設值；owner 2026-11-07 定為 50） */
   DEFAULT_VISITOR_DAILY_QUOTA: 50,
-  /** C2 暖機期上限（註冊後 WARMUP_HOURS 內適用） */
-  WARMUP_QUOTA: 5,
+  /** C2 暖機期上限**系統預設值**（註冊後 WARMUP_HOURS 內適用；owner 2026-11-09 定為 20；每地址可調 1–50） */
+  WARMUP_QUOTA: 20,
   /** C2 暖機期長度（小時） */
   WARMUP_HOURS: 24,
   /** C3 每小時寄信上限 */
@@ -1570,11 +1570,11 @@ app.get("/api/auth/oauth/google/callback", async (c) => {
           .prepare(
             `INSERT INTO email_addresses
                (user_id, local_part, domain, email, password_hash, password_changed_at, status,
-                can_send, daily_send_quota, sent_today, created_at, updated_at)
-             SELECT id, ?2, ?3, ?4, NULL, 0, 'active', 1, ?5, 0, ?6, ?6
+                can_send, daily_send_quota, sent_today, warmup_quota, created_at, updated_at)
+             SELECT id, ?2, ?3, ?4, NULL, 0, 'active', 1, ?5, 0, ?6, ?7, ?7
              FROM users WHERE username = ?1`
           )
-          .bind(localPart, localPart, DOMAIN, mailboxEmail, OAUTH_DAILY_QUOTA, ts),
+          .bind(localPart, localPart, DOMAIN, mailboxEmail, OAUTH_DAILY_QUOTA, QUOTA.WARMUP_QUOTA, ts),
         db
           .prepare(
             `INSERT INTO email_aliases
@@ -2709,10 +2709,19 @@ app.post("/api/auth/register", async (c) => {
       .prepare(
         `INSERT INTO email_addresses
            (user_id, local_part, domain, email, password_hash, password_changed_at, status,
-            can_send, daily_send_quota, sent_today, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', 1, ?7, 0, ?6, ?6)`
+            can_send, daily_send_quota, sent_today, warmup_quota, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', 1, ?7, 0, ?8, ?6, ?6)`
       )
-      .bind(userId, localPart, DOMAIN, email, pwHash, ts, QUOTA.DEFAULT_VISITOR_DAILY_QUOTA)
+      .bind(
+        userId,
+        localPart,
+        DOMAIN,
+        email,
+        pwHash,
+        ts,
+        QUOTA.DEFAULT_VISITOR_DAILY_QUOTA,
+        QUOTA.WARMUP_QUOTA
+      )
       .run();
     const addressId = Number(addrRes.meta.last_row_id);
 
@@ -3161,11 +3170,20 @@ app.post("/api/auth/register-verify", async (c) => {
         .prepare(
           `INSERT INTO email_addresses
              (user_id, local_part, domain, email, password_hash, password_changed_at, status,
-              can_send, daily_send_quota, sent_today, created_at, updated_at)
-           SELECT id, ?2, ?3, ?4, ?5, ?6, 'active', 1, ?7, 0, ?6, ?6
+              can_send, daily_send_quota, sent_today, warmup_quota, created_at, updated_at)
+           SELECT id, ?2, ?3, ?4, ?5, ?6, 'active', 1, ?7, 0, ?8, ?6, ?6
            FROM users WHERE username = ?1`
         )
-        .bind(localPart, localPart, DOMAIN, mailboxEmail, pwHash, ts, QUOTA.DEFAULT_VISITOR_DAILY_QUOTA),
+        .bind(
+          localPart,
+          localPart,
+          DOMAIN,
+          mailboxEmail,
+          pwHash,
+          ts,
+          QUOTA.DEFAULT_VISITOR_DAILY_QUOTA,
+          QUOTA.WARMUP_QUOTA
+        ),
       db
         .prepare(
           `INSERT INTO email_aliases
@@ -3853,9 +3871,9 @@ app.post("/api/email-addresses", requireOwner, async (c) => {
   }
   const results = await c.env.DB.batch([
     c.env.DB.prepare(
-      `INSERT INTO email_addresses (user_id, local_part, domain, email, password_hash, password_changed_at, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`
-    ).bind(scope.userId, localPart, DOMAIN, email, pwHash, pwHash ? ts : 0, ts, ts),
+      `INSERT INTO email_addresses (user_id, local_part, domain, email, password_hash, password_changed_at, status, warmup_quota, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
+    ).bind(scope.userId, localPart, DOMAIN, email, pwHash, pwHash ? ts : 0, QUOTA.WARMUP_QUOTA, ts, ts),
     c.env.DB.prepare(
       `INSERT INTO email_aliases
          (alias_address, target_email_address_id, status, kind, created_at, updated_at)

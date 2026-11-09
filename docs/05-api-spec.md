@@ -275,9 +275,9 @@ GET /api/me                             Authorization: owner|mailbox
         "addresses": [ { "id", "email", "can_send", "daily_send_quota", "sent_today", "quota_reset_at",
                          "effective_daily_quota", "warmup_until" } ] }
   // owner：名下全部地址；mailbox：只有自己那一個（供 UI 顯示配額、停用寄信）
-  // D34：`effective_daily_quota` = 暖機中 ? min(daily_send_quota, 5) : daily_send_quota；
+  // D34：`effective_daily_quota` = 暖機中 ? min(daily_send_quota, warmup_quota) : daily_send_quota；
   //      `warmup_until` = 暖機結束時間（ms），null = 不受暖機限制 → **UI 一律顯示這個值**，
-  //      否則會出現「顯示 50、實際第 6 封就被擋」的落差（D33 配額 50＋暖機 5）
+  //      否則會出現「顯示 50、實際較少就被擋」的落差（D33 配額 50＋暖機配額 20）
 
 PATCH /api/users/:id/status             Authorization: owner
 { "status": "suspended" | "active" }    → 200 { "ok": true, "id": 5, "status": "suspended" }
@@ -292,12 +292,12 @@ PATCH /api/users/:id/status             Authorization: owner
 | 1 | 帳號 `users.status='active'` | `403 ACCOUNT_SUSPENDED` |
 | 2 | 地址 `status='active'` 且 `can_send=1` | `403 SEND_NOT_ALLOWED` |
 | 3 | 配額重置（`quota_reset_at` 過期 → `sent_today=0`，次日 00:00 UTC） | — |
-| 4 | 暖機期（`created_at` 起 24 小時內上限 `min(quota, 5)`，C2）；`warmup_exempt=1` 者**跳過**此上限（仍受每日配額） | — |
+| 4 | 暖機期（`created_at` 起 24 小時內上限 `min(quota, warmup_quota)`，C2；`warmup_quota` 預設 20）；`warmup_exempt=1` 者**跳過**此上限（仍受每日配額） | — |
 | 5 | **原子扣配額**（`sent_today < 有效上限`，看 `meta.changes`）→ 不通過 | `429 QUOTA_EXCEEDED` |
 | 6 | 每小時限流（近 60 分鐘寄件備份 ≥ 10，C3）→ 不通過（**並回補步驟 5 的扣額**） | `429 RATE_LIMITED` |
 | 7 | 實際寄送（既有邏輯）；寄送失敗 → 回補配額 | 既有錯誤（502 `SEND_FAILED`） |
 
-配額常數單一來源：`packages/api/src/index.ts` 的 `QUOTA`（**每日 50**／暖機上限預設 5、每地址可調 1–50、24 小時／每小時 10；`13` §6.5 C1–C3；D33 於 2026-11-07 將每日配額改為 50，D35 於 2026-11-09 將暖機上限改為可調）。
+配額常數單一來源：`packages/api/src/index.ts` 的 `QUOTA`（**每日 50**／暖機上限預設 20、每地址可調 1–50、24 小時／每小時 10；`13` §6.5 C1–C3；D33 於 2026-11-07 將每日配額改為 50，D35 於 2026-11-09 將暖機上限改為可調）。
 
 **新增錯誤碼**
 
@@ -382,14 +382,14 @@ PATCH /api/users/:id/quota                Authorization: owner
 → 200 { "ok": true, "user_id": 2, "addresses": 1,
         "daily_send_quota": 30, "warmup_quota": 5, "can_send": 1 }
   // daily_send_quota 值域 **1–50**，超出／非整數 → 422 INVALID_QUOTA
-  // warmup_quota 值域 **1–50**（預設 5；D35），超出／非整數 → 422 INVALID_WARMUP_QUOTA
+  // warmup_quota 值域 **1–50**（預設 20；D35），超出／非整數 → 422 INVALID_WARMUP_QUOTA
   // can_send＝安全閥（C8）：false → 該使用者立即無法寄信（403 SEND_NOT_ALLOWED）
   // 套用到該使用者名下所有未刪除地址；稽核：quota_changed（含 warmup_quota）
   // ⚠️ warmup_quota 需 migration 0017；未套用卻帶此欄位 → 409 MIGRATION_REQUIRED
 
 PATCH /api/users/:id/warmup               Authorization: owner
 { "warmup_exempt": true }                 → 200 { "ok": true, "user_id": 2, "warmup_exempt": 1, "addresses": 1 }
-  // 1 = 不受「註冊後 24 小時暖機上限（預設 5）」限制（C2），但**仍受 daily_send_quota** 與每小時限流
+  // 1 = 不受「註冊後 24 小時暖機上限（預設 20）」限制（C2），但**仍受 daily_send_quota** 與每小時限流
   // ⚠️ 需 migration 0007；未套用 → 409 MIGRATION_REQUIRED（不假裝成功）
   // 稽核：warmup_changed
 
@@ -1651,7 +1651,7 @@ Cache-Control: no-store
 
 - `PATCH /api/users/:id/quota` 值域改為 **1–50**；`>50` → `422 INVALID_QUOTA`。
 - 暖機期規則：註冊後 24 小時內有效上限 `min(daily_send_quota, warmup_quota)`；
-  `warmup_quota` 每地址可調、預設 **5**（D35）；每小時上限仍 10。
+  `warmup_quota` 每地址可調、預設 **20**（D35；migration 0018 將舊預設 5 改為 20）；每小時上限仍 10。
 - 部署順序：**先套 migration 0016／0017 → 再部署 API → 再部署前端**。
 
 **超額提醒信**
@@ -1677,7 +1677,7 @@ POST /api/forms/send       → 429 QUOTA_EXCEEDED
 
 ### 2.33 D35：暖機期上限可調（2026-11-09）
 
-> 在 `mail.atwho.org` 的「訪客管理 → 寄信設定」新增**暖機期上限**欄位，預設 **5**，
+> 在 `mail.atwho.org` 的「訪客管理 → 寄信設定」新增**暖機期上限**欄位，預設 **20**，
 > 管理者可依訪客調整（1–50）。目的是讓新帳號的暖機保護可放寬或收緊，而不必整批豁免。
 
 | 項目 | 內容 |
@@ -1686,9 +1686,10 @@ POST /api/forms/send       → 429 QUOTA_EXCEEDED
 | 有效上限 | 暖機期內 = `min(daily_send_quota, warmup_quota)`；`warmup_exempt=1` → 直接用每日配額 |
 | API 讀取 | `GET /api/users?role=visitor`、`GET /api/me`、`GET /api/account/settings` 都回 `warmup_quota` |
 | API 寫入 | `PATCH /api/users/:id/quota` 接受 `warmup_quota`（1–50） |
-| 前端 | VisitorManager「寄信設定」新增「暖機期上限（1–50，預設 5）」輸入框；個人設置／側欄仍顯示折算後的有效上限 |
+| 前端 | VisitorManager「寄信設定」新增「暖機期上限（1–50，預設 20）」輸入框；個人設置／側欄仍顯示折算後的有效上限 |
 | 錯誤碼 | `422 INVALID_WARMUP_QUOTA`（值域不符）、`409 MIGRATION_REQUIRED`（未套 0017 卻帶此欄位） |
-| 預設回退 | 若 API 先部署、migration 尚未套用，查詢以 `NULL` 回退 `QUOTA.WARMUP_QUOTA`（5），寄信不中斷 |
+| 預設回退 | 若 API 先部署、migration 尚未套用，查詢以 `NULL` 回退 `QUOTA.WARMUP_QUOTA`（20），寄信不中斷 |
+| 預設調整 | migration `0018_warmup_quota_default_20.sql` 將仍為舊預設 5 的地址改為 20；管理者自訂值保留 |
 
 ## 3. 通用原則
 

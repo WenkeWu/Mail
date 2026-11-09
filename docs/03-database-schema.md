@@ -206,7 +206,7 @@ CREATE INDEX idx_att_msg ON attachments(message_id);
 | `users` | `access_email` | TEXT | Cloudflare Access 帶來的邊緣身分（**僅稽核**，非授權依據，R5） |
 | `email_addresses` | `can_send` | INTEGER NOT NULL DEFAULT 1 | 0 = 完全不可寄（安全閥 C8，改一個欄位即秒級生效） |
 | `email_addresses` | `daily_send_quota` | INTEGER NOT NULL DEFAULT 20 | 每日寄信上限（C1；DB 預設 20 供 owner 建地址使用；**訪客由程式寫入 50**，D33／migration 0016） |
-| `email_addresses` | `warmup_quota` | INTEGER NOT NULL DEFAULT 5 | **暖機期上限**（D35／migration 0017，每地址可調 1–50；暖機期有效上限 `min(daily_send_quota, warmup_quota)`） |
+| `email_addresses` | `warmup_quota` | INTEGER NOT NULL DEFAULT 5 | **暖機期上限**（D35／migration 0017；DB 預設 5，應用程式建立地址時明確寫入 **20**；migration 0018 將舊預設 5→20；每地址可調 1–50。有效上限 `min(daily_send_quota, warmup_quota)`） |
 | `email_addresses` | `sent_today` | INTEGER NOT NULL DEFAULT 0 | 當日已寄封數（每日 00:00 UTC 重置） |
 | `email_addresses` | `quota_reset_at` | INTEGER | 下次重置時間（epoch ms）；NULL = 尚未初始化 |
 | `email_addresses` | `first_send_at` | INTEGER | 首次寄信時間（暖機期紀錄） |

@@ -652,7 +652,7 @@ export const DE_MESSAGES: Record<string, string> = {
   "每日寄信配額（1–50）": "Tägliches Sendekontingent (1–50)",
   "允許寄信（取消勾選＝安全閥：立即停止此帳號寄信）":
     "Versand erlauben (Häkchen entfernen = Sicherheitsschalter: Versand für dieses Konto sofort stoppen)",
-  "暖機期上限（1–50，預設 5）": "Aufwärmlimit (1–50, Standard 5)",
+  "暖機期上限（1–50，預設 20）": "Aufwärmlimit (1–50, Standard 20)",
   "暖機配額需為 1–50 的整數": "Das Aufwärmkontingent muss eine ganze Zahl von 1 bis 50 sein.",
   "暖機豁免（跳過註冊後 24 小時的暖機上限）":
     "Warm-up-Ausnahme (das Aufwärmlimit der ersten 24 Stunden überspringen)",
