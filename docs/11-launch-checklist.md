@@ -37,7 +37,7 @@
 | Routing DKIM | ✅ `cf2024-1._domainkey.atwho.org` 存在且 `p=` 完整 |
 | 寄信 bounce MX | ✅ `cf-bounce.atwho.org` → route1/2/3 |
 | 寄信 SPF / DKIM | ✅ `cf-bounce.atwho.org` / `cf-bounce._domainkey.atwho.org` |
-| DMARC | ✅ `_dmarc` `p=none` + `rua=…@dmarc-reports.cloudflare.net` |
+| DMARC | ✅ `_dmarc` **`p=quarantine`**（2026-11-09 升級）＋ `rua=…@dmarc-reports.cloudflare.net` |
 | **MTA-STS 訊號** | ⚠️→✅ 稽核時 `_mta-sts` CNAME **已消失**（NXDOMAIN）＝MTA-STS 實質未生效；**當日補回並驗收** |
 | Worker bindings | ✅ api：`DB`/`MAIL`/`EMAIL(send_email)` + secrets `ADMIN_TOKEN`/`JWT_SECRET`；handler：`DB`/`MAIL`；mta-sts：`MODE_OVERRIDE=testing` |
 | Observability | ✅ 三個 Worker 皆開啟（`head_sampling_rate=1`） |

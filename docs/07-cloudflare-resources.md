@@ -93,7 +93,7 @@ wrangler d1 migrations apply mail-d1            # 每次 schema 變更
 | 6–8 | MX | `cf-bounce.atwho.org` | `route1/2/3.mx.cloudflare.net` | 寄信退信（bounce） |
 | 9 | TXT | `cf-bounce.atwho.org` | `v=spf1 include:_spf.mx.cloudflare.net ~all` | 寄信 SPF |
 | 10 | TXT | `cf-bounce._domainkey.atwho.org` | `v=DKIM1; h=sha256; k=rsa; p=…`（2048-bit，與 #5 同一把） | **寄信 DKIM — 實測簽章為 `d=atwho.org; s=cf-bounce`** |
-| 11 | TXT | `_dmarc.atwho.org` | `v=DMARC1; p=none; rua=mailto:…@dmarc-reports.cloudflare.net` | 政策（目前只監控；DKIM/SPF 已實測 pass） |
+| 11 | TXT | `_dmarc.atwho.org` | `v=DMARC1; p=quarantine; rua=mailto:…@dmarc-reports.cloudflare.net` | 政策（2026-11-09 由 `p=none` 升級；DKIM/SPF 已實測 pass） |
 | 12 | TXT | `_smtp._tls.atwho.org` | `v=TLSRPTv1; rua=mailto:tlsrpt@atwho.org,…` | TLS 失敗回報 |
 | 13 | CNAME | `_mta-sts.atwho.org` | `_mta-sts.mx.cloudflare.net`（**DNS only 灰雲**） | MTA-STS 訊號 |
 | 14 | CNAME | `mta-sts.atwho.org` | `atwhomail-mta-sts.ulhome.workers.dev`（proxied） | MTA-STS 政策站（Worker 路由 `mta-sts.atwho.org/*`） |

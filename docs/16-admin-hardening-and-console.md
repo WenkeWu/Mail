@@ -125,8 +125,9 @@
 **UI（僅 `mail.`／localhost 顯示）**：訪客表格（帳號／地址／狀態／配額／今日已寄／信件數／最近活動）＋ 一鍵**停權／復權**＋**地址停用／啟用**＋**配額調整**＋（可選）**暖機豁免**勾選（附警示文字）
 
 **D33（2026-11-07）**：所有訪客每日配額統一 **50**（既有訪客由 migration `0016` 更新；新訪客由程式建立）。
-訪客嘗試超過每日配額被擋時，系統寄**提醒信**到其「備用電子郵件」（`users.contact_email`），
-同一訪客每天最多一封；暖機期 5 封被擋、owner 帳號、沒有備用 email 者都不寄。
+訪客嘗試超過**每日配額或暖機期上限**被擋時，系統寄**提醒信**到其「備用電子郵件」
+（`users.contact_email`），同一訪客每天最多一封；暖機期信件會標明暖機上限與結束時間。
+owner 帳號、沒有備用 email 者不寄。
 
 **⚠️ N9（權限邊界，必須遵守）**：owner **不得**讀取訪客的信件內容（`/api/mail/*` 一律依 session 的 `address_id` / `owner_user_id` 授權）。
 訪客管理頁只能顯示**數量與時間**（信件數、最近活動），**不得**顯示主旨／寄件者／內文。
@@ -602,7 +603,7 @@
 **背景（2026-10-15 查證）**
 - `_mta-sts.atwho.org` = CNAME → `_mta-sts.mx.cloudflare.net`（Cloudflare 代管 TXT ✅）
 - MTA-STS 政策由**自家 worker** `atwhomail-mta-sts`（route `mta-sts.atwho.org/*`）服務：代理 Cloudflare 上游政策，並以 `MODE_OVERRIDE` 覆寫 `mode` 行 ✅
-- `_dmarc` = `v=DMARC1; p=none; rua=mailto:…@dmarc-reports.cloudflare.net`（**已啟用 Cloudflare DMARC 管理**，報告可於 Dashboard 檢視 ✅）
+- `_dmarc` = `v=DMARC1; p=quarantine; rua=mailto:…@dmarc-reports.cloudflare.net`（**已啟用 Cloudflare DMARC 管理**；2026-11-09 由 `p=none` 升級 ✅）
 - `_smtp._tls` TLS-RPT 已設定，但 `tlsrpt@` 收件匣目前 **0 筆**（無 TLS 失敗資料 ⚠️）
 
 **已完成 ✅**
@@ -617,7 +618,7 @@
 | 步驟 | 內容 |
 |---|---|
 | 1 | 檢視 DMARC 報告：Dashboard → `atwho.org` → Email → DMARC Management → 確認**合法來源全部 pass**（我方寄出＝Cloudflare Email Service，DKIM＋SPF 對齊 ✅）|
-| 2 | DNS → TXT `_dmarc` → 將 **`p=none` 改為 `p=quarantine`**（⚠️ 其餘字元（含 `rua`）**一字不動**）|
+| 2 | ~~DNS → TXT `_dmarc` → 將 **`p=none` 改為 `p=quarantine`**~~ ✅ **2026-11-09 已完成**（`rua` 未動）|
 | 3 | 助手驗證：查詢 `_dmarc` 確認生效 ＋ 實測寄信（寄到 Gmail 確認未進垃圾信）|
 | 回退 | 改回 `p=none`（30 秒）✅ |
 

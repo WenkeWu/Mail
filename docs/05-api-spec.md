@@ -1656,14 +1656,19 @@ POST /api/mail/send        → 429 QUOTA_EXCEEDED
 POST /api/forms/send       → 429 QUOTA_EXCEEDED
 ```
 
-- 觸發時機：**每日配額**已滿、該次寄送被原子扣額擋下時（暖機期 5 封被擋**不寄**）。
+- 觸發時機：**每日配額或暖機期上限**已滿、該次寄送被原子扣額擋下時（兩者都寄）。
 - 收件人：`users.contact_email`；訪客沒有備用電子郵件 → 不寄。
 - 只針對 `role='visitor'`；owner 帳號不寄。
 - 去重：同一訪客**每個 UTC 日最多一封**（`auth_attempts` key `quota-alert:<userId>:d:<day>`）。
-- 寄件者 `noreply@atwho.org`；內容只有每日上限、重置時間（UTC 00:00）、地址；
-  **不含**任何信件內容或收件人（N9）。
+- 寄件者 `noreply@atwho.org`；內容只有上限、重置時間、地址：
+  - 每日配額：每日上限＋UTC 00:00 重置說明。
+  - 暖機期：暖機上限＋暖機結束時間（UTC）＋結束後的每日上限。
+  - **不含**任何信件內容或收件人（N9）。
 - 背景執行（`waitUntil`）；寄送失敗只記 log，不影響 429 回應。
-- 稽核：`quota_alert_sent`（detail 只有 `{ limit }`）。
+- 稽核：`quota_alert_sent`（detail `{ limit, warmup }`）。
+- **2026-11-09 修正（API `1796328d`）**：原本只在每日配額被擋時寄，暖機期 5 封被擋不寄；
+  線上驗收發現新訪客前 24 小時永遠只會撞到暖機上限 → 改為暖機期被擋也寄，
+  並在信中標明暖機結束時間與結束後的每日上限。
 
 ## 3. 通用原則
 

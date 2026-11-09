@@ -49,7 +49,7 @@
 | 信件刪除 | 未訂 | `folder='trash'`＝**軟刪除（可還原）**；`deleted_at`＝**永久刪除（全站隱藏）** |
 | 郵件分類 | 未訂 | `origin`(external/internal)＋`kind`(normal/interactive_form)＋`delivery_scope`＋`suspicious_form_claim` |
 | MTA-STS | 未提 | **enforce**（自建 worker）；TLS-RPT 收件人 `tlsrpt@atwho.org` |
-| DMARC | 未提 | `p=none`（**建議改 `p=quarantine`**，需 owner 於 Dashboard 操作）|
+| DMARC | 未提 | ✅ **`p=quarantine`（2026-11-09 由 `p=none` 升級）**＋`rua=…@dmarc-reports.cloudflare.net`；回退＝改回 `p=none` |
 | 備份 | 5 表 | **13 表**（D17）＋ watchdog 去抖 ＋ 重試退避 |
 | 別名 | 僅 schema 建議 | ✅ **D25 已上線**：使用者自訂 3–12 字母＋系統 3 碼流水號；收信投遞、回外信自動用別名、停用回 550（**僅對外匿名**）|
 | 登入方式 | 僅帳密 | ✅ **四種並存**（Google OAuth／Email 驗證碼註冊／信箱＋密碼／管理員 Access）——見 §二十一 |
