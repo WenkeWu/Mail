@@ -3,6 +3,7 @@ import { ApiError } from "../api/client";
 import { changeAccountPassword, getAccountSettings } from "../api/endpoints";
 import type { AccountSettingsResponse, Session } from "../api/types";
 import { useI18n } from "../i18n";
+import { formatShortDateTime } from "../lib/format";
 import { AliasManager } from "./AliasManager";
 import { IconAt, IconBack, IconKey, IconSettings, IconUsers } from "./icons";
 import { LocaleSelectors } from "./LocaleSelectors";
@@ -274,7 +275,16 @@ export function AccountSettings({ session, onBack, onLogout, onToast, onAliasCha
                 data.addresses.map((a) => (
                   <p key={a.id} className="muted small settings-quota">
                     <span className="mono">{a.email}</span>
-                    {t("：今日已寄 {sent} / {limit}", { sent: a.sent_today, limit: a.daily_send_quota })}
+                    {a.warmup_until
+                      ? t("：今日已寄 {sent} / {limit}（暖機期上限，至 {until}）", {
+                          sent: a.sent_today,
+                          limit: a.effective_daily_quota,
+                          until: formatShortDateTime(a.warmup_until),
+                        })
+                      : t("：今日已寄 {sent} / {limit}", {
+                          sent: a.sent_today,
+                          limit: a.effective_daily_quota,
+                        })}
                   </p>
                 ))
               )

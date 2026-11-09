@@ -727,4 +727,8 @@ export const FR_MESSAGES: Record<string, string> = {
   "語言": "Langue",
   "語言與國家": "Langue et pays",
   "這些設定會套用到整個介面與日期格式。": "Ces paramètres s’appliquent à toute l’interface et aux formats de date.",
+
+  // ── D34：暖機期配額提示 ──
+  "：今日已寄 {sent} / {limit}（暖機期上限，至 {until}）": " : envoyés aujourd’hui {sent} / {limit} (limite de rodage jusqu’au {until})",
+  "今日寄信 {sent} / {limit}（暖機至 {until}）": "Envoyés aujourd’hui {sent} / {limit} (rodage jusqu’au {until})",
 };

@@ -1,5 +1,6 @@
 import type { CountsResponse, Folder, FolderQuery, Session } from "../api/types";
 import { useI18n } from "../i18n";
+import { formatShortDateTime } from "../lib/format";
 import {
   IconApps,
   IconArchive,
@@ -47,8 +48,8 @@ interface Props {
   publicMode: boolean;
   onCompose: () => void;
   open: boolean;
-  /** Phase 1：visitor 的寄信配額顯示（owner 為 null） */
-  quotaLine?: { sent: number; limit: number; canSend: boolean } | null;
+  /** Phase 1：visitor 的寄信配額顯示（owner 為 null）；D34 的 `warmupUntil` 為暖機結束時間 */
+  quotaLine?: { sent: number; limit: number; canSend: boolean; warmupUntil?: number | null } | null;
   /** Phase 1：配額用盡／寄信權限關閉時停用撰寫（null = 可寄信） */
   composeBlockedReason?: string | null;
 }
@@ -102,7 +103,13 @@ export function FolderSidebar({
       {quotaLine && (
         <p className={`quota-line ${quotaLine.sent >= quotaLine.limit || !quotaLine.canSend ? "exhausted" : ""}`}>
           {quotaLine.canSend
-            ? t("今日寄信 {sent} / {limit}", { sent: quotaLine.sent, limit: quotaLine.limit })
+            ? quotaLine.warmupUntil
+              ? t("今日寄信 {sent} / {limit}（暖機至 {until}）", {
+                  sent: quotaLine.sent,
+                  limit: quotaLine.limit,
+                  until: formatShortDateTime(quotaLine.warmupUntil),
+                })
+              : t("今日寄信 {sent} / {limit}", { sent: quotaLine.sent, limit: quotaLine.limit })
             : t("寄信權限已關閉")}
         </p>
       )}

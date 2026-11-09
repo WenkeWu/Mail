@@ -722,4 +722,8 @@ export const ZH_CN_MESSAGES: Record<string, string> = {
   "語言": "语言",
   "語言與國家": "语言与国家",
   "這些設定會套用到整個介面與日期格式。": "这些设置会应用到整个界面与日期格式。",
+
+  // ── D34：暖機期配額提示 ──
+  "：今日已寄 {sent} / {limit}（暖機期上限，至 {until}）": "：今日已发 {sent} / {limit}（预热期上限，至 {until}）",
+  "今日寄信 {sent} / {limit}（暖機至 {until}）": "今日发信 {sent} / {limit}（预热至 {until}）",
 };

@@ -18,6 +18,19 @@ export function relativeTime(ts: number, now: number = Date.now()): string {
   return d.toLocaleDateString(locale, { year: "numeric", month: "numeric", day: "numeric" });
 }
 
+/** 短日期時間（例：`11/08 14:28`，依目前語系與區域格式）；D34 暖機結束時間用 */
+export function formatShortDateTime(ts: number): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString(getFormatLocale(), {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 export function formatFullDate(ts: number): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "";

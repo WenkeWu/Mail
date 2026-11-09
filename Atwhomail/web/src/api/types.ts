@@ -190,6 +190,10 @@ export interface AccountSettingsAddress {
   status: "active" | "disabled" | "deleted";
   daily_send_quota: number;
   sent_today: number;
+  /** D34：暖機期折算後的**有效**每日上限（暖機中 = 5） */
+  effective_daily_quota: number;
+  /** D34：暖機結束時間（ms）；null = 目前不受暖機限制 */
+  warmup_until: number | null;
 }
 
 /**
@@ -249,6 +253,10 @@ export interface MeAddress {
   daily_send_quota: number;
   sent_today: number;
   quota_reset_at: number | null;
+  /** D34：暖機期折算後的**有效**每日上限（暖機中 = 5） */
+  effective_daily_quota: number;
+  /** D34：暖機結束時間（ms）；null = 目前不受暖機限制 */
+  warmup_until: number | null;
 }
 
 export interface MeResponse {

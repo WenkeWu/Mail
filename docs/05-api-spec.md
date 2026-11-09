@@ -270,10 +270,14 @@ POST /api/auth/register                 // 公開；需邀請碼；5 次失敗�
   //   → 原子扣次數（UPDATE … WHERE used_count < max_uses）→ 建 users(role='visitor') + email_addresses
   //   → 簽 mailbox JWT → 稽核 register_ok
 
-GET /api/me                             Authorization: owner 或 mailbox
+GET /api/me                             Authorization: owner|mailbox
 → 200 { "role": "owner"|"visitor", "session": "owner"|"mailbox", "username": "friend01",
-        "addresses": [ { "id", "email", "can_send", "daily_send_quota", "sent_today", "quota_reset_at" } ] }
+        "addresses": [ { "id", "email", "can_send", "daily_send_quota", "sent_today", "quota_reset_at",
+                         "effective_daily_quota", "warmup_until" } ] }
   // owner：名下全部地址；mailbox：只有自己那一個（供 UI 顯示配額、停用寄信）
+  // D34：`effective_daily_quota` = 暖機中 ? min(daily_send_quota, 5) : daily_send_quota；
+  //      `warmup_until` = 暖機結束時間（ms），null = 不受暖機限制 → **UI 一律顯示這個值**，
+  //      否則會出現「顯示 50、實際第 6 封就被擋」的落差（D33 配額 50＋暖機 5）
 
 PATCH /api/users/:id/status             Authorization: owner
 { "status": "suspended" | "active" }    → 200 { "ok": true, "id": 5, "status": "suspended" }

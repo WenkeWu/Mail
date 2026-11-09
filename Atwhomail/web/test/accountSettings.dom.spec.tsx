@@ -179,7 +179,15 @@ const VISITOR_SETTINGS: AccountSettingsResponse = {
   contact_email: "ulhome@gmail.com",
   has_password: 1,
   addresses: [
-    { id: 10, email: "itag@atwho.org", status: "active", daily_send_quota: 5, sent_today: 2 },
+    {
+      id: 10,
+      email: "itag@atwho.org",
+      status: "active",
+      daily_send_quota: 5,
+      sent_today: 2,
+      effective_daily_quota: 5,
+      warmup_until: null,
+    },
   ],
 };
 
@@ -230,7 +238,15 @@ describe("T179：個人設置頁", () => {
       contact_email: null,
       has_password: 0,
       addresses: [
-        { id: 30, email: "gmailuser@atwho.org", status: "active", daily_send_quota: 5, sent_today: 0 },
+        {
+          id: 30,
+          email: "gmailuser@atwho.org",
+          status: "active",
+          daily_send_quota: 5,
+          sent_today: 0,
+          effective_daily_quota: 5,
+          warmup_until: null,
+        },
       ],
     });
     renderSettings();
@@ -267,5 +283,30 @@ describe("T179：個人設置頁", () => {
     expect(await screen.findByText("密碼已更新")).toBeTruthy();
     const post = calls.find((c) => c.url === "/api/account/password" && c.method === "POST");
     expect(post?.body).toEqual({ new_password: "brand-new-password" });
+  });
+
+  it("D34：暖機期顯示有效上限 5 與結束時間，而不是配額 50", async () => {
+    const warmupUntil = new Date(2026, 10, 8, 14, 28).getTime();
+    settingsFetch({
+      ...VISITOR_SETTINGS,
+      addresses: [
+        {
+          id: 15,
+          email: "luke001@atwho.org",
+          status: "active",
+          daily_send_quota: 50,
+          sent_today: 0,
+          effective_daily_quota: 5,
+          warmup_until: warmupUntil,
+        },
+      ],
+    });
+    renderSettings();
+
+    // 顯示「0 / 5（暖機期上限，至 11/08 14:28）」，且不得顯示配額 50
+    const line = await screen.findByText(/暖機期上限，至/);
+    expect(line.textContent).toContain("今日已寄 0 / 5");
+    expect(line.textContent).toContain("暖機期上限，至");
+    expect(line.textContent).not.toContain("50");
   });
 });

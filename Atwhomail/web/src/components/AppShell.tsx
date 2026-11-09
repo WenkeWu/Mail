@@ -180,7 +180,8 @@ export function AppShell({
   /** 撰寫被擋的原因（null = 可寄信）。owner 需「所有地址」都被擋才擋。 */
   const composeBlockedReason = useMemo(() => {
     if (!me || me.addresses.length === 0) return null;
-    const blocked = me.addresses.filter((a) => a.can_send !== 1 || a.sent_today >= a.daily_send_quota);
+    // D34：以**有效**上限判斷（暖機期是 min(配額, 5)），否則 UI 會以為還能寄
+    const blocked = me.addresses.filter((a) => a.can_send !== 1 || a.sent_today >= a.effective_daily_quota);
     if (blocked.length < me.addresses.length) return null;
     return blocked[0]!.can_send !== 1
       ? t("此帳號的寄信權限已關閉，請聯絡管理者")
@@ -191,7 +192,13 @@ export function AppShell({
   const quotaLine = useMemo(() => {
     if (!me || me.role !== "visitor" || !me.addresses[0]) return null;
     const a = me.addresses[0];
-    return { sent: a.sent_today, limit: a.daily_send_quota, canSend: a.can_send === 1 };
+    // D34：顯示**有效**上限（暖機期為 5），並帶上暖機結束時間供提示
+    return {
+      sent: a.sent_today,
+      limit: a.effective_daily_quota,
+      canSend: a.can_send === 1,
+      warmupUntil: a.warmup_until,
+    };
   }, [me]);
 
   // owner：地址清單（寄件者選單 + 地址過濾）

@@ -515,6 +515,30 @@ const QUOTA = {
   HOURLY_SEND_LIMIT: 10,
 } as const;
 
+/**
+ * D34：回傳**有效**每日配額（暖機期已折算）。
+ *
+ * - 暖機期＝地址建立後 `WARMUP_HOURS` 內，且未被 owner 設為 `warmup_exempt=1`
+ * - 暖機中有效上限 = `min(daily_send_quota, WARMUP_QUOTA)`，並附上暖機結束時間
+ * - `warmup_until = null` 表示目前不受暖機限制（有效上限 = `daily_send_quota`）
+ *
+ * ⚠️ 只影響**回傳給前端的顯示值**；寄信時的實際判定仍走 `/api/mail/send` 的
+ *    `effectiveLimit`（同一組常數，兩邊語意必須一致）。
+ */
+function quotaView(
+  row: { daily_send_quota: number; created_at?: number | null; warmup_exempt?: number | null },
+  ts: number
+): { effective_daily_quota: number; warmup_until: number | null } {
+  const quota = Number(row.daily_send_quota);
+  const createdAt = Number(row.created_at ?? 0);
+  const warmupUntil = createdAt > 0 ? createdAt + QUOTA.WARMUP_HOURS * 3600_000 : 0;
+  const applies = warmupUntil > ts && row.warmup_exempt !== 1;
+  return {
+    effective_daily_quota: applies ? Math.min(quota, QUOTA.WARMUP_QUOTA) : quota,
+    warmup_until: applies ? warmupUntil : null,
+  };
+}
+
 /** Cloudflare Access 帶來的邊緣身分標頭（僅供稽核，非授權依據） */
 const ACCESS_EMAIL_HEADER = "cf-access-authenticated-user-email";
 
@@ -2263,6 +2287,8 @@ interface AccountSettingsAddressRow {
   status: string;
   daily_send_quota: number;
   sent_today: number;
+  created_at?: number;
+  warmup_exempt?: number;
 }
 
 /** 目前 session 對應的 `users.id`（owner → token sub；mailbox → 地址所屬使用者） */
@@ -2302,7 +2328,7 @@ app.get("/api/account/settings", requireSession, async (c) => {
   let addresses: AccountSettingsAddressRow[];
   if (scope.kind === "owner") {
     const { results } = await c.env.DB.prepare(
-      `SELECT id, email, status, daily_send_quota, sent_today
+      `SELECT id, email, status, daily_send_quota, sent_today, created_at, warmup_exempt
        FROM email_addresses
        WHERE user_id = ?1 AND deleted_at IS NULL
        ORDER BY id`
@@ -2312,7 +2338,7 @@ app.get("/api/account/settings", requireSession, async (c) => {
     addresses = results;
   } else {
     const row = await c.env.DB.prepare(
-      `SELECT id, email, status, daily_send_quota, sent_today
+      `SELECT id, email, status, daily_send_quota, sent_today, created_at, warmup_exempt
        FROM email_addresses
        WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`
     )
@@ -2321,6 +2347,10 @@ app.get("/api/account/settings", requireSession, async (c) => {
     addresses = row ? [row] : [];
   }
 
+  // D34：附上暖機期折算後的有效配額（前端顯示「暖機期上限 5（至 …）」而不是 50）
+  const ts = now();
+  const settingsAddresses = addresses.map((a) => ({ ...a, ...quotaView(a, ts) }));
+
   return c.json({
     user_id: Number(user.id),
     username: user.username,
@@ -2328,7 +2358,7 @@ app.get("/api/account/settings", requireSession, async (c) => {
     provider: user.provider ?? "local",
     contact_email: user.contact_email ?? null,
     has_password: hasPassword(user.password_hash) ? 1 : 0,
-    addresses,
+    addresses: settingsAddresses,
   });
 });
 
@@ -3143,22 +3173,25 @@ app.get("/api/me", requireMailSession, async (c) => {
       .bind(scope.userId)
       .first<{ username: string; role: string }>();
     const { results } = await c.env.DB.prepare(
-      `SELECT id, email, can_send, daily_send_quota, sent_today, quota_reset_at
+      `SELECT id, email, can_send, daily_send_quota, sent_today, quota_reset_at, created_at, warmup_exempt
        FROM email_addresses WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY id`
     )
       .bind(scope.userId)
       .all();
+    const ts = now();
     return c.json({
       role: user?.role ?? "owner",
       session: "owner",
       username: user?.username ?? null,
-      addresses: results,
+      addresses: (results as Array<{ daily_send_quota: number; created_at: number; warmup_exempt: number }>).map(
+        (a) => ({ ...a, ...quotaView(a, ts) })
+      ),
     });
   }
 
   const row = await c.env.DB.prepare(
     `SELECT a.id, a.email, a.can_send, a.daily_send_quota, a.sent_today, a.quota_reset_at,
-            u.username, u.role
+            a.created_at, a.warmup_exempt, u.username, u.role
      FROM email_addresses a JOIN users u ON u.id = a.user_id
      WHERE a.id = ?1 AND a.deleted_at IS NULL`
   )
@@ -3170,6 +3203,8 @@ app.get("/api/me", requireMailSession, async (c) => {
       daily_send_quota: number;
       sent_today: number;
       quota_reset_at: number | null;
+      created_at: number;
+      warmup_exempt: number;
       username: string;
       role: string;
     }>();
@@ -3186,6 +3221,9 @@ app.get("/api/me", requireMailSession, async (c) => {
         daily_send_quota: row.daily_send_quota,
         sent_today: row.sent_today,
         quota_reset_at: row.quota_reset_at,
+        created_at: row.created_at,
+        warmup_exempt: row.warmup_exempt,
+        ...quotaView(row, now()),
       },
     ],
   });
