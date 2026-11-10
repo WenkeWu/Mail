@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, UNAUTHORIZED_EVENT } from "./api/client";
 import { appLogin } from "./api/endpoints";
 import type { Session } from "./api/types";
@@ -10,6 +10,13 @@ import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { parseAppLoginQuery } from "./lib/appLogin";
 import { loginModeFor } from "./lib/hostMode";
 import { getResetToken, takeOAuthSession } from "./lib/oauth";
+import {
+  getLastSystem,
+  isSystemId,
+  setLastSystem,
+  switchTargetFor,
+  type SystemDef,
+} from "./lib/systems";
 import { I18nProvider, useI18n } from "./i18n";
 
 /**
@@ -42,12 +49,20 @@ export default function App({ navigate = defaultNavigate }: { navigate?: (url: s
 
 function AppContent({ navigate }: { navigate: (url: string) => void }) {
   const { t } = useI18n();
+  // D37：只有「這次真的登入」才套用上次系統；單純重新整理還原 session 不導轉
+  const oauthLoginRef = useRef(false);
   // D27：Google OAuth callback 以 `#oauth_token=…` 導回 → 讀取後立即清除 fragment
   const [session, setSession] = useState<Session | null>(() => {
     const fromOAuth = takeOAuthSession(window);
-    if (fromOAuth) saveSession(fromOAuth);
+    if (fromOAuth) {
+      oauthLoginRef.current = true;
+      saveSession(fromOAuth);
+    }
     return fromOAuth ?? loadSession();
   });
+  const [justLoggedIn, setJustLoggedIn] = useState(oauthLoginRef.current);
+  /** D37：登入後的自動導轉只嘗試一次 */
+  const autoSwitchAttempted = useRef(false);
   // D27：`?reset=<token>` → 先顯示設定新密碼頁（不論是否已登入）
   const [resetToken, setResetToken] = useState<string | null>(() => getResetToken(window.location.search));
   const [notice, setNotice] = useState<string | null>(null);
@@ -65,6 +80,7 @@ function AppContent({ navigate }: { navigate: (url: string) => void }) {
     const onUnauthorized = () => {
       clearSession();
       setSession(null);
+      setJustLoggedIn(false);
       setNotice(t("登入已過期或密碼已變更，請重新登入。"));
     };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
@@ -84,6 +100,8 @@ function AppContent({ navigate }: { navigate: (url: string) => void }) {
     setHandoff({ status: "pending", error: null });
     appLogin({ app: appQuery.app, redirect_uri: appQuery.redirectUri })
       .then(({ redirect }) => {
+        // D37：從哪個系統來，就記住哪個系統（下次在 Mail 登入後直接回去）
+        if (isSystemId(appQuery.app)) setLastSystem(appQuery.app);
         // ⚠️ 只使用後端回傳的 redirect（前端提供的 redirect_uri 已經過後端白名單驗證）
         if (alive) navigate(redirect);
       })
@@ -98,6 +116,43 @@ function AppContent({ navigate }: { navigate: (url: string) => void }) {
       alive = false;
     };
   }, [appQuery, session, handoffAttempt, handoffDismissed, navigate, t]);
+
+  /**
+   * D37：直接從 app.atwho.org 登入時，依「上次系統」自動前往 Form／Now／Chat。
+   * - 只在公開入口生效；mail.atwho.org 管理入口留在 Mail
+   * - 重新整理還原 session 不觸發（justLoggedIn=false）
+   * - 失敗時清除偏好並留在 Mail，避免每次登入都被壞掉的系統卡住
+   */
+  useEffect(() => {
+    if (!justLoggedIn || !session || appQuery.active || resetToken) return;
+    if (autoSwitchAttempted.current) return;
+    autoSwitchAttempted.current = true;
+    setJustLoggedIn(false);
+
+    const target = switchTargetFor(LOGIN_MODE, getLastSystem());
+    if (!target?.appId || !target.redirectUri) return;
+    appLogin({ app: target.appId, redirect_uri: target.redirectUri })
+      .then(({ redirect }) => navigate(redirect))
+      .catch((err: unknown) => {
+        setLastSystem("mail");
+        setNotice(err instanceof ApiError ? err.message : t("無法完成應用程式登入，請稍後再試"));
+      });
+  }, [justLoggedIn, session, appQuery.active, resetToken, navigate, t]);
+
+  /** D37：帳號選單的系統切換 */
+  const handleSwitchSystem = useCallback(
+    (system: SystemDef) => {
+      setLastSystem(system.id);
+      if (!system.appId || !system.redirectUri) return;
+      appLogin({ app: system.appId, redirect_uri: system.redirectUri })
+        .then(({ redirect }) => navigate(redirect))
+        .catch((err: unknown) => {
+          setLastSystem("mail");
+          setNotice(err instanceof ApiError ? err.message : t("無法完成應用程式登入，請稍後再試"));
+        });
+    },
+    [navigate, t]
+  );
 
   const handoffRequired = appQuery.active && !handoffDismissed;
 
@@ -128,6 +183,7 @@ function AppContent({ navigate }: { navigate: (url: string) => void }) {
         onLogin={(next) => {
           saveSession(next);
           setNotice(null);
+          setJustLoggedIn(true);
           setSession(next);
         }}
       />
@@ -151,8 +207,12 @@ function AppContent({ navigate }: { navigate: (url: string) => void }) {
     <AppShell
       session={session}
       hostMode={LOGIN_MODE}
+      onSwitchSystem={handleSwitchSystem}
+      flash={notice}
+      onFlashShown={() => setNotice(null)}
       onLogout={() => {
         clearSession();
+        setJustLoggedIn(false);
         setSession(null);
         setNotice(null);
       }}

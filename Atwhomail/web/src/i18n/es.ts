@@ -733,4 +733,7 @@ export const ES_MESSAGES: Record<string, string> = {
   // ── D34：暖機期配額提示 ──
   "：今日已寄 {sent} / {limit}（暖機期上限，至 {until}）": ": enviados hoy {sent} / {limit} (límite de calentamiento hasta {until})",
   "今日寄信 {sent} / {limit}（暖機至 {until}）": "Enviados hoy {sent} / {limit} (calentamiento hasta {until})",
+  "切換系統": "Cambiar de sistema",
+  "內部系統": "Sistemas internos",
+  "尚未建立": "No creado",
 };

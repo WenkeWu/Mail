@@ -5,7 +5,7 @@
  * - `.sidebar-toggle` 在信箱頁＝切換側欄；在子頁面（個人設置等，沒有側欄）＝回到信箱。
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../src/api/types";
 import { AppShell } from "../src/components/AppShell";
 import { installFetch, type FetchCall, type FakeReply } from "./dom-fetch";
@@ -71,5 +71,22 @@ describe("頂部列與側欄鈕", () => {
     await waitFor(() => expect(screen.queryByRole("heading", { name: "個人設置" })).toBeNull());
     expect(screen.getAllByText("收件匣").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "切換側欄" })).toBeTruthy();
+  });
+
+  it("D37：帳號選單可切換 Mail／Form／Now／Chat／Flow", async () => {
+    installFetch(routes);
+    const onSwitchSystem = vi.fn();
+    const { container } = render(
+      <AppShell session={SESSION} hostMode="public" onSwitchSystem={onSwitchSystem} onLogout={() => {}} />
+    );
+
+    const header = container.querySelector(".app-header") as HTMLElement;
+    expect(within(header).getByText("切換系統")).toBeTruthy();
+    for (const name of ["Mail", "Form", "Now", "Chat", "Flow"]) {
+      expect(within(header).getByRole("button", { name })).toBeTruthy();
+    }
+
+    fireEvent.click(within(header).getByRole("button", { name: "Form" }));
+    expect(onSwitchSystem).toHaveBeenCalledWith(expect.objectContaining({ id: "form", appId: "form" }));
   });
 });

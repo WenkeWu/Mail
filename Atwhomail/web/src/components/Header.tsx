@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import type { Session } from "../api/types";
 import { useI18n } from "../i18n";
+import { INTERNAL_SYSTEMS, type SystemDef } from "../lib/systems";
 import {
   IconApps,
   IconLogout,
@@ -33,6 +34,8 @@ interface Props {
    * ⚠️ 僅 UI 收斂，權限仍由後端依 session scope 判定（N3）。
    */
   showAdminConsole: boolean;
+  /** D37：切換到 Mail／Form／Now／Chat（未提供時不顯示切換區塊） */
+  onSwitchSystem?: (system: SystemDef) => void;
   onLogout: () => void;
   /** 手機版側欄鈕：信箱頁＝切換側欄；子頁面＝回到信箱（AppShell 依 page 決定行為） */
   onToggleSidebar: () => void;
@@ -44,9 +47,10 @@ interface Props {
  * 頂部列＋頭像選單（D29，docs/29 §3）。
  *
  * 選單順序：
- * 1. **個人設置**（所有 host／角色）
- * 2. 管理功能（地址管理／邀請碼／訪客／App Clients）—— 僅 `mail.` 且 owner
- * 3. 登出
+ * 1. **切換系統**（D37：Mail／Form／Now／Chat；登入後才有）
+ * 2. **個人設置**（所有 host／角色）
+ * 3. 管理功能（地址管理／邀請碼／訪客／App Clients）—— 僅 `mail.` 且 owner
+ * 4. 登出
  *
  * ⚠️ 撰寫按鈕只在側欄（頂部列不重複提供；owner 2026-11-06 要求）。
  *
@@ -63,6 +67,7 @@ export function Header({
   onOpenVisitors,
   onOpenApps,
   showAdminConsole,
+  onSwitchSystem,
   onLogout,
   onToggleSidebar,
   sidebarToggleLabel,
@@ -132,7 +137,25 @@ export function Header({
               <strong>{identity}</strong>
               <span>{roleLabel}</span>
             </div>
-            {/* D29：選單第一項 —— 所有 host／角色都有 */}
+            {/* D37：四系統入口；Mail 本身＝留在目前頁面 */}
+            {onSwitchSystem && (
+              <>
+                <div className="menu-section">{t("切換系統")}</div>
+                {INTERNAL_SYSTEMS.map((system) => (
+                  <button
+                    key={system.id}
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onSwitchSystem(system);
+                    }}
+                  >
+                    {system.name}
+                  </button>
+                ))}
+              </>
+            )}
+            {/* D29：個人設置 —— 所有 host／角色都有 */}
             <button
               type="button"
               onClick={() => {

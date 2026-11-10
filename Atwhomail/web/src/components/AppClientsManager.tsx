@@ -15,6 +15,7 @@ import { ApiError } from "../api/client";
 import { createApp, disableApp, listApps, updateApp } from "../api/endpoints";
 import type { AppClient, CreatedAppClient } from "../api/types";
 import { getFormatLocale, useI18n } from "../i18n";
+import { INTERNAL_SYSTEMS, type SystemDef } from "../lib/systems";
 import { IconBack, IconRefresh } from "./icons";
 import { Modal } from "./Modal";
 
@@ -57,6 +58,8 @@ export function AppClientsManager({ onBack, onToast }: Props) {
   const [creating, setCreating] = useState(false);
   /** 建立成功後的一次性 secret；關閉視窗即清空（伺服器不會再回傳） */
   const [created, setCreated] = useState<CreatedAppClient | null>(null);
+  /** D37：內部系統一鍵建立（form／now／chat） */
+  const [creatingInternal, setCreatingInternal] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -98,6 +101,26 @@ export function AppClientsManager({ onBack, onToast }: Props) {
       onToast(e instanceof ApiError ? e.message : t("建立 App 失敗"), "error");
     } finally {
       setCreating(false);
+    }
+  };
+
+  /** D37：建立單一內部系統的 App Client（redirect_uri 由 systems.ts 單一來源提供） */
+  const createInternal = async (system: SystemDef) => {
+    if (!system.appId || !system.redirectUri) return;
+    setCreatingInternal(system.appId);
+    try {
+      const res = await createApp({
+        app_id: system.appId,
+        name: system.name,
+        redirect_uris: [system.redirectUri],
+      });
+      setCreated(res);
+      onToast(t("已建立 {appId}；請立即複製 secret（只顯示一次）", { appId: res.app_id }));
+      await reload();
+    } catch (e) {
+      onToast(e instanceof ApiError ? e.message : t("建立 App 失敗"), "error");
+    } finally {
+      setCreatingInternal(null);
     }
   };
 
@@ -151,6 +174,58 @@ export function AppClientsManager({ onBack, onToast }: Props) {
       <p className="warn-text">
         {t("⚠️ app_secret 只會在建立時顯示一次；伺服器只保存雜湊，無法再取回。")}
       </p>
+
+      {/* D37：Mail／Form／Now／Chat 的內部 App Client（一鍵建立；secret 只顯示一次） */}
+      {apps && (
+        <>
+          <h2>{t("內部系統")}</h2>
+          <div className="address-table-wrap">
+            <table className="address-table">
+              <thead>
+                <tr>
+                  <th>{t("名稱")}</th>
+                  <th>App ID</th>
+                  <th>Redirect URI</th>
+                  <th>{t("狀態")}</th>
+                  <th>{t("操作")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {INTERNAL_SYSTEMS.filter((s) => s.appId !== null && s.redirectUri !== null).map((system) => {
+                  const existing = apps.find((a) => a.app_id === system.appId);
+                  return (
+                    <tr key={system.id}>
+                      <td>{system.name}</td>
+                      <td className="mono">{system.appId}</td>
+                      <td className="mono small">{system.redirectUri}</td>
+                      <td>
+                        {existing ? (
+                          <span className={`status-pill ${existing.status === "active" ? "active" : "disabled"}`}>
+                            {existing.status === "active" ? t("啟用中") : t("已停用")}
+                          </span>
+                        ) : (
+                          <span className="muted small">{t("尚未建立")}</span>
+                        )}
+                      </td>
+                      <td className="row-actions">
+                        {!existing && (
+                          <button
+                            type="button"
+                            disabled={creatingInternal === system.appId}
+                            onClick={() => void createInternal(system)}
+                          >
+                            {creatingInternal === system.appId ? "…" : t("建立")}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       <div className="address-table-wrap">
         {error ? (

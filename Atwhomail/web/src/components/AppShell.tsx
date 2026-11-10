@@ -37,6 +37,7 @@ import { replyFromFor } from "../lib/alias";
 import { displaySender, formatFullDate, parseAddress } from "../lib/format";
 import { showsAdminConsole, type LoginMode } from "../lib/hostMode";
 import { joinRecipients, quoteText, withPrefix } from "../lib/recipients";
+import type { SystemDef } from "../lib/systems";
 import { AccountSettings } from "./AccountSettings";
 import { AddressManager } from "./AddressManager";
 import { AliasManager } from "./AliasManager";
@@ -69,11 +70,19 @@ interface ToastState {
 export function AppShell({
   session,
   hostMode,
+  onSwitchSystem,
+  flash,
+  onFlashShown,
   onLogout,
 }: {
   session: Session;
   /** 顯示模式（由 App 依 hostname 決定；docs/16 D1）——僅用於 UI 收斂，權限仍由後端判定 */
   hostMode: LoginMode;
+  /** D37：切換系統（未提供時 Header 不顯示切換區塊） */
+  onSwitchSystem?: (system: SystemDef) => void;
+  /** D37：登入後導轉失敗等一次性訊息（以 toast 顯示） */
+  flash?: string | null;
+  onFlashShown?: () => void;
   onLogout: () => void;
 }) {
   const [page, setPage] = useState<AppPage>("mail");
@@ -161,6 +170,13 @@ export function AppShell({
   const showToast = useCallback((message: string, kind: "info" | "error" = "info") => {
     setToast({ message, kind });
   }, []);
+
+  // D37：把 App 層的一次性錯誤（例如切換系統失敗）顯示成 toast
+  useEffect(() => {
+    if (!flash) return;
+    showToast(flash, "error");
+    onFlashShown?.();
+  }, [flash, onFlashShown, showToast]);
 
   // Phase 1：身分與配額（visitor 的寄信額度；配額用盡時停用撰寫）
   useEffect(() => {
@@ -684,6 +700,7 @@ export function AppShell({
         onOpenVisitors={() => setPage("visitors")}
         onOpenApps={() => setPage("apps")}
         showAdminConsole={canUseAdminConsole}
+        onSwitchSystem={onSwitchSystem}
         onLogout={onLogout}
         onToggleSidebar={() => {
           // 子頁面（個人設置／地址管理…）沒有渲染側欄 → 這個按鈕改為「回到信箱」。

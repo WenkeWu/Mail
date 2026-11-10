@@ -90,6 +90,39 @@ describe("AppClientsManager", () => {
     expect(document.body.textContent).not.toContain(SECRET);
   });
 
+  it("D37：可一鍵建立內部系統 App Client（redirect_uri 由 systems.ts 提供）", async () => {
+    const spy = installFetch((call) => {
+      if (call.url === "/api/apps" && call.method === "GET") return { body: { apps: [] } };
+      if (call.url === "/api/apps" && call.method === "POST") {
+        return {
+          status: 201,
+          body: {
+            app_id: "form",
+            app_secret: SECRET,
+            redirect_uris: ["https://form.atwho.org/api/auth/atwho/callback"],
+          },
+        };
+      }
+      throw new Error(`未預期的請求：${call.method} ${call.url}`);
+    });
+    renderManager();
+
+    const row = (await screen.findByText("Form")).closest("tr") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: "建立" }));
+
+    const post = await waitFor(() => {
+      const call = spy.calls.find((c) => c.url === "/api/apps" && c.method === "POST");
+      expect(call).toBeTruthy();
+      return call!;
+    });
+    expect(post.body).toEqual({
+      app_id: "form",
+      name: "Form",
+      redirect_uris: ["https://form.atwho.org/api/auth/atwho/callback"],
+    });
+    expect(await screen.findByRole("dialog", { name: /App Secret/ })).toBeTruthy();
+  });
+
   it("停用 → DELETE（軟停用），狀態變為已停用", async () => {
     const state = { disabled: false };
     const spy = installFetch(routes(state));

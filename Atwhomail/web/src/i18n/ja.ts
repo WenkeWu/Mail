@@ -733,4 +733,7 @@ export const JA_MESSAGES: Record<string, string> = {
   // ── D34：暖機期配額提示 ──
   "：今日已寄 {sent} / {limit}（暖機期上限，至 {until}）": "：本日の送信 {sent} / {limit}（ウォームアップ上限、{until} まで）",
   "今日寄信 {sent} / {limit}（暖機至 {until}）": "本日の送信 {sent} / {limit}（ウォームアップ {until} まで）",
+  "切換系統": "システムを切り替え",
+  "內部系統": "内部システム",
+  "尚未建立": "未作成",
 };

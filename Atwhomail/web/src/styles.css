@@ -1,18 +1,45 @@
-/* AtWhoMail — Yahoo Mail 風格三欄式介面（單一 stylesheet，無 UI 套件） */
+/* AtWhoMail — 三欄式介面（單一 stylesheet，無 UI 套件）
+ *
+ * D36：色彩／字級／圓角／陰影對齊 docs/05_UI_Specification.md（D:\Form\docs）。
+ * 只調整視覺樣式，不改版面排佈（grid 欄寬、間距與元件位置維持原樣）。
+ */
 
 :root {
-  --purple: #6001d2;
-  --purple-dark: #4b01a6;
-  --purple-soft: #f2eaff;
-  --bg: #f4f4f8;
+  /* AtWho UI design tokens */
+  --primary: #1f4e79;
+  --primary-hover: #173f62;
+  --primary-soft: #eaf2f8;
+  --secondary: #22a699;
+  --secondary-soft: #e6f6f4;
+  --accent: #f2994a;
+  --accent-soft: #fdf0e6;
+  --success: #27ae60;
+  --success-soft: #d1fae5;
+  --success-text: #047857;
+  --warning: #f2c94c;
+  --warning-soft: #fef3c7;
+  --warning-text: #b45309;
+  --danger: #eb5757;
+  --danger-soft: #fee2e2;
+  --danger-text: #b91c1c;
+  --surface: #ffffff;
+  --text-secondary: #4b5563;
+  --disabled: #9ca3af;
+  --border-strong: #d1d5db;
+  --bg: #f8fafc;
   --panel: #ffffff;
-  --border: #e2e2ea;
-  --text: #1c1c24;
-  --muted: #6b6b7c;
-  --danger: #c62828;
-  --unread-bg: #faf6ff;
-  --shadow: 0 6px 24px rgba(20, 10, 60, 0.16);
+  --border: #e0e0e0;
+  --text: #1f2937;
+  --muted: #4b5563;
+  --unread-bg: #f1f6fb;
+  --shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.16);
   --radius: 8px;
+
+  /* 既有 class 仍使用 purple 命名；保留別名，統一指向 primary */
+  --purple: var(--primary);
+  --purple-dark: var(--primary-hover);
+  --purple-soft: var(--primary-soft);
 }
 
 * {
@@ -272,7 +299,7 @@ select {
 }
 
 .quota-line.exhausted {
-  background: #fdeaea;
+  background: #fee2e2;
   color: var(--danger);
 }
 
@@ -302,7 +329,7 @@ select {
 }
 
 .folder-item:hover {
-  background: #f2f2f7;
+  background: #f3f4f6;
 }
 
 .folder-item.active {
@@ -454,7 +481,7 @@ select {
 
 .selection-toolbar button.danger {
   color: var(--danger);
-  border-color: #f0c4c4;
+  border-color: #fca5a5;
 }
 
 .selection-toolbar button.link {
@@ -499,7 +526,7 @@ select {
 }
 
 .mail-row-item:hover {
-  background: #f7f5fb;
+  background: #f1f6fb;
 }
 
 .mail-row-item.unread {
@@ -581,7 +608,7 @@ select {
 
 .folder-chip {
   align-self: start;
-  background: #eee;
+  background: #f3f4f6;
   color: var(--muted);
   border-radius: 999px;
   font-size: 11px;
@@ -603,13 +630,13 @@ select {
 }
 
 .mail-kind-badge.kind-external {
-  background: #eef2f7;
-  color: #44546a;
+  background: #e5e7eb;
+  color: #4b5563;
 }
 
 .mail-kind-badge.kind-internal {
-  background: #e7f6ec;
-  color: #1f6b3a;
+  background: #d1fae5;
+  color: #047857;
 }
 
 .mail-kind-badge.kind-interactive {
@@ -633,20 +660,20 @@ select {
 }
 
 .auth-chip.auth-pass {
-  background: #e7f6ec;
-  color: #1f6b3a;
-  border-color: #bfe3cb;
+  background: #d1fae5;
+  color: #047857;
+  border-color: #a7f3d0;
 }
 
 .auth-chip.auth-fail {
-  background: #fdecec;
+  background: #fee2e2;
   color: var(--danger);
-  border-color: #f5c2c2;
+  border-color: #fca5a5;
   font-weight: 700;
 }
 
 .auth-chip.auth-neutral {
-  background: #f3f3f6;
+  background: #f3f4f6;
   color: var(--muted);
   border-color: var(--border);
 }
@@ -659,9 +686,9 @@ select {
 .mail-warning {
   margin: 6px 0 0;
   padding: 6px 9px;
-  border-left: 3px solid #d69e2e;
-  background: #fff8e5;
-  color: #7a5b10;
+  border-left: 3px solid #f2c94c;
+  background: #fef3c7;
+  color: #b45309;
   font-size: 12.5px;
   border-radius: 4px;
 }
@@ -1032,7 +1059,7 @@ select {
 
 .privacy-modes button {
   border: 1px solid var(--border);
-  background: #f5f5f9;
+  background: #f8fafc;
   border-radius: 999px;
   padding: 4px 12px;
   font-size: 12px;
@@ -1116,7 +1143,7 @@ select {
 }
 
 .icon-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: rgba(15, 23, 42, 0.06);
 }
 
 .app-header .icon-btn:hover {
@@ -1134,14 +1161,14 @@ select {
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  background: #8b5cf6;
+  background: #1f4e79;
   color: #fff;
   font-weight: 700;
   flex-shrink: 0;
 }
 
 .avatar-owner {
-  background: #f59e0b;
+  background: #f2994a;
 }
 
 .spinner {
@@ -1173,7 +1200,7 @@ select {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: #26262f;
+  background: #1f2937;
   color: #fff;
   border-radius: 8px;
   padding: 10px 12px 10px 16px;
@@ -1212,7 +1239,7 @@ select {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 10, 40, 0.45);
+  background: rgba(15, 23, 42, 0.45);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1271,8 +1298,8 @@ select {
 }
 
 .delete-option.danger {
-  border-color: #f0c8c8;
-  background: #fffafa;
+  border-color: #fca5a5;
+  background: #fef2f2;
 }
 
 .delete-option p {
@@ -1285,7 +1312,7 @@ select {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(160deg, var(--purple) 0%, #2c0a63 100%);
+  background: linear-gradient(160deg, var(--purple) 0%, #173f62 100%);
   padding: 20px;
 }
 
@@ -1377,7 +1404,7 @@ select {
 .login-tabs button.active {
   background: #fff;
   color: var(--purple);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
 }
 
 .login-form {
@@ -1497,14 +1524,14 @@ select {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fff;
-  color: #3c4043;
+  color: #4b5563;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
 }
 
 .btn-google:hover {
-  background: #f8f9fa;
+  background: #f8fafc;
 }
 
 /* D20：ID 即時檢查與建議 chip */
@@ -1522,7 +1549,7 @@ select {
 }
 
 .login-form .id-check-ok {
-  color: #1b7f3b;
+  color: #047857;
 }
 
 .login-form .id-check-bad {
@@ -1530,7 +1557,7 @@ select {
 }
 
 .login-form .id-check-warn {
-  color: #9a6b00;
+  color: #b45309;
 }
 
 .login-form .id-suggestions {
@@ -1568,9 +1595,9 @@ select {
 }
 
 .login-notice {
-  background: #fff7e0;
-  border: 1px solid #f0d9a0;
-  color: #7a5a00;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  color: #b45309;
   border-radius: 8px;
   padding: 10px 12px;
   margin-bottom: 14px;
@@ -1763,17 +1790,17 @@ select {
 }
 
 .status-pill.active {
-  background: #e6f5ea;
-  color: #1b6b33;
+  background: #d1fae5;
+  color: #047857;
 }
 
 .status-pill.disabled {
-  background: #fdeaea;
+  background: #fee2e2;
   color: var(--danger);
 }
 
 .status-pill.deleted {
-  background: #eee;
+  background: #f3f4f6;
   color: var(--muted);
 }
 
@@ -1818,13 +1845,13 @@ select {
 .status-pill.suspended,
 .status-pill.revoked,
 .status-pill.expired {
-  background: #fdeaea;
+  background: #fee2e2;
   color: var(--danger);
 }
 
 .status-pill.exhausted {
-  background: #fdf3e0;
-  color: #8a5a00;
+  background: #fef3c7;
+  color: #b45309;
 }
 
 .pill-inline {
@@ -1834,13 +1861,13 @@ select {
 /* 暖機豁免的警示文字（僅在勾選處旁，刻意顯眼） */
 .warn-text {
   margin: 0;
-  background: #fdf3e0;
-  border: 1px solid #f0dcb4;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
   border-radius: 8px;
   padding: 9px 11px;
   font-size: 12.5px;
   line-height: 1.55;
-  color: #7a4d00;
+  color: #b45309;
 }
 
 .field-row {
@@ -1876,13 +1903,13 @@ select {
 
 /* ───────────── 管理主控台：邀請碼／訪客管理（docs/16 D4／D5） ───────────── */
 .status-pill.suspended {
-  background: #fdeaea;
+  background: #fee2e2;
   color: var(--danger);
 }
 
 .status-pill.exhausted,
 .status-pill.expired {
-  background: #eee;
+  background: #f3f4f6;
   color: var(--muted);
 }
 
@@ -1932,13 +1959,13 @@ select {
 
 /* 警示文字（暖機豁免等有風險的操作） */
 .warn-text {
-  background: #fff8e6;
-  border: 1px solid #f0d9a0;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 12.5px;
   line-height: 1.55;
-  color: #7a5b12;
+  color: #b45309;
   margin: 0 0 14px;
 }
 
@@ -2074,8 +2101,8 @@ select {
 }
 
 .form-renderer .panel.errors {
-  border: 1px solid #f5c2c2;
-  background: #fdecec;
+  border: 1px solid #fca5a5;
+  background: #fee2e2;
   color: var(--danger);
   border-radius: 6px;
   padding: 8px 10px;
@@ -2128,9 +2155,9 @@ select {
 }
 
 .form-success {
-  border: 1px solid #bfe3cb;
-  background: #e7f6ec;
-  color: #1f6b3a;
+  border: 1px solid #a7f3d0;
+  background: #d1fae5;
+  color: #047857;
   border-radius: var(--radius);
   padding: 16px;
 }
@@ -2143,7 +2170,7 @@ select {
   margin: 10px 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: #faf8ff;
+  background: #f1f6fb;
   padding: 10px 12px;
 }
 
@@ -2189,13 +2216,13 @@ select {
   border-radius: 999px;
   font-size: 11px;
   padding: 1px 8px;
-  background: #eee;
+  background: #f3f4f6;
   color: var(--muted);
 }
 
 .status-chip.status-submitted {
-  background: #e7f6ec;
-  color: #1f6b3a;
+  background: #d1fae5;
+  color: #047857;
 }
 
 .status-chip.status-open {
@@ -2205,14 +2232,14 @@ select {
 
 .status-chip.status-revoked,
 .status-chip.status-expired {
-  background: #f3f3f6;
+  background: #f3f4f6;
   color: var(--muted);
 }
 
 .form-response-payload {
   margin: 8px 0 0;
   padding: 8px;
-  background: #f7f7fa;
+  background: #f8fafc;
   border-radius: 5px;
   font-size: 12px;
   white-space: pre-wrap;
@@ -2232,7 +2259,7 @@ select {
 }
 
 .btn-danger {
-  border-color: #f5c2c2;
+  border-color: #fca5a5;
   color: var(--danger);
 }
 
@@ -2241,7 +2268,7 @@ select {
 }
 
 .btn-danger:hover {
-  background: #fdecec;
+  background: #fee2e2;
 }
 
 .form-manage-head .btn-danger:disabled {
@@ -2256,7 +2283,7 @@ select {
   border: 1px solid var(--border);
   border-radius: 999px;
   overflow: hidden;
-  background: #f5f5f9;
+  background: #f8fafc;
 }
 
 .compose-mode-switch button {
@@ -2301,7 +2328,7 @@ select {
   border-radius: 6px;
   padding: 8px;
   resize: vertical;
-  background: #fbfbfd;
+  background: #ffffff;
   color: var(--text);
 }
 
@@ -2325,9 +2352,9 @@ select {
   padding: 1px 8px;
   font-size: 11.5px;
   line-height: 1.6;
-  background: #eef1ff;
-  color: #3b4aa8;
-  border: 1px solid #d6dcff;
+  background: #eaf2f8;
+  color: #1f4e79;
+  border: 1px solid #b8cce0;
 }
 
 .alias-create-row {
@@ -2372,8 +2399,8 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  background: #f3fbf5;
-  border: 1px solid #bfe3c8;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
   border-radius: 10px;
   padding: 14px 18px;
   margin-bottom: 18px;
@@ -2383,7 +2410,7 @@ select {
   margin: 4px 0;
   font-size: 15px;
   font-weight: 600;
-  color: #1b6b33;
+  color: #047857;
   word-break: break-all;
 }
 
@@ -2396,8 +2423,8 @@ select {
   display: block;
   margin: 12px 0;
   padding: 10px 12px;
-  background: #f6f8fa;
-  border: 1px solid #d0d7de;
+  background: #f8fafc;
+  border: 1px solid #d1d5db;
   border-radius: 6px;
   font-size: 13px;
   word-break: break-all;
@@ -2415,7 +2442,7 @@ select {
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 13px;
   padding: 8px 10px;
-  border: 1px solid #d0d7de;
+  border: 1px solid #d1d5db;
   border-radius: 6px;
 }
 
@@ -2511,3 +2538,156 @@ select {
 .alias-embedded .page-head {
   display: none;
 }
+
+/* D37：App Clients 頁的內部系統區塊標題 */
+.address-page > h2 {
+  margin: 18px 0 8px;
+  font-size: 16px;
+}
+
+
+/* ───────────── D36：AtWho 設計系統（僅視覺樣式，不改版面排佈） ─────────────
+ * 來源：D:\Form\docs\05_UI_Specification.md
+ * 這一段只調整顏色、字重、圓角、陰影與互動狀態；grid／欄寬／間距維持原樣。
+ */
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+a {
+  color: var(--primary);
+}
+
+.reading-body,
+.plain-body,
+.html-body,
+.form-intro,
+.login-hint {
+  line-height: 1.5;
+}
+
+/* 主要動作按鈕：8px 圓角（規格），保留原本尺寸與排列 */
+.btn-compose,
+.btn-primary,
+.btn-secondary,
+.btn-danger,
+.selection-toolbar button,
+.privacy-modes button,
+.row-actions button,
+.login-tabs,
+.login-tabs button {
+  border-radius: var(--radius);
+}
+
+.btn-secondary {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--surface);
+  font-weight: 500;
+}
+
+.btn-secondary:hover {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-text);
+}
+
+.btn-primary:disabled,
+.btn-danger:disabled {
+  background: var(--disabled);
+  color: #f3f4f6;
+}
+
+/* 卡片：規格要求的白底、細邊框、8px 圓角與輕陰影 */
+.login-card,
+.modal,
+.settings-card,
+.form-pane,
+.form-intro,
+.create-address,
+.address-table-wrap,
+.deleted-addresses {
+  border-radius: var(--radius);
+}
+
+.login-card,
+.modal,
+.settings-card {
+  border: 1px solid #e5e7eb;
+  box-shadow: var(--shadow);
+}
+
+.compose-window {
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.app-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* 頭像：一般使用者用次要色、owner 用強調色，避免與 header 主色融為一體 */
+.avatar {
+  background: var(--secondary);
+}
+
+.avatar-owner {
+  background: var(--accent);
+}
+
+/* 浮層需要比卡片更明顯的陰影 */
+.menu-pop,
+.modal,
+.toast,
+.compose-window {
+  box-shadow: var(--shadow-lg);
+}
+
+.login-page {
+  background: linear-gradient(160deg, var(--primary) 0%, var(--primary-hover) 100%);
+}
+
+/* 表單預設邊框（規格 #D1D5DB） */
+.login-form input,
+.settings-form input,
+.modal-body input,
+.modal-body textarea,
+.locale-selectors select,
+.create-row > input,
+.create-address.narrow input,
+.field-row > input,
+.field-row > input[type="number"] {
+  border-color: var(--border-strong);
+  border-radius: var(--radius);
+}
+
+/* 表單 focus：主色邊框＋淡主色光暈（規格） */
+.login-form input:focus,
+.settings-form input:focus,
+.modal-body input:focus,
+.modal-body textarea:focus,
+.locale-selectors select:focus,
+.create-row > input:focus,
+.create-address.narrow input:focus,
+.field-row > input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(31, 78, 121, 0.12);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
