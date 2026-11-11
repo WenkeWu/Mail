@@ -149,7 +149,7 @@ GET /api/auth/atwho/callback?code=...&state=...
 - [ ] 遠端 callback 的交換、state、redirect 白名單、code 重複使用測試。
 - [ ] 停權使用者在各系統的下一次請求被擋。
 
-自動測試：web DOM 131、workerd 472（全站 603）；`pnpm lint`／`pnpm build` 皆通過。
+自動測試：web DOM 132、workerd 474（全站 606）；`pnpm lint`／`pnpm build` 皆通過。
 
 ## 9. 尚未完成
 

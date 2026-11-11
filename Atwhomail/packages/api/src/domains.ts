@@ -119,7 +119,7 @@ export interface DomainCheckResult {
   degraded?: boolean;
 }
 
-/** 與 index.ts 的 `validLocalPart` 相同的格式（1–64 字元，a-z0-9._-） */
+/** 與 index.ts 的 `validLocalPart` 相同：1–64 字元、a-z0-9._-、且不可為純數字 */
 const LOCAL_PART_RE = /^[a-z0-9][a-z0-9._-]*[a-z0-9]$|^[a-z0-9]$/i;
 
 function normalizeLabel(label: string): string {
@@ -127,7 +127,13 @@ function normalizeLabel(label: string): string {
 }
 
 function isValidLabel(label: string): boolean {
-  return label.length >= 1 && label.length <= 64 && LOCAL_PART_RE.test(label);
+  // owner 2026-11-11：ID 不可為純數字；混合英數（123abc）仍允許。
+  return (
+    label.length >= 1 &&
+    label.length <= 64 &&
+    LOCAL_PART_RE.test(label) &&
+    !/^[0-9]+$/.test(label)
+  );
 }
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;

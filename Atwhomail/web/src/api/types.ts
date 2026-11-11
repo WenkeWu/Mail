@@ -170,7 +170,13 @@ export interface RegistrationModeResponse {
 }
 
 /** D20：ID 可用性（`POST /api/auth/check-id`） */
-export type IdCheckReason = "OK" | "MATCHES_DOMAIN" | "RESERVED" | "TAKEN";
+export type IdCheckReason =
+  | "OK"
+  | "MATCHES_DOMAIN"
+  | "RESERVED"
+  | "TAKEN"
+  /** Client-side pre-check: pure numeric IDs are rejected before calling the API. */
+  | "INVALID_LOCAL_PART";
 
 export interface IdCheckResult {
   available: boolean;

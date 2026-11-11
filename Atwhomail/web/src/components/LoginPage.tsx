@@ -212,6 +212,11 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
       setIdChecking(false);
       return;
     }
+    if (/^[0-9]+$/.test(name)) {
+      setIdCheck({ available: false, reason: "INVALID_LOCAL_PART" });
+      setIdChecking(false);
+      return;
+    }
 
     let alive = true;
     const timer = window.setTimeout(() => {
@@ -490,6 +495,8 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
                       <span className="id-check-pending">{t("檢查中…")}</span>
                     ) : idCheck?.available ? (
                       <span className="id-check-ok">{t("✅ 可用")}</span>
+                    ) : idCheck?.reason === "INVALID_LOCAL_PART" ? (
+                      <span className="id-check-bad">{t("❌ ID 不能是純數字")}</span>
                     ) : idCheck?.reason === "MATCHES_DOMAIN" ? (
                       <span className="id-check-bad">
                         {idCheck.tldHit

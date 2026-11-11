@@ -89,6 +89,7 @@ export const IT_MESSAGES: Record<string, string> = {
   "✅ 可用": "✅ Disponibile",
   "❌ 已被 {domain} 網域使用": "❌ Già usato dal dominio {domain}",
   "❌ 已被現有網域使用": "❌ Già usato da un dominio esistente",
+  "❌ ID 不能是純數字": "❌ L’ID non può essere composto solo da cifre",
   "⚠️ 保留字，請換一個": "⚠️ Parola riservata; scegline un'altra",
   "⚠️ 已有人使用": "⚠️ Già in uso",
   "建議：": "Suggerimenti:",

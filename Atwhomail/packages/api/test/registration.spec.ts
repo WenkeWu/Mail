@@ -282,6 +282,15 @@ describe("T1–T5：邀請碼與註冊", { timeout: 90_000 }, () => {
     );
     expect(r3.status).toBe(400);
     expect((await json<{ error: { code: string } }>(r3)).error.code).toBe("INVALID_LOCAL_PART");
+
+    // 純數字 ID 不可註冊
+    const i4 = await createInvite(1);
+    const r4 = await register(
+      { invite_code: i4.code, username: "123456", password: VISITOR_PW },
+      "198.51.100.24"
+    );
+    expect(r4.status).toBe(400);
+    expect((await json<{ error: { code: string } }>(r4)).error.code).toBe("INVALID_LOCAL_PART");
   });
 
   it("T5 弱密碼 → 400 WEAK_PASSWORD（含既有政策與加嚴規則）", async () => {

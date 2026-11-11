@@ -306,7 +306,7 @@ PATCH /api/users/:id/status             Authorization: owner
 | `INVITE_INVALID` | 400 | 邀請碼不存在／已撤銷／已過期 |
 | `INVITE_EXHAUSTED` | 400 | 邀請碼使用次數用盡 |
 | `ADDRESS_TAKEN` | 400 | `username` 或 `local_part` 重複 |
-| `INVALID_LOCAL_PART` | 400 | 格式不符（1–64 字元 `[a-z0-9._-]`） |
+| `INVALID_LOCAL_PART` | 400 | 格式不符（1–64 字元 `[a-z0-9._-]`，且不可為純數字） |
 | `WEAK_PASSWORD` | 400 | 註冊密碼不符（≥10 字元、非純數字）※既有端點仍為 422 |
 | `REGISTRATION_DISABLED` | 403 | 全站關閉註冊（Worker var `REGISTRATION_DISABLED="true"`，預設未設＝開放） |
 | `QUOTA_EXCEEDED` | 429 | 超過每日配額／暖機上限 |
@@ -1175,8 +1175,9 @@ recipient 查 email_addresses（active）→ 命中：既有流程，envelope_to
 > owner 2026-11-04 定案：DNS 失敗 → **fail-open**（放行＋warning）；TLD 清單照 docs/20 §2
 > 列出的 26 個（原文標題寫「25 個」）；**不回溯**檢查既有地址。
 
-**判定順序（`packages/api/src/domains.ts` 的 `localPartAvailability()`）**
+**判定順序（格式檢查在 `validLocalPart()`；其餘在 `packages/api/src/domains.ts` 的 `localPartAvailability()`）**
 
+0. 格式：1–64 字元 `[a-z0-9._-]`，不可為純數字 → `400 INVALID_LOCAL_PART`
 1. 保留字（`admin`／`postmaster`／`abuse`／`root`／`noreply`／`mailerdaemon`／…）→ `RESERVED`
 2. `id_blocklist`（owner 人工封鎖，例：商標但無網域）→ `RESERVED`
 3. `email_addresses.email`（含軟刪除）或 `users.username` 已存在 → `TAKEN`
@@ -1200,7 +1201,7 @@ recipient 查 email_addresses（active）→ 命中：既有流程，envelope_to
 → 200 { "available": false, "reason": "MATCHES_DOMAIN", "tldHit": "com",
         "suggestions": ["myhp", "hpinbox", "hpbox", "hpmail", "hphub", "hp001"] }
 → 200 { "available": true, "reason": "OK" }
-→ 400 INVALID_LOCAL_PART（格式不符）
+→ 400 INVALID_LOCAL_PART（格式不符或純數字）
 → 429 RATE_LIMITED（同 IP 每分鐘 20 次；`auth_attempts` key=`check-id:<ip>`）
 ```
 

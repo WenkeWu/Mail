@@ -28,7 +28,7 @@
 | P1/P2、D16–D18 | 互動式表單（內部限定、四道鎖、RJSF lazy-load）| ✅ 上線 | docs/18 |
 | D17 | 備份 13 表 ＋ watchdog 去抖 ＋ 退避重試 | ✅ 上線 | docs/17 |
 
-**測試基準**：`pnpm test` → **603**（workerd 472 ＋ web DOM 131）；`pnpm lint` 8/8；`pnpm build` 8/8。
+**測試基準**：`pnpm test` → **606**（workerd 474 ＋ web DOM 132）；`pnpm lint` 8/8；`pnpm build` 8/8。
 
 ---
 
@@ -71,7 +71,7 @@
 ## 4. 常用指令（在 `D:\Mail\Atwhomail`）
 
 ```bash
-pnpm test                 # 603 tests
+pnpm test                 # 606 tests
 pnpm lint                 # 8 workspace
 pnpm build                # 8 workspace
 pnpm secret:scan          # push 前必跑（PUBLIC repo）

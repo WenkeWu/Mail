@@ -48,4 +48,16 @@ describe("D20：LoginPage ID 即時檢查", () => {
     expect(await screen.findByText("✅ 可用")).toBeTruthy();
     await waitFor(() => expect(spy.countOf("/api/auth/check-id")).toBe(2));
   });
+
+  it("純數字 ID 直接顯示錯誤，不呼叫 check-id", async () => {
+    const spy = installFetch(routes());
+    render(<LoginPage notice={null} onLogin={vi.fn()} mode="public" />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "註冊" }));
+    const input = (await screen.findByLabelText(/想要的 ID/)) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "123456" } });
+
+    expect(await screen.findByText("❌ ID 不能是純數字")).toBeTruthy();
+    expect(spy.countOf("/api/auth/check-id")).toBe(0);
+  });
 });

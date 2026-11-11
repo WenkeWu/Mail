@@ -247,6 +247,31 @@ describe("D20 T143–T145：保留字、流水號與限流", { timeout: 90_000 }
     expect(assigned).toBe("user");
   });
 
+  it("純數字 ID → 400 INVALID_LOCAL_PART；assign 以 user 為 base", async () => {
+    mockDoh(new Set());
+
+    const check = await req("/api/auth/check-id", { label: "123456" }, "198.51.100.146");
+    expect(check.status).toBe(400);
+    const checkBody = errorBody(await json(check));
+    expect(checkBody.code).toBe("INVALID_LOCAL_PART");
+    expect(checkBody.message).toContain("純數字");
+
+    const register = await req(
+      "/api/auth/register-request",
+      { email: "numeric-id@example.com", local_part: "123456" },
+      "198.51.100.147"
+    );
+    expect(register.status).toBe(400);
+    expect(errorBody(await json(register)).code).toBe("INVALID_LOCAL_PART");
+    expect(sentMails).toHaveLength(0);
+
+    // 混合英數仍可用；assign 遇到純數字 base 會退回 user，不會配發 numeric ID。
+    const mixed = await req("/api/auth/check-id", { label: "123abc" }, "198.51.100.148");
+    expect(mixed.status).toBe(200);
+    expect((await json<{ available: boolean }>(mixed)).available).toBe(true);
+    expect(await assignAvailableLocalPart(E, "123456")).toBe("user");
+  });
+
   it("T144 assignAvailableLocalPart('hp')（hp.com 命中）→ hp001", async () => {
     mockDoh(new Set(["hp.com"]));
 

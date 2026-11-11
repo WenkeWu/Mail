@@ -48,6 +48,9 @@ CREATE INDEX idx_email_verifications_email ON email_verifications(email, created
 
 環境變數 `REGISTRATION_MODE`：`invite` | `email_verify` | `closed`（預設 `invite`，部署後由 owner 切 `email_verify`）
 
+ID 格式：1–64 字元 `[a-z0-9._-]`，不可為純數字（例：`123456` 不可、`123abc` 可）；
+不符 → `400 INVALID_LOCAL_PART`。
+
 ## 5. 安全細節
 
 - 驗證碼：`crypto.getRandomValues` 取 6 位數；DB 只存 `SHA-256(code + JWT_SECRET)`；**一次性**（`consumed_at`）

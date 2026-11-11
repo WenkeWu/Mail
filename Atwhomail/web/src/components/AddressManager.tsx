@@ -99,6 +99,10 @@ export function AddressManager({ session, onBack, onToast }: Props) {
       setError(t("名稱僅能用 a-z0-9._-（1–64 字元，不能以 . 或 - 開頭/結尾）"));
       return;
     }
+    if (/^[0-9]+$/.test(lp)) {
+      setError(t("❌ ID 不能是純數字"));
+      return;
+    }
     if (password && password.length < 8) {
       setError(t("密碼至少 8 個字元（留空 = 此地址不能獨立登入）"));
       return;

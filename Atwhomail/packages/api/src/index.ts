@@ -233,7 +233,8 @@ async function getOwnerId(db: D1Database): Promise<number | null> {
 }
 
 function validLocalPart(lp: string): boolean {
-  return lp.length >= 1 && lp.length <= 64 && LOCAL_PART_RE.test(lp);
+  // owner 2026-11-11：ID 不可為純數字（例："1234" 不可；"123abc" 可）
+  return lp.length >= 1 && lp.length <= 64 && LOCAL_PART_RE.test(lp) && !/^[0-9]+$/.test(lp);
 }
 
 /** scope → SQL 條件（含 binds） */
@@ -2678,7 +2679,7 @@ app.post("/api/auth/register", async (c) => {
   const username = body.username.trim().toLowerCase();
   const localPart = (body.local_part ?? body.username).trim().toLowerCase();
   if (!validLocalPart(username) || !validLocalPart(localPart)) {
-    return rejected("INVALID_LOCAL_PART", "1-64 chars, [a-z0-9._-]，不能以 ./- 開頭或結尾", {
+    return rejected("INVALID_LOCAL_PART", "1-64 chars, [a-z0-9._-]，不能是純數字，且不能以 ./- 開頭或結尾", {
       reason: "INVALID_LOCAL_PART",
       invite: `#${invite.id}`,
     });
@@ -2827,7 +2828,7 @@ app.post("/api/auth/check-id", async (c) => {
   const body = await c.req.json<{ label?: unknown }>().catch(() => null);
   const label = typeof body?.label === "string" ? body.label.trim().toLowerCase() : "";
   if (!validLocalPart(label)) {
-    return err(c, "INVALID_LOCAL_PART", "ID 需為 1–64 字元（a-z0-9._-），不能以 . 或 - 開頭或結尾", 400);
+    return err(c, "INVALID_LOCAL_PART", "ID 需為 1–64 字元（a-z0-9._-），不能是純數字，且不能以 . 或 - 開頭或結尾", 400);
   }
 
   // ⚡ 互動式檢查走 fast 模式（前 5 個 TLD）；送出時（register-request／register-verify）仍用完整清單複驗
@@ -2930,7 +2931,7 @@ app.post("/api/auth/register-request", async (c) => {
       status: 400,
       reason: "INVALID_LOCAL_PART",
       localPart: localPart || null,
-      message: "ID 需為 1–64 字元（a-z0-9._-），不能以 . 或 - 開頭或結尾",
+      message: "ID 需為 1–64 字元（a-z0-9._-），不能是純數字，且不能以 . 或 - 開頭或結尾",
     });
   }
 
@@ -3083,7 +3084,7 @@ app.post("/api/auth/register-verify", async (c) => {
   if (!validLocalPart(localPart)) {
     return rejection(
       "INVALID_LOCAL_PART",
-      "ID 需為 1–64 字元（a-z0-9._-），不能以 . 或 - 開頭或結尾",
+      "ID 需為 1–64 字元（a-z0-9._-），不能是純數字，且不能以 . 或 - 開頭或結尾",
       400,
       "INVALID_LOCAL_PART"
     );
@@ -3859,7 +3860,7 @@ app.post("/api/email-addresses", requireOwner, async (c) => {
   const body = await c.req.json<{ local_part?: string; password?: string }>().catch(() => null);
   if (!body || typeof body.local_part !== "string") return err(c, "INVALID_BODY", "local_part is required (string)", 400);
   const localPart = body.local_part.trim().toLowerCase();
-  if (!validLocalPart(localPart)) return err(c, "INVALID_LOCAL_PART", "1-64 chars, [a-z0-9._-]，不能以 ./- 開頭或結尾", 400);
+  if (!validLocalPart(localPart)) return err(c, "INVALID_LOCAL_PART", "1-64 chars, [a-z0-9._-]，不能是純數字，且不能以 ./- 開頭或結尾", 400);
 
   let pwHash: string | null = null;
   if (body.password !== undefined) {

@@ -465,6 +465,17 @@ describe("追加：保留字與速率限制（docs/21 §2／§5）", { timeout: 
     expect(sentMails).toHaveLength(0);
   });
 
+  it("純數字 ID → 400 INVALID_LOCAL_PART，不寄碼也不建立帳號", async () => {
+    const request = await requestCode("numeric@example.com", "123456", "203.0.113.117");
+    expect(request.status).toBe(400);
+    expect(errorCode(await json(request))).toBe("INVALID_LOCAL_PART");
+    expect(sentMails).toHaveLength(0);
+
+    const verify = await verifyCode("numeric@example.com", "123456", "123456", "203.0.113.118");
+    expect(verify.status).toBe(400);
+    expect(errorCode(await json(verify))).toBe("INVALID_LOCAL_PART");
+  });
+
   it("同一 Email 每日 5 封 → 第 6 封 CODE_DAILY_LIMIT", async () => {
     const email = "daily@example.com";
     for (let i = 0; i < 5; i += 1) {

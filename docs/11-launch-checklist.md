@@ -558,7 +558,9 @@
       - [ ] `POST /api/auth/register-request {email:…, local_part:"hp"}` → **422 `ID_MATCHES_DOMAIN`**
             ＋`error.suggestions`；**不寄驗證碼**。
       - [ ] `zzqqxxyy123` → 可註冊；`admin` → **422 `ID_RESERVED`**；既有地址 → 409 `ID_TAKEN`。
-      - [ ] 前端 ID 欄停止輸入 500ms 後顯示「✅ 可用／❌ 已被 hp.com 網域使用／⚠️ 保留字／
+      - [ ] 純數字 `123456` → **400 `INVALID_LOCAL_PART`**（`check-id`／`register-request`／
+            `register-verify`／邀請碼註冊皆同）；`123abc` 仍可註冊。
+      - [ ] 前端 ID 欄停止輸入 500ms 後顯示「✅ 可用／❌ 已被 hp.com 網域使用／❌ 純數字／⚠️ 保留字／
             ⚠️ 已有人使用」；建議 chip 可點選填入。
       - [ ] `domain_checks` 有快取列（命中 90 天、未命中 7 天）；同一 ID 第二次查詢不再打 DoH。
       - [ ] 同 IP `check-id` 第 21 次／分 → `429 RATE_LIMITED`。
