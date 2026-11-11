@@ -1332,16 +1332,18 @@ T146＝既有 T1–T138 全套零回歸；前端 `web/test/idCheck.dom.spec.tsx`
 **`POST /api/auth/app-login`（需 session；owner／mailbox／rescue）**
 
 ```jsonc
-{ "app": "mycrm", "redirect_uri": "https://crm.example.com/cb" }
-→ 200 { "redirect": "https://crm.example.com/cb?code=<64 hex>" }
+{ "app": "mycrm", "redirect_uri": "https://crm.example.com/cb", "state": "abc-123" }
+→ 200 { "redirect": "https://crm.example.com/cb?code=<64 hex>&state=abc-123" }
 ```
 
 - `app` 必須存在且 `status='active'` → 否則 **400 `UNKNOWN_APP`**。
 - `redirect_uri` 必須與白名單**完全相符**（不做前綴／正規化）→ 否則 **400 `INVALID_REDIRECT_URI`**。
 - owner → `sub=users.id`；mailbox → 以該地址的 `user_id`；**app token → 403 `SCOPE_NOT_ALLOWED`**
   （App 不得再換新的 code）。
+- `state` 選填（≤512 字元）；**原樣**以 `encodeURIComponent` 帶回 redirect，只作 App 的 CSRF 驗證，
+  **不作為目的地**；超過 512 → **400 `INVALID_STATE`**。
 - code 為 32-byte（hex），有效期 **60 秒**；寫入 `auth_codes`（只存 hash）。
-- 稽核：`app_login`（app_id、user_id；不記 code／redirect_uri）。
+- 稽核：`app_login`（app_id、user_id；不記 code／redirect_uri／state）。
 
 **`POST /api/auth/exchange`（公開，但需 App secret）**
 
@@ -1349,7 +1351,10 @@ T146＝既有 T1–T138 全套零回歸；前端 `web/test/idCheck.dom.spec.tsx`
 { "app_id": "mycrm", "app_secret": "…", "code": "…", "redirect_uri": "…" }
 → 200 {
   "token": "<JWT HS256>",
-  "user": { "id": 2, "username": "itag", "display_name": null, "role": "owner" }
+  "user": {
+    "id": 2, "username": "itag", "display_name": null, "role": "owner",
+    "email": "itag@atwho.org"   // D37：主要 active 地址；沒有則 null
+  }
 }
 ```
 
@@ -1370,12 +1375,16 @@ T146＝既有 T1–T138 全套零回歸；前端 `web/test/idCheck.dom.spec.tsx`
 **`GET /api/auth/me`（`requireSession`，含 app scope）**
 
 ```jsonc
-→ 200 { "id": 2, "username": "itag", "display_name": null, "role": "owner", "created_at": 1793… }
+→ 200 {
+  "id": 2, "username": "itag", "display_name": null, "role": "owner",
+  "email": "itag@atwho.org",   // D37：主要 active 地址；沒有則 null
+  "created_at": 1793…
+}
 ```
 
 - owner／app → `sub` 直接是 `users.id`；mailbox → 由地址查出 `user_id`。
-- 一律回 `users` 最新資料；**不得**含 `password_hash`。`contact_email`（D27 新增欄位）目前仍不回傳
-  —— 本端點契約不變，避免既有 App 依賴額外欄位。
+- 一律回 `users` 最新資料；**不得**含 `password_hash`。`contact_email`（D27 備用電子郵件）仍不回傳；
+  `email` 是**主要 atwho.org 地址**，供 App 端帳號映射使用。
 - 帳號不存在／已刪除 → `404 NOT_FOUND`；停權由 `requireSession` 回 `403 ACCOUNT_SUSPENDED`。
 
 **Session 解析與 scope 邊界**

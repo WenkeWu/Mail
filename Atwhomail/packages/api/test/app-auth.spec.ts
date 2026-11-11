@@ -58,10 +58,17 @@ async function createApp(overrides: Partial<{ app_id: string; name: string; redi
 }
 
 /** app-login → 回傳 redirect 與其中的 code */
-async function appLogin(token: string, appId = "mycrm", redirectUri = REDIRECT) {
+async function appLogin(token: string, appId = "mycrm", redirectUri = REDIRECT, state?: string) {
   const res = await req(
     "/api/auth/app-login",
-    { method: "POST", body: JSON.stringify({ app: appId, redirect_uri: redirectUri }) },
+    {
+      method: "POST",
+      body: JSON.stringify({
+        app: appId,
+        redirect_uri: redirectUri,
+        ...(state !== undefined ? { state } : {}),
+      }),
+    },
     token
   );
   const body = await json<{ redirect?: string; error?: { code: string } }>(res);
@@ -174,6 +181,17 @@ describe("T152：app-login", () => {
     expect(ttl).toBeLessThanOrEqual(60_000);
   });
 
+  it("D37：state 原樣帶回 redirect；過長 → 400 INVALID_STATE", async () => {
+    await createApp();
+    const { res, body } = await appLogin(await ownerToken(), "mycrm", REDIRECT, "abc-123_XYZ");
+    expect(res.status).toBe(200);
+    expect(body.redirect).toContain("state=abc-123_XYZ");
+
+    const tooLong = await appLogin(await ownerToken(), "mycrm", REDIRECT, "x".repeat(513));
+    expect(tooLong.res.status).toBe(400);
+    expect(tooLong.body.error?.code).toBe("INVALID_STATE");
+  });
+
   it("mailbox JWT → 以該地址所屬 user 發 code", async () => {
     await createApp();
     const { res, code } = await appLogin(await mailboxToken());
@@ -225,13 +243,14 @@ describe("T153：exchange 正確 secret/code → App JWT", () => {
     expect(res.status).toBe(200);
     const body = await json<{
       token: string;
-      user: { id: number; username: string; display_name: string | null; role: string };
+      user: { id: number; username: string; display_name: string | null; role: string; email: string | null };
     }>(res);
     expect(body.user).toEqual({
       id: OWNER_ID,
       username: OWNER_USERNAME,
       display_name: "Owner",
       role: "owner",
+      email: OWNER_EMAIL,
     });
     expect(JSON.stringify(body)).not.toContain("password_hash");
 
@@ -360,6 +379,7 @@ describe("T157：GET /api/auth/me", () => {
       username: OWNER_USERNAME,
       display_name: "Owner",
       role: "owner",
+      email: OWNER_EMAIL,
     });
     expect(typeof (appUser as { created_at?: unknown }).created_at).toBe("number");
     expect(appUser).not.toHaveProperty("password_hash");

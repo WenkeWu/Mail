@@ -98,7 +98,7 @@ function AppContent({ navigate }: { navigate: (url: string) => void }) {
 
     let alive = true;
     setHandoff({ status: "pending", error: null });
-    appLogin({ app: appQuery.app, redirect_uri: appQuery.redirectUri })
+    appLogin({ app: appQuery.app, redirect_uri: appQuery.redirectUri, state: appQuery.state ?? undefined })
       .then(({ redirect }) => {
         // D37：從哪個系統來，就記住哪個系統（下次在 Mail 登入後直接回去）
         if (isSystemId(appQuery.app)) setLastSystem(appQuery.app);

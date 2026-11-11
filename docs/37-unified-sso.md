@@ -1,6 +1,7 @@
 # 37 — D37：Mail 帳號中心與五系統入口（SSO）
 
-> 建立：2026-11-10｜狀態：**Mail 入口與契約已上線（Pages `0cd68ede`）；遠端系統尚未接入**
+> 建立：2026-11-10｜狀態：**Mail 入口與契約已上線（Pages `0cd68ede`）；Mail API `state`／`email` 已部署（`2943668e`，2026-11-10）；Chat gateway 已推 `AllChat` `feat/atwho-sso` `5c80f1a`；Form SSO 已推 `Form` `feat/atwho-sso` `94d802c`；Flow SSO 已推 `trace-flow` `feat/atwho-sso` `a6e9684`；Chat／Form／Flow 待遠端部署，Now 尚未接入**
+> Mail API 的 `POST /api/auth/app-login` 現在會把 `state` 原樣接到 callback；`POST /api/auth/exchange` 與 `GET /api/auth/me` 會回傳主要 `email`。
 > 決策（owner 2026-11-10）：一次 Mail 登入 → 使用同一 ID 在 Mail／Form／Now／Chat／Flow 工作；
 > 使用 **D26 一次性 code 交換**；登入後前往**上次使用的系統**（首次預設 Mail）；
 > Form 既有本機帳號**全部改為 SSO**；五系統一起納入入口。
@@ -24,8 +25,9 @@
 - 對外身分：`username`（AtWho ID）、`display_name`、`role`（owner／visitor）。
 - 各系統用自己的表保存 `mail_user_id`／`mail_username` 與該系統的角色；**不共用密碼**、**不共用 `JWT_SECRET`**。
 - Mail 仍是唯一帳號來源：註冊、密碼、停權、刪除、個人設置都只在 Mail 進行。
-- ⚠️ `/api/auth/me` 目前未回傳 email。Form／Now／Chat／Flow 若需要 email，接入時再擴充
-  （建議回傳 primary `email_addresses.email`；屆時同步更新契約與測試）。
+- `POST /api/auth/exchange` 與 `GET /api/auth/me` 回傳 `email`（使用者的主要 active
+  `email_addresses.email`；沒有 active 地址 → `null`），供各系統做既有帳號 email 綁定。
+- `/api/auth/me` **不**回傳 `contact_email`（備用電子郵件）；那是 Mail 找回密碼專用。
 
 ## 3. 登入／切換流程
 
@@ -111,10 +113,11 @@ https://app.atwho.org/?app=form
 
 ```text
 GET /api/auth/atwho/callback?code=...&state=...
+0. Mail 會把 App 傳入的 state 原樣接在 redirect（code 之後）；App 必須自行產生並保存 state
 1. 驗證 state（比對自己 session 內的值，一次性）
 2. POST {ATWHO_API_BASE}/api/auth/exchange
    { app_id, app_secret, code, redirect_uri }
-3. 回應：{ token, user: { id, username, display_name, role } }
+3. 回應：{ token, user: { id, username, display_name, role, email } }
 4. 以 user.id 建立／綁定本地使用者（mail_user_id UNIQUE）
 5. 建立本地 session（建議 HttpOnly Cookie；或既有 token 機制）
 6. 導回 deep link（不要在 URL 放 app_secret）
@@ -146,11 +149,14 @@ GET /api/auth/atwho/callback?code=...&state=...
 - [ ] 遠端 callback 的交換、state、redirect 白名單、code 重複使用測試。
 - [ ] 停權使用者在各系統的下一次請求被擋。
 
-自動測試：web DOM 131、workerd 470（全站 601）；`pnpm lint`／`pnpm build` 皆通過。
+自動測試：web DOM 131、workerd 472（全站 603）；`pnpm lint`／`pnpm build` 皆通過。
 
 ## 9. 尚未完成
 
-- Form／Now／Chat／Flow 的 callback、帳號映射與本機登入停用（需遠端程式與部署權限）。
-- `/api/auth/me` 的 email 欄位（接入 Form 前確認）。
+- ~~**Mail API 部署**~~ ✅ 2026-11-10 完成（version `2943668e`；state passthrough＋exchange/me email）。
+- **Chat**：`AllChat` `feat/atwho-sso`（`5c80f1a`）已完成 gateway、SSO UI、本機登入停用與文件；待遠端 pull、設定 `ATWHO_APP_SECRET`、把 Tunnel ingress 改到 `:3000`、清除舊 `sessions` 後驗收。
+- **Form**：`feat/atwho-sso`（`94d802c`）已推 GitHub；待遠端 pull、設定 `ATWHO_APP_SECRET` 並重啟後端，確認 `/api/auth/atwho/callback` 由 Express 處理。
+- **Flow**：`trace-flow` `feat/atwho-sso`（`a6e9684`）已推 GitHub；使用既有 Vite→FastAPI proxy，不需 gateway。待遠端 `.env` 設 `ATWHO_APP_SECRET`、重啟後端（`init_db` 會自動補 users 欄位）。
+- **Mail Web Pages**：`state` 修正仍在本機工作樹，尚未部署到 `app.atwho.org`；這是所有遠端 SSO 的前置。
+- **Now**：尚未接入。
 - 單一登出／全域撤銷。
-- Now／Chat／Flow 的程式與部署資訊。

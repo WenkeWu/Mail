@@ -75,7 +75,7 @@ export const resetPassword = (token: string, newPassword: string) =>
  * 回應的 `redirect` 已含 `?code=…`，前端直接 `location.assign(redirect)`；
  * 失敗（app 不存在／redirect_uri 不在白名單）→ 顯示錯誤，**不導向**。
  */
-export const appLogin = (payload: { app: string; redirect_uri: string }) =>
+export const appLogin = (payload: { app: string; redirect_uri: string; state?: string }) =>
   request<{ redirect: string }>("/api/auth/app-login", { method: "POST", json: payload });
 
 /** 訪客註冊（Phase 1：需邀請碼；成功即回 mailbox session） */export function register(payload: {

@@ -101,10 +101,11 @@ export function parseStoredRedirectUris(raw: unknown): string[] {
  * 例：`https://crm.example.com/cb?x=1#top` → `https://crm.example.com/cb?x=1&code=…#top`
  *     （fragment 留在最後，符合 URL 結構）
  */
-export function redirectWithCode(redirectUri: string, code: string): string {
+export function redirectWithCode(redirectUri: string, code: string, state?: string | null): string {
   const hashAt = redirectUri.indexOf("#");
   const base = hashAt >= 0 ? redirectUri.slice(0, hashAt) : redirectUri;
   const hash = hashAt >= 0 ? redirectUri.slice(hashAt) : "";
   const sep = base.includes("?") ? "&" : "?";
-  return `${base}${sep}code=${encodeURIComponent(code)}${hash}`;
+  const stateParam = state ? `&state=${encodeURIComponent(state)}` : "";
+  return `${base}${sep}code=${encodeURIComponent(code)}${stateParam}${hash}`;
 }

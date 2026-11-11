@@ -8,17 +8,25 @@ import { parseAppLoginQuery } from "../src/lib/appLogin";
 
 describe("parseAppLoginQuery", () => {
   it("完全沒帶參數 → active:false（不影響既有 register／invite 行為）", () => {
-    expect(parseAppLoginQuery("")).toEqual({ active: false, app: null, redirectUri: null, error: null });
+    expect(parseAppLoginQuery("")).toEqual({
+      active: false,
+      app: null,
+      redirectUri: null,
+      state: null,
+      error: null,
+    });
     expect(parseAppLoginQuery("?register=1")).toEqual({
       active: false,
       app: null,
       redirectUri: null,
+      state: null,
       error: null,
     });
     expect(parseAppLoginQuery("?invite=abc")).toEqual({
       active: false,
       app: null,
       redirectUri: null,
+      state: null,
       error: null,
     });
   });
@@ -31,8 +39,20 @@ describe("parseAppLoginQuery", () => {
       active: true,
       app: "mycrm",
       redirectUri: "https://crm.example.com/cb",
+      state: null,
       error: null,
     });
+  });
+
+  it("D37：state 會原樣保留，過長則忽略", () => {
+    const q = parseAppLoginQuery(
+      `?app=mycrm&redirect_uri=${encodeURIComponent("https://crm.example.com/cb")}&state=${encodeURIComponent("abc-123_XYZ")}`
+    );
+    expect(q.state).toBe("abc-123_XYZ");
+    const tooLong = parseAppLoginQuery(
+      `?app=mycrm&redirect_uri=${encodeURIComponent("https://crm.example.com/cb")}&state=${"x".repeat(513)}`
+    );
+    expect(tooLong.state).toBeNull();
   });
 
   it("只帶其中一個 → error（不導向）", () => {

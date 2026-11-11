@@ -15,6 +15,8 @@ export interface AppLoginQuery {
   active: boolean;
   app: string | null;
   redirectUri: string | null;
+  /** D37：App 提供的 CSRF state；原樣帶回 redirect（不作為目的地） */
+  state: string | null;
   /** 參數不完整或格式錯誤時的提示（不導向；`null` = 正常） */
   error: string | null;
 }
@@ -43,23 +45,38 @@ export function parseAppLoginQuery(search: string): AppLoginQuery {
   const rawRedirect = params.get("redirect_uri");
   const app = rawApp?.trim() ?? "";
   const redirectUri = rawRedirect?.trim() ?? "";
+  const rawState = params.get("state");
+  const state = rawState && rawState.trim() !== "" && rawState.length <= 512 ? rawState.trim() : null;
 
   if (app === "" && redirectUri === "") {
-    return { active: false, app: null, redirectUri: null, error: null };
+    return { active: false, app: null, redirectUri: null, state: null, error: null };
   }
   if (app === "" || redirectUri === "") {
     return {
       active: true,
       app: app || null,
       redirectUri: redirectUri || null,
+      state,
       error: tGlobal("登入參數不完整：需要 app 與 redirect_uri"),
     };
   }
   if (!APP_ID_RE.test(app)) {
-    return { active: true, app, redirectUri, error: tGlobal("app 參數格式錯誤（需為小寫英數字／連字號）") };
+    return {
+      active: true,
+      app,
+      redirectUri,
+      state,
+      error: tGlobal("app 參數格式錯誤（需為小寫英數字／連字號）"),
+    };
   }
   if (!isHttpUrl(redirectUri)) {
-    return { active: true, app, redirectUri, error: tGlobal("redirect_uri 必須是完整的 http(s) 網址") };
+    return {
+      active: true,
+      app,
+      redirectUri,
+      state,
+      error: tGlobal("redirect_uri 必須是完整的 http(s) 網址"),
+    };
   }
-  return { active: true, app, redirectUri, error: null };
+  return { active: true, app, redirectUri, state, error: null };
 }

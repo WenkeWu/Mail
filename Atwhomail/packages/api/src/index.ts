@@ -1921,6 +1921,19 @@ function loadAppByAppId(db: D1Database, appId: string): Promise<AppClientRow | n
   return db.prepare("SELECT * FROM app_clients WHERE app_id = ?1").bind(appId).first<AppClientRow>();
 }
 
+/** D37：使用者的主要 atwho.org 地址（供 App 端帳號映射；沒有 active 地址 → null） */
+async function primaryEmailForUser(db: D1Database, userId: number): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT email FROM email_addresses
+        WHERE user_id = ?1 AND status = 'active' AND deleted_at IS NULL
+        ORDER BY id LIMIT 1`
+    )
+    .bind(userId)
+    .first<{ email: string }>();
+  return row?.email ?? null;
+}
+
 /**
  * POST /api/apps — 建立 App client（owner only）
  *
@@ -2098,7 +2111,7 @@ app.post("/api/auth/app-login", requireSession, async (c) => {
     return err(c, "SCOPE_NOT_ALLOWED", "app token 不可建立新的授權碼", 403);
   }
   const body = await c.req
-    .json<{ app?: unknown; redirect_uri?: unknown }>()
+    .json<{ app?: unknown; redirect_uri?: unknown; state?: unknown }>()
     .catch(() => null);
   if (!body) return err(c, "INVALID_BODY", "invalid JSON body", 400);
 
@@ -2108,6 +2121,13 @@ app.post("/api/auth/app-login", requireSession, async (c) => {
   if (!redirectUri || redirectUri.length > 2048) {
     return err(c, "INVALID_REDIRECT_URI", "redirect_uri 不合法", 400);
   }
+  // D37：App 提供的 CSRF state 原樣帶回（不作為目的地；長度上限防濫用）
+  if (body.state !== undefined && body.state !== null) {
+    if (typeof body.state !== "string" || body.state.length > 512) {
+      return err(c, "INVALID_STATE", "state 不合法", 400);
+    }
+  }
+  const state = typeof body.state === "string" && body.state !== "" ? body.state : null;
 
   const app = await loadAppByAppId(c.env.DB, appId);
   if (!app || app.status !== "active") return err(c, "UNKNOWN_APP", "未知或已停用的 App", 400);
@@ -2139,7 +2159,7 @@ app.post("/api/auth/app-login", requireSession, async (c) => {
     detail: { app_id: appId },
   });
 
-  return c.json({ redirect: redirectWithCode(redirectUri, code) });
+  return c.json({ redirect: redirectWithCode(redirectUri, code, state) });
 });
 
 /**
@@ -2254,7 +2274,13 @@ app.post("/api/auth/exchange", async (c) => {
 
   return c.json({
     token,
-    user: { id: Number(user.id), username: user.username, display_name: user.display_name, role: user.role },
+    user: {
+      id: Number(user.id),
+      username: user.username,
+      display_name: user.display_name,
+      role: user.role,
+      email: await primaryEmailForUser(c.env.DB, Number(user.id)),
+    },
   });
 });
 
@@ -2297,6 +2323,7 @@ app.get("/api/auth/me", requireSession, async (c) => {
     username: user.username,
     display_name: user.display_name,
     role: user.role,
+    email: await primaryEmailForUser(c.env.DB, userId),
     created_at: Number(user.created_at),
   });
 });
