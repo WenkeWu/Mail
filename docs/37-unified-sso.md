@@ -1,6 +1,6 @@
 # 37 — D37：Mail 帳號中心與五系統入口（SSO）
 
-> 建立：2026-11-10｜狀態：**Mail 入口與契約已上線（Pages `0cd68ede`）；Mail API `state`／`email` 已部署（`2943668e`，2026-11-10）；Chat gateway 已推 `AllChat` `feat/atwho-sso` `5c80f1a`；Form SSO 已推 `Form` `feat/atwho-sso` `94d802c`；Flow SSO 已推 `trace-flow` `feat/atwho-sso` `a6e9684`；Chat／Form／Flow 待遠端部署，Now 尚未接入**
+> 建立：2026-11-10｜狀態：**Mail 入口／API／Pages 已上線（Pages `d59f2154`、API `2943668e`）；Chat `AllChat` `5c80f1a`、Form `94d802c`、Flow `a6e9684`、Now `6ccccda` 的 `feat/atwho-sso` 均已推 GitHub；四個遠端系統待部署驗收**
 > Mail API 的 `POST /api/auth/app-login` 現在會把 `state` 原樣接到 callback；`POST /api/auth/exchange` 與 `GET /api/auth/me` 會回傳主要 `email`。
 > 決策（owner 2026-11-10）：一次 Mail 登入 → 使用同一 ID 在 Mail／Form／Now／Chat／Flow 工作；
 > 使用 **D26 一次性 code 交換**；登入後前往**上次使用的系統**（首次預設 Mail）；
@@ -154,9 +154,10 @@ GET /api/auth/atwho/callback?code=...&state=...
 ## 9. 尚未完成
 
 - ~~**Mail API 部署**~~ ✅ 2026-11-10 完成（version `2943668e`；state passthrough＋exchange/me email）。
+- ~~**Mail Web Pages 部署**~~ ✅ 2026-11-11 完成（Pages `d59f2154`；production bundle 已帶 state；Mail commit `dd2ed01`）。
 - **Chat**：`AllChat` `feat/atwho-sso`（`5c80f1a`）已完成 gateway、SSO UI、本機登入停用與文件；待遠端 pull、設定 `ATWHO_APP_SECRET`、把 Tunnel ingress 改到 `:3000`、清除舊 `sessions` 後驗收。
 - **Form**：`feat/atwho-sso`（`94d802c`）已推 GitHub；待遠端 pull、設定 `ATWHO_APP_SECRET` 並重啟後端，確認 `/api/auth/atwho/callback` 由 Express 處理。
 - **Flow**：`trace-flow` `feat/atwho-sso`（`a6e9684`）已推 GitHub；使用既有 Vite→FastAPI proxy，不需 gateway。待遠端 `.env` 設 `ATWHO_APP_SECRET`、重啟後端（`init_db` 會自動補 users 欄位）。
-- **Mail Web Pages**：`state` 修正仍在本機工作樹，尚未部署到 `app.atwho.org`；這是所有遠端 SSO 的前置。
-- **Now**：尚未接入。
+- **Now**：`WenkeWu/Now` `feat/atwho-sso`（`6ccccda`）已推 GitHub；公開瀏覽免登入，刊登／詢價需 AtWho；待遠端 `.env` 設 `ATWHO_APP_SECRET`／`NOW_SESSION_SECRET` 並重啟。
+- **遠端四系統部署與五系統端對端驗收**。
 - 單一登出／全域撤銷。

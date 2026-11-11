@@ -24,7 +24,7 @@
 | **D34** | **配額顯示與實際一致**：`/api/me`、`/api/account/settings` 多回 `effective_daily_quota`（暖機中 = min(配額, 暖機配額)）＋ `warmup_until`；個人設置／側欄顯示有效上限；撰寫鈕的額度判斷同步改用有效值 | ✅ 上線（2026-11-08；`168b03c`／API `29a1c860`／Pages `59de8e9d`）| docs/05 §2.32 |
 | **D35** | **暖機期上限可調**：每地址 `warmup_quota`（預設 **20**、1–50）；`mail.atwho.org` 訪客管理「寄信設定」可調整；暖機期有效上限 = `min(每日配額, 暖機配額)` | ✅ 上線（2026-11-09；`48e20c9`／migration `0017` @ 06:47 UTC／API `4dbac525`／Pages `dcb1da60`）<br>✅ 2026-11-09 預設改 20（`d364e8e`／migration `0018` @07:49 UTC／API `49866c66`／Pages `55dd1d04`） | docs/05 §2.33、docs/16 |
 | **D36** | **AtWho UI Style**：依 `D:\Form\docs\05_UI_Specification.md` 套用主色 `#1F4E79`、狀態色、8px 圓角、卡片陰影與 focus 樣式；**不改版面排佈** | ✅ 上線（2026-11-09；Pages `5f68a302`） | docs/36 |
-| **D37** | **Mail 帳號中心＋五系統入口**：Mail／Form／Now／Chat／Flow 系統清單、頭像選單切換、登入後前往上次系統、D26 code 交換契約；遠端系統接入 | ✅ Mail 入口與契約上線（2026-11-10；Pages `0cd68ede`；D36/D37 已 commit `6c57afb`、Pages `d3e46160` 內容同前）<br>✅ Mail API `state`／`email` 部署（2026-11-10；API `2943668e`）<br>🟡 Chat `5c80f1a`、Form `94d802c`、Flow `a6e9684`（`feat/atwho-sso`）已推 GitHub，待遠端部署；Mail Web Pages 的 `state` 修正待部署；Now 待接入 | docs/37 |
+| **D37** | **Mail 帳號中心＋五系統入口**：Mail／Form／Now／Chat／Flow 系統清單、頭像選單切換、登入後前往上次系統、D26 code 交換契約；遠端系統接入 | ✅ Mail 入口與契約上線（2026-11-10；Pages `0cd68ede`；D36/D37 已 commit `6c57afb`、Pages `d3e46160` 內容同前）<br>✅ Mail API `state`／`email` 部署（2026-11-10；API `2943668e`）<br>✅ Mail Web Pages `state` 部署（2026-11-11；Pages `d59f2154`；commit `dd2ed01`）<br>🟡 Chat `5c80f1a`、Form `94d802c`、Flow `a6e9684`、Now `6ccccda`（`feat/atwho-sso`）已推 GitHub，待遠端部署與五系統驗收 | docs/37 |
 | P1/P2、D16–D18 | 互動式表單（內部限定、四道鎖、RJSF lazy-load）| ✅ 上線 | docs/18 |
 | D17 | 備份 13 表 ＋ watchdog 去抖 ＋ 退避重試 | ✅ 上線 | docs/17 |
 
