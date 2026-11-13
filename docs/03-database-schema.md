@@ -1,3 +1,10 @@
+---
+title: Database Schema（ER Diagram + D1 Tables）
+status: 現況
+updated: 2026-11-09
+read-when: 改資料表、加欄位、寫 migration 前（D1 全部表與關聯）
+---
+
 # 03 — Database Schema（ER Diagram + D1 Tables）
 
 > 對應 PRD §四～§八。所有時間欄位統一 **INTEGER（Unix epoch 毫秒, UTC）**：

@@ -1,3 +1,10 @@
+---
+title: Project Folder Structure（Wrangler / TypeScript）
+status: 設計
+updated: 2026-10-13
+read-when: 找程式放哪裡、wrangler 設定時（部分已過時，以實際目錄為準）
+---
+
 # 06 — Project Folder Structure（Wrangler / TypeScript）
 
 > 對應 PRD §十九 Phase 1。單一 monorepo，**pnpm workspaces**（Phase 2 決定，2026-09-03：`pnpm-workspace.yaml` + `pnpm-lock.yaml`）。

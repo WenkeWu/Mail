@@ -1,3 +1,10 @@
+---
+title: AtWhoMail API 認證速查表（端點／標頭／範例）
+status: 現況
+updated: 2026-10-14
+read-when: 需要快速查認證標頭／token 種類時（比 05 快）
+---
+
 # 15. AtWhoMail API 認證速查表（端點／標頭／範例）
 
 > 本文件**不含任何憑證值**。值一律留在本機檔案／Cloudflare Secret，不進版控。

@@ -1,3 +1,10 @@
+---
+title: D27 實作規格：Google OAuth 登入 ＋ 忘記密碼
+status: 現況
+updated: 2026-11-08
+read-when: 改 Google 登入／忘記密碼時（D27）
+---
+
 # 28 — D27 實作規格：Google OAuth 登入 ＋ 忘記密碼
 
 > 建立：2026-11-05｜狀態：**待派工**

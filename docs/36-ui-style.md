@@ -1,3 +1,10 @@
+---
+title: D36：AtWho UI Style（視覺樣式對齊）
+status: 現況
+updated: 2026-11-10
+read-when: 改視覺樣式、顏色、圓角、focus 樣式時（D36）
+---
+
 # 36 — D36：AtWho UI Style（視覺樣式對齊）
 
 > 建立：2026-11-09｜狀態：**已上線（2026-11-09；Cloudflare Pages `5f68a302`，`app.atwho.org`）**

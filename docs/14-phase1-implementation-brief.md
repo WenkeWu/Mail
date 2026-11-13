@@ -1,3 +1,10 @@
+---
+title: Phase 1 實作指令包（給實作 agent 的規格書）
+status: 歷史
+updated: 2026-11-09
+read-when: 回溯 Phase 1 規格（已實作完成，勿當現況）
+---
+
 # 14. Phase 1 實作指令包（給實作 agent 的規格書）
 
 | 項目 | 內容 |

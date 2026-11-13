@@ -1,3 +1,10 @@
+---
+title: 100,000 Email Addresses
+status: 需求
+updated: 2026-11-10
+read-when: 要判斷「這功能該不該做／是否偏離原始設計」時；§零 只有指標，現況看 docs/31-handoff.md
+---
+
 下面這份可以直接丟給 Claude Agent，目標是讓它依照我們前面定案的架構去規劃與實作。
 
 我要開發一套「大量虛擬 Email Address + 自有 App 收發信」系統，請依照以下架構規劃並實作 MVP。
@@ -6,40 +13,15 @@
 
 ---
 
-## 零、實作現況與文件地圖（2026-11-04 補寫；**2026-11-06 更新至 D32**）
+## 零、需求原文摘要與決策對照（2026-11-04 補寫；**2026-11-13 重整：現況與文件清單已移出**）
 
 > 原 PRD/SRS 撰寫於 2026-09。實作過程中的**決策變更與新增功能**集中記錄在本節，避免與 §一–§二十 原文衝突（原文保留作歷史依據）。
 
-### 0.1 已上線功能總覽
+### 0.1 現況摘要（完整現況不在本檔）
 
-| 階段 | 內容 | 時間 | 文件 |
-|---|---|---|---|
-| Phase 1–16 | 原 MVP：收發信、地址 CRUD、附件、備份、還原、測試 | 2026-09~10 | 本檔 §一–§二十 |
-| D1–D5 | 管理主控台骨架、`hostMode` 入口分流、Access 閘門 | 2026-10 | docs/16 |
-| D6–D11 | 管理權限 L1/L2/L3、訪客配額／停權、地址軟／硬刪除 | 2026-10 | docs/16 |
-| D11-5 | 已刪除地址區塊、硬刪除釋放名稱 | 2026-10-15 | docs/16 |
-| D12–D15 | 維運強化：備份還原演練、MTA-STS `enforce`、jsdom 測試、機密掃描 | 2026-10 | docs/16、docs/17 |
-| **P1/P2** | **互動式表單**（僅內部、四道鎖、RJSF 渲染、轉寄降級）| 2026-10-22 | docs/18 |
-| D16 | 刪使用者／地址需先刪 `form_responses`→`form_instances`（FK）| 2026-10-22 | docs/18 §14 |
-| D17 | 備份涵蓋 **13 張表**、watchdog 去抖、重試退避 4 次 | 2026-10-31 | docs/17 §7 |
-| D18 | 表單 owner 可填、RJSF lazy-load（首屏 682→305 kB）| 2026-10-31 | docs/18 §15 |
-| D19-1~6 | 刪除語意修正（軟刪除**不設** `deleted_at`）、複選批次、清空垃圾桶、單封還原／永久刪除、每列 checkbox、D1 參數分塊（90）、永久刪除前先刪 form 子表 | 2026-11-03~04 | docs/19 |
-| **D21** | **註冊改 Email 驗證碼**（取消邀請碼；`REGISTRATION_MODE=invite/email_verify/closed`）| 2026-11-04 | docs/21 |
-| **D22** | **可分享註冊／邀請連結**（`?register=1`、`?invite=CODE`、管理端複製按鈕）| 2026-11-04 | docs/22 |
-| D20 | **註冊／配發 ID 撞二級網域偵測**（DoH 查 NS、25+1 TLD、fail-open、快取、建議名稱）| 2026-11-05 | docs/20 |
-| D23 | **Turnstile 防機器人**（widget `atwho-entry`、`siteverify`、未設金鑰自動跳過）| 2026-11-05 | docs/23 |
-| D24 | 別名＋反向別名**評估**（結論：**僅對外匿名**；反向別名＝選配不實作）| 2026-11-05 | docs/24 |
-| D25 | **別名（Alias）Phase 1**：使用者自訂 3–12 字母＋系統加 3 碼流水號、收信投遞、回外信自動用別名、停用回 550 | 2026-11-05 | docs/25 |
-| D26 | **跨 App 共用登入**：`auth.atwho.org` 薄代理 ＋ `app_clients`／`auth_codes` ＋ code 交換 ＋ `/api/auth/me` | 2026-11-05 | docs/26 / docs/27 |
-| D27 | **Google OAuth 登入**（免註冊、免驗證碼、自動配發地址、配額 50/日）＋ **忘記／重設密碼** | 2026-11-05 | docs/28 |
-| D29 | **`app.atwho.org` 收斂管理功能**（依網域隱藏地址管理／我的全部信箱／管理主控台）＋ **「個人設置」頁**（ID／備用電子郵件／密碼／內嵌別名）| 2026-11-05 | docs/29 |
-| **D31** | **三種寄信身分**：真實 ID（固定）／暱稱別名（每帳號 1 個，可變更）／Token（帳號建立時自動產生）；撰寫視窗三種隱私模式 | 2026-11-06 | docs/25、docs/29 |
-| **D32** | **全站語系與區域設定**：登入頁＋個人設置可選國家／語言；**10 種語言**（英／西／德／日／法／葡／俄／義／簡中／繁中）；**國家選單依目前語言過濾**（只列該語言為第一語言的國家）；時區優先、判斷不到才用 Cloudflare IP 國別；多官方語言國家用該國第一語言 | 2026-11-06（2026-11-07 國家過濾修正） | docs/32 |
-| **D33** | **訪客每日配額統一 50**（既有＋新註冊＋Google OAuth）；管理頁可調 1–50；**超過每日配額或暖機上限被擋時寄提醒信給訪客的備用電子郵件**（每訪客每日最多一封） | 2026-11-07（2026-11-09 暖機期提醒修正） | docs/05 §2.32、docs/16 |
-| **D34** | **配額顯示與實際一致**：`effective_daily_quota`（暖機期折算）＋ `warmup_until`；個人設置／側欄顯示有效上限 | 2026-11-08 | docs/05 §2.32 |
-| **D35** | **暖機期上限可調**：每地址 `warmup_quota` 預設 **20**、可調 1–50；訪客管理的「寄信設定」可調整；暖機期有效上限 `min(每日配額, 暖機配額)` | 2026-11-09（預設 20 調整） | docs/05 §2.33、docs/16 |
-| **D36** | **AtWho UI Style**：依 `D:\Form\docs\05_UI_Specification.md` 套用主色／狀態色／8px 圓角／卡片陰影／focus；**不改版面排佈** | 2026-11-09 | docs/36 |
-| **D37** | **Mail 帳號中心＋五系統入口**：Mail／Form／Now／Chat／Flow 系統清單、切換系統、登入後前往上次系統；D26 code 交換契約 | 2026-11-10（Mail 端完成；遠端待接入） | docs/37 |
+- 原 MVP（Phase 1–16）＋ **D1–D38** 幾乎全數上線；逐項狀態、部署版本、待辦一律以 **`docs/31-handoff.md`** 為準。
+- 本檔**只保留需求原文（§一–§二十）＋ §0.2 決策對照**；功能清單、端點、版本號不再在此重複。
+- 需要「現在實際長怎樣」→ `docs/31-handoff.md`；需要「有哪些文件、該讀哪份」→ `docs/INDEX.md`。
 
 ### 0.2 與原文不同的決策（原文照留，以本節為準）
 
@@ -64,29 +46,10 @@
 | 個人設置 | 未提 | ✅ **D29**：ID／角色／信箱地址／**備用電子郵件**／密碼／**內嵌別名管理**／配額 |
 | 防機器人 | 未提 | ✅ **D23 Turnstile**（widget `atwho-entry`；未設金鑰自動跳過）|
 
-### 0.3 文件地圖
+### 0.3 文件導航
 
-| 文件 | 內容 |
-|---|---|
-| `mail_PRD_SRS.md`（本檔）| 原始架構（§一–§二十）＋本節現況 |
-| `docs/05-api-spec.md` | API 規格（持續更新）|
-| `docs/11-launch-checklist.md` | 上線檢查清單與端點矩陣 |
-| `docs/16-admin-hardening-and-console.md` | 管理權限 D1–D15、N1–N10 |
-| `docs/17-backup-and-restore.md` | 備份與還原（D17）|
-| `docs/18-interactive-form-mail-design.md` | 互動式表單（P1/P2、D16、D18）|
-| `docs/19-mail-ux-fixes.md` | 信箱 UX（D19-1~D19-6）|
-| `docs/20-id-vs-domain-check.md` | 註冊 ID 撞網域偵測（D20 已上線）|
-| `docs/25-alias-phase1.md` | 別名 Phase 1（D25）|
-| `docs/26-cross-app-sso.md` | 跨 App 共用登入評估與定案（D26 方案）|
-| `docs/27-d26-auth-proxy.md` | `auth.atwho.org` 薄代理 ＋ code 交換（D26）|
-| `docs/28-d27-google-oauth.md` | Google OAuth ＋ 忘記密碼（D27）|
-| `docs/29-d29-account-settings.md` | app 站收斂 ＋ 個人設置（D29）|
-| `docs/21-registration-email-verification.md` | 註冊改 Email 驗證碼（D21）|
-| `docs/22-registration-links.md` | 可分享註冊／邀請連結（D22）|
-| `docs/23-turnstile-bot-protection.md` | Turnstile 防機器人（D23）|
-| `docs/24-alias-reverse-alias-eval.md` | 別名／反向別名評估與設計（D24）|
-| `docs/32-i18n-locale.md` | 全站語系與區域設定（D32，10 語系／`/api/geo`；已上線）|
-| `docs/31-handoff.md` | 交接文件（開新對話先讀這份）|
+文件清單與「什麼時候該讀哪一份」已由各檔 front-matter **自動產生**在 **`docs/INDEX.md`**（勿手改）。
+本節不再維護清單，避免與 INDEX 不同步；重新產生：`node scripts/docs-index.mjs`。
 
 ---
 
@@ -1012,84 +975,23 @@ Local Disk = Backup Mail/Object Storage
 
 ---
 
-## 二十一、帳號與身分（D26–D29，2026-11-05 上線）
+## 二十一、帳號與身分（摘要；細節已移出）
 
-> 原文 §一–§二十 沒有這一塊；本節為實作後補寫，**以本節為準**。
+> 本節原為 80 行實作細節，2026-11-13 移出以免與實作文件重複。**以下只留「去哪裡查」與不變的核心決策。**
 
-### 21.1 四種登入方式（並存）
-
-| 方式 | 入口 | 需要驗證碼 | 首次自動建帳號 | 預設配額 |
-|---|---|---|---|---|
-| **Google OAuth** | `auth.atwho.org/api/auth/oauth/google/start` | ❌ **不需要**（Google 已驗 `email_verified`）| ✅ 建 visitor ＋ **自動配發 1 個地址** | **50 封/日** |
-| **註冊（Email 驗證碼 ✅ ＋ Turnstile）** | `app.atwho.org/?register=1` | ✅ 6 位數、15 分鐘 | ✅ 由使用者指定 ID | 50 封/日（暖機 20/24h，可調）|
-| **信箱／帳密登入** | `POST /api/auth/user-login` | — | — | 依帳號 |
-| **管理員登入** | `mail.atwho.org`（Cloudflare Access ＋ 帳密）| — | — | — |
-
-- 帳密登入的 `identifier` **username 或 備用電子郵件 皆可**（例：`itag` 或 `itag@gmail.com`）✅
-- 純 OAuth 帳號 `password_hash` 為空字串（0001 的 `NOT NULL` 限制）→ 以「未設定密碼」處理，登入回 `400 NO_PASSWORD_SET` ✅
-- OAuth 首次登入的 ID 推導：取 email local part → 只留英文字母 → 截 12 字 → **撞二級網域則加 3 碼流水號**（`ulhome` → `ulhome001`）✅
-
-### 21.2 備用電子郵件（原「登入方式」）
-
-- 欄位：`users.contact_email`（＋ `email_verified`）
-- **來源**：Google OAuth 的已驗證 Email；**Email 驗證碼註冊成功時也寫入註冊 Email**（migration 0014 回填既有帳號）✅
-- **用途：忘記密碼時寄送重設連結** ✅
-- OAuth 每次登入會自動比對／更新（變更寫稽核）✅
-- 個人設置頁以「**備用電子郵件**」呈現（**不再顯示「登入方式」或「Google 帳號」字樣**）✅
-
-### 21.3 忘記密碼／重設
-
-| 步驟 | 行為 |
+| 主題 | 看哪裡 |
 |---|---|
-| `POST /api/auth/forgot-password` | **一律回 200**（不洩漏帳號是否存在）✅；限流 3 次/小時/email、10 次/小時/IP |
-| 寄信 | 主旨「AtWhoMail 密碼重設」，連結 `https://app.atwho.org/?reset=<token>`，**30 分鐘**有效 |
-| `POST /api/auth/reset-password` | token 一次性（DB 只存 SHA-256(token+JWT_SECRET)）→ 更新密碼 → **更新 `pca` 撤銷所有舊 JWT** → 寄「密碼已變更」通知 |
+| 四種登入方式（Google OAuth／Email 驗證碼／信箱密碼／管理員 Access）| `docs/28-d27-google-oauth.md`、`docs/21-registration-email-verification.md` |
+| 備用電子郵件（`contact_email`，用途＝找回密碼）| `docs/29-d29-account-settings.md` |
+| 忘記／重設密碼、`pca` 撤銷舊 token | `docs/28-d27-google-oauth.md` |
+| 個人設置頁、`app.` vs `mail.` 網域收斂 | `docs/29-d29-account-settings.md` |
+| 跨 App 共用登入（`auth.atwho.org`、一次性 code 交換）| `docs/26-cross-app-sso.md`、`docs/27-d26-auth-proxy.md` |
+| 五系統入口、`lastSystem`、遠端系統接入 | `docs/37-unified-sso.md` |
+| 別名命名規則、三種寄信身分（D25／D31）| `docs/25-alias-phase1.md`、`docs/31-handoff.md` §2 |
 
-### 21.4 個人設置頁（`app.` 與 `mail.` 都有）
+**不變的核心決策**
 
-| 卡片 | 內容 |
-|---|---|
-| 身分 | AtWhoMail ID／角色／信箱地址（可複製）|
-| **備用電子郵件** | `contact_email`（用途：找回密碼）✅ |
-| 密碼 | 變更密碼（有密碼）／設定密碼（OAuth 帳號）|
-| **匿名（別名）** | ✅ **內嵌暱稱別名管理**（建立／變更／停用；每帳號 1 個）＋ **隱身代號（Token）**（系統自動產生、系統管理）|
-| 配額 | 今日已寄／上限（visitor）|
-
-### 21.5 網域收斂（`app.` vs `mail.`）
-
-| 功能 | `mail.atwho.org` | `app.atwho.org` |
-|---|---|---|
-| 自己的信箱／撰寫／垃圾桶 | ✅ | ✅ |
-| 個人設置（含別名）| ✅ | ✅ |
-| 地址管理／「我的全部信箱」／邀請碼／訪客管理／App Clients | ✅ | ❌ **完全隱藏** |
-| 頭像「管理員」字樣 | ✅ | ❌（顯示「個人帳號」）|
-
-> ⚠️ 這是 **UI 收斂**（依 host 判斷）；後端授權仍以 session scope 判定（N3）。
-
-### 21.6 跨 App 共用登入（D26）
-
-| 端點 | 用途 |
-|---|---|
-| `POST /api/apps`（owner）| 建立 App Client，`app_secret` **只回一次**（DB 存 SHA-256(secret+JWT_SECRET)）|
-| `POST /api/auth/app-login` | 已登入者換 **60 秒一次性 code**（`redirect_uri` 需完全相符白名單）|
-| `POST /api/auth/exchange` | App 後端用 `app_id`＋`app_secret`＋`code` 換 JWT（`scope='app'`, `aud=<app_id>`）|
-| `GET /api/auth/me` | 取得 `{id, username, display_name, role}` |
-
-- 對外網址：**`https://auth.atwho.org`**（薄代理，只轉 `/api/auth/*`；其他路徑 404）✅
-- ⚠️ `scope='app'` 的 token **不可**呼叫 `/api/mail/*`（403 `SCOPE_NOT_ALLOWED`）✅
-- 其他 App 接入：登入按鈕導向 `app.atwho.org/?app=<id>&redirect_uri=…` → 回呼拿 code → 換 token ✅（每支 App 約 1–2 小時）
-
-### 21.7 別名命名規則（D25，owner 定案）
-
-| 規則 | 值 |
-|---|---|
-| 使用者輸入 | **3–12 個英文字母**（僅 a–z，存小寫；禁數字／符號／保留字）|
-| 系統附加 | 固定 `0` ＋ **3 位流水號**（`001`–`999`）|
-| 範例 | `luke` → `luke001@atwho.org`；第二人 → `luke002` |
-| 總長上限 | ≤ 16 字元 |
-| 停用 | 寄到別名回 **550**（避免退信迴圈）；資料列保留 |
-| 回信 | **只有回覆外部寄件者**時自動以別名寄出；`@atwho.org` 內部寄件者看到真實地址 ✅ |
-| 主動寄新信 | ✅ **D31**：撰寫視窗以「真實 ID／暱稱／隱身代號」三種隱私模式選擇；互動式表單僅限真實 ID ✅ |
-| 隱身代號（Token） | ✅ **D31**：帳號建立時自動產生（16 hex）；對方只看到隱身代號；系統管理，不可停用／刪除 ✅ |
-| 暱稱變更 | ✅ **D31**：每帳號最多 1 個啟用中；`replace_existing` 同一交易停用舊的＋建立新的 ✅ |
-| 反向別名 | 🟡 **不實作**（本架構 API 直接控制 From，不需要 relay）✅ |
+- **Mail 是唯一帳號來源（IdP）**：註冊、密碼、停權、刪除都只在 Mail 進行；其他系統只存 `mail_user_id`。
+- 各系統**不共用密碼、不共用 `JWT_SECRET`**；身分只透過一次性 `code` 交換傳遞（60 秒、用一次即失效）。
+- **對外匿名、對內實名**：只有寄到 `@atwho.org` 內部才顯示真實地址。
+- 一組身分走五個系統（Mail／Form／Now／Chat／Flow），登入後前往「上次使用的系統」。

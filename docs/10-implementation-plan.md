@@ -1,3 +1,10 @@
+---
+title: MVP Implementation Plan（實作順序 + 成本表）
+status: 歷史
+updated: 2026-10-06
+read-when: 想知道 MVP 當初怎麼排順序／成本（已完成，勿當現況）
+---
+
 # 10 — MVP Implementation Plan（實作順序 + 成本表）
 
 > 對應 PRD §十九（分階段實作）與 §二十 item 14/15。

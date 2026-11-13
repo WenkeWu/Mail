@@ -1,6 +1,14 @@
+---
+title: 交接文件（HANDOFF）｜2026-11-05 收尾
+status: 現況
+updated: 2026-11-11
+read-when: **開新對話第一份**：現況、決策、金鑰路徑、指令、待辦
+---
+
 # 31 — 交接文件（HANDOFF）｜2026-11-05 收尾
 
 > 用途：**開新對話**時，先讀這一份就能無縫接手（不必重讀長對話）。
+> 導航：根目錄 `AGENTS.md`（規則與指令）→ `docs/INDEX.md`（哪份文件何時讀）→ 本檔（現況）。
 > 專案：`D:\Mail`（git root）／程式 `D:\Mail\Atwhomail`｜PUBLIC repo `WenKeWu/Mail`
 
 ---

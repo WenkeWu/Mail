@@ -1,3 +1,10 @@
+---
+title: R2 Object Key 設計
+status: 設計
+updated: 2026-10-13
+read-when: 動 R2 物件鍵、附件或備份路徑時
+---
+
 # 04 — R2 Object Key 設計
 
 > 對應 PRD §八、§十四。R2 只放「內容」，所有索引在 D1（見 03 文件）。

@@ -1,3 +1,10 @@
+---
+title: Security Checklist
+status: 現況
+updated: 2026-10-06
+read-when: 做安全審查或改權限前（N 系列規則在這裡）
+---
+
 # 08 — Security Checklist
 
 > 對應 PRD §十一 全部項目。每個威脅 → 具體設計對策 → 實作位置。

@@ -1,3 +1,10 @@
+---
+title: REST API 規格（適合 React App 使用）
+status: 現況
+updated: 2026-11-11
+read-when: 改任何 API 端點／錯誤碼／欄位時 —— **只 grep 端點名，勿整檔讀**（110 KB）
+---
+
 # 05 — REST API 規格（適合 React App 使用）
 
 > 對應 PRD §十。所有 endpoint 都是 JSON，prefix `/api`。

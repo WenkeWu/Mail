@@ -1,3 +1,10 @@
+---
+title: Cloudflare Resources 清單（手動 vs 自動）
+status: 現況
+updated: 2026-11-09
+read-when: 要找 resource ID、DNS、Workers/Pages 設定時
+---
+
 # 07 — Cloudflare Resources 清單（手動 vs 自動）
 
 > 對應 PRD §二十 item 12。列出專案需要的全部 Cloudflare 資源，

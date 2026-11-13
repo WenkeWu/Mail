@@ -1,3 +1,10 @@
+---
+title: Backup / Disaster Recovery 設計
+status: 現況
+updated: 2026-10-05
+read-when: 改備份流程、DR 演練時
+---
+
 # 09 — Backup / Disaster Recovery 設計
 
 > 對應 PRD §十二～§十五。鐵則：**單向、增量、不影響 Production**。

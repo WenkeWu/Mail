@@ -1,3 +1,10 @@
+---
+title: 外部 App／PWA 收發信整合指南
+status: 歷史
+updated: 2026-10-13
+read-when: 要接外部 App／PWA 時；本專案已決議不走 PWA，僅作參考
+---
+
 # 12. 外部 App／PWA 收發信整合指南
 
 > **2026-10-07 補充**：本 repo 已內建 `web/`（Yahoo Mail 風格 UI，`pnpm dev:web`，見 `06` §2.1）供自己使用；

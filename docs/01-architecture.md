@@ -1,3 +1,10 @@
+---
+title: 最終架構與 Production Data Flow
+status: 設計
+updated: 2026-10-05
+read-when: 要理解整體架構與 production data flow 時（架構基準，非現況細節）
+---
+
 # 01 — 最終架構與 Production Data Flow
 
 > 本文是 `mail_PRD_SRS.md` 的第一階段設計輸出。

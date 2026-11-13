@@ -1,3 +1,10 @@
+---
+title: D26 實作規格：`auth.atwho.org` 薄代理 ＋ App code 交換
+status: 現況
+updated: 2026-11-05
+read-when: 改 auth.atwho.org 代理、code 交換時（D26 已上線）
+---
+
 # 27 — D26 實作規格：`auth.atwho.org` 薄代理 ＋ App code 交換
 
 > 建立：2026-11-05｜狀態：**待派工**

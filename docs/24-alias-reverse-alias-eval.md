@@ -1,3 +1,10 @@
+---
+title: 別名（Alias）＋ 反向別名（Reverse Alias）評估
+status: 評估
+updated: 2026-11-05
+read-when: 要重啟「反向別名」討論時（結論：不實作）
+---
+
 # 24 — 別名（Alias）＋ 反向別名（Reverse Alias）評估
 
 > 建立：2026-11-04｜狀態：**評估（待 owner 決策）**

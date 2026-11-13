@@ -1,3 +1,10 @@
+---
+title: D37：Mail 帳號中心與五系統入口（SSO）
+status: 現況
+updated: 2026-11-11
+read-when: 改五系統入口／SSO 契約／接遠端系統時（D37）
+---
+
 # 37 — D37：Mail 帳號中心與五系統入口（SSO）
 
 > 建立：2026-11-10｜狀態：**Mail 入口／API／Pages 已上線（Pages `d59f2154`、API `2943668e`）；Chat `AllChat` `5c80f1a`、Form `94d802c`、Flow `a6e9684`、Now `6ccccda` 的 `feat/atwho-sso` 均已推 GitHub；四個遠端系統待部署驗收**

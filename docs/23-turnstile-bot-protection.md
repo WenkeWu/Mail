@@ -1,3 +1,10 @@
+---
+title: 註冊加上 Cloudflare Turnstile（防機器人）
+status: 現況
+updated: 2026-11-04
+read-when: 改防機器人／Turnstile widget 時（D23）
+---
+
 # 23 — 註冊加上 Cloudflare Turnstile（防機器人）
 
 > 建立：2026-11-04｜狀態：**待 owner 提供金鑰 + 待派工**
