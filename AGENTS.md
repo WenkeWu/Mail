@@ -80,6 +80,7 @@ cd D:/Mail && node scripts/docs-index.mjs
 - 每份 `docs/*.md` 檔頭有 front-matter：`title`／`status`（需求｜現況｜設計｜評估｜歷史）／`updated`／`read-when`。
 - 改內容 → 更新 `updated`；文件被取代 → `status: 歷史` 並在開頭寫「已被 `docs/xx` 取代」。
 - 新增／修改 front-matter 後執行 `node scripts/docs-index.mjs`；`--check` 可驗證 INDEX 是否落後。
+- **已裝 pre-commit hook**（來源 `scripts/git-hooks/`，安裝 `bash scripts/git-hooks/install.sh`）：INDEX 落後或未 staged 會**擋 commit**；CI（`.github/workflows/docs-index.yml`）在 push／PR 再檢查一次。
 - **不要手改 `docs/INDEX.md`**（下次產生會被覆蓋）。
 
 ## 8. 已知地雷

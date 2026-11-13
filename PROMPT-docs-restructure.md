@@ -98,6 +98,35 @@ read-when: 一句話說明「什麼時候該讀這一份」
 3. 被瘦身的章節與保留原因
 4. commit SHA（單一 commit，訊息例：`docs: 建立 AGENTS.md 與 docs/INDEX 導航（front-matter 全覆蓋）`）
 
+### 步驟 6：強制機制（不靠 agent 自覺）
+
+只寫「請記得更新 INDEX」一定會腐化。請加入以下兩層，並在 repo 內保留可版控的來源：
+
+**(a) git pre-commit hook**（工具中立，所有 agent 都適用）
+
+- 只在 **staged 變更包含 `DOCS_DIR/*.md`（INDEX 以外）** 時才檢查，避免拖慢無關 commit。
+- 檢查兩件事：
+  1. `node scripts/docs-index.mjs --check` 失敗 → 擋 commit
+  2. INDEX 在工作區較新但沒 staged → 也擋（否則 commit 會帶舊版）
+- 來源放 `scripts/git-hooks/pre-commit`＋`scripts/git-hooks/install.sh`（複製到 `.git/hooks/` 並 `chmod +x`），**不要**只手動放 `.git/hooks`（不進版控、換機器就消失）。
+
+**(b) CI**（`.github/workflows/docs-index.yml`）
+
+- 觸發：`push`／`pull_request` 且路徑含 `docs/**` 或 `scripts/docs-index.mjs`。
+- 步驟：`actions/checkout` → `setup-node` → `node scripts/docs-index.mjs --check`
+- 再加一步 front-matter 覆蓋率檢查：每個 `docs/*.md` 都要有 `title／status／updated／read-when`。
+
+**(c) 驗收（必做，三個情境都要擋對）**
+
+```bash
+# 情境 1：改 front-matter 不重生成 → 應 exit 1
+# 情境 2：重生成但沒 git add docs/INDEX.md → 應 exit 1
+# 情境 3：兩者都 staged → 應 exit 0
+bash .git/hooks/pre-commit; echo "exit=$?"
+```
+
+回報時附上三個情境的實際 exit code。
+
 ## 約束
 
 - 不要為了「看起來整齊」而重寫文件內容；**只加 front-matter、只把重複的現況導向權威檔**。

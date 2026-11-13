@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# pre-commit：確保 docs/INDEX.md 與 docs/*.md 的 front-matter 一致
+#
+# 規則：
+#   1. 只有當 staged 變更包含 docs/*.md（INDEX.md 以外）時才檢查 → 不拖慢無關 commit
+#   2. INDEX.md 落後 → 擋 commit，並印出修正指令
+#   3. INDEX.md 已在工作區重生成但沒 staged → 也擋（否則 commit 會帶舊版）
+#
+# 安裝：bash scripts/git-hooks/install.sh
+# 略過（不建議）：git commit --no-verify
+
+set -u
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$ROOT" || exit 0
+
+STAGED_DOCS="$(git diff --cached --name-only --diff-filter=ACM \
+  | grep -E '^docs/.*\.md$' | grep -vE '^docs/INDEX\.md$' || true)"
+[ -z "$STAGED_DOCS" ] && exit 0
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "[pre-commit] ⚠️ 找不到 node，跳過 docs/INDEX 檢查"
+  exit 0
+fi
+
+if ! node scripts/docs-index.mjs --check >/dev/null 2>&1; then
+  echo ""
+  echo "[pre-commit] ❌ docs/INDEX.md 已落後（改了 docs front-matter 但沒重生成）"
+  echo "             修正：node scripts/docs-index.mjs && git add docs/INDEX.md"
+  echo ""
+  exit 1
+fi
+
+# INDEX 在工作區較新但沒 staged → commit 會帶到舊版
+if ! git diff --quiet -- docs/INDEX.md 2>/dev/null; then
+  echo ""
+  echo "[pre-commit] ❌ docs/INDEX.md 已重生成但尚未 staged"
+  echo "             修正：git add docs/INDEX.md"
+  echo ""
+  exit 1
+fi
+
+exit 0

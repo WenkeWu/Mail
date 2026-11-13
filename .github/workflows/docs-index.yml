@@ -1,0 +1,35 @@
+name: docs-index
+
+# 確保 docs/INDEX.md 永遠等於 docs/*.md 的 front-matter（不會因忘記重生成而腐化）
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "scripts/docs-index.mjs"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "scripts/docs-index.mjs"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: docs/INDEX.md 是否最新
+        run: node scripts/docs-index.mjs --check
+      - name: front-matter 覆蓋率（每個 docs/*.md 都要有 title/status/updated/read-when）
+        run: |
+          missing=0
+          for f in docs/*.md; do
+            [ "$(basename "$f")" = "INDEX.md" ] && continue
+            for key in title status updated read-when; do
+              grep -q "^$key:" "$f" || { echo "❌ $f 缺 $key"; missing=1; }
+            done
+          done
+          exit $missing
