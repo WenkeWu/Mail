@@ -21,6 +21,9 @@ import type {
   RegistrationModeResponse,
   SendPayload,
   SendResult,
+  VisitorAttentionResponse,
+  VisitorOverview,
+  VisitorSearchResponse,
   VisitorUser,
 } from "./types";
 
@@ -32,10 +35,16 @@ export function ownerLogin(username: string, password: string) {
   );
 }
 
-export function mailboxLogin(email: string, password: string) {
+/** D38：登入時一併把目前語系／國家送給後端（只作為訪客統計，不影響驗證）。 */
+export interface VisitorLocalePayload {
+  country?: string;
+  language?: string;
+}
+
+export function mailboxLogin(email: string, password: string, locale?: VisitorLocalePayload) {
   return request<{ token: string; session: "mailbox"; address: { id: number; email: string } }>(
     "/api/auth/mailbox-login",
-    { method: "POST", json: { email, password } }
+    { method: "POST", json: { email, password, ...locale } }
   );
 }
 
@@ -49,10 +58,10 @@ export type UserLoginResponse =
  * D27（docs/28 §3）：以 username 或 contact_email 登入（本機密碼）。
  * 純 OAuth 帳號 → 400 `NO_PASSWORD_SET`（前端顯示 Google／忘記密碼引導）。
  */
-export function userLogin(identifier: string, password: string) {
+export function userLogin(identifier: string, password: string, locale?: VisitorLocalePayload) {
   return request<UserLoginResponse>("/api/auth/user-login", {
     method: "POST",
-    json: { identifier, password },
+    json: { identifier, password, ...locale },
   });
 }
 
@@ -83,6 +92,8 @@ export const appLogin = (payload: { app: string; redirect_uri: string; state?: s
   username: string;
   password: string;
   local_part?: string;
+  country?: string;
+  language?: string;
 }) {
   return request<{ token: string; session: "mailbox"; address: { id: number; email: string } }>(
     "/api/auth/register",
@@ -126,6 +137,8 @@ export const registerVerify = (payload: {
   local_part: string;
   code: string;
   password: string;
+  country?: string;
+  language?: string;
 }) =>
   request<{ token: string; session: "mailbox"; address: { id: number; email: string } }>(
     "/api/auth/register-verify",
@@ -348,8 +361,59 @@ export const createInvite = (payload: { max_uses?: number; expires_in_hours?: nu
 /** 撤銷邀請碼（soft：status='revoked'；冪等） */
 export const revokeInvite = (id: number) => request<{ ok: boolean; id: number }>(`/api/invites/${id}`, { method: "DELETE" });
 
-/** 訪客清單（owner；只含數量與時間 —— N9） */
+/**
+ * 訪客清單（owner；只含數量與時間 —— N9）。
+ * @deprecated D38 起管理頁改用 overview／search；保留端點供舊測試與緊急排查。
+ */
 export const listVisitors = () => request<{ users: VisitorUser[] }>("/api/users?role=visitor");
+
+export interface VisitorQuery {
+  q?: string;
+  country?: string;
+  language?: string;
+  status?: string;
+  level?: string;
+  risk?: string;
+  page?: number;
+  limit?: number;
+  days?: number;
+}
+
+function visitorQueryString(query: VisitorQuery): string {
+  const params = new URLSearchParams();
+  for (const key of ["q", "country", "language", "status", "level", "risk"] as const) {
+    const value = query[key]?.trim();
+    if (value) params.set(key, value);
+  }
+  if (query.page && query.page > 1) params.set("page", String(query.page));
+  if (query.limit) params.set("limit", String(query.limit));
+  if (query.days) params.set("days", String(query.days));
+  const encoded = params.toString();
+  return encoded ? `?${encoded}` : "";
+}
+
+/** D38：訪客 Dashboard 聚合（KPI／國家／語系／等級／趨勢／同步狀態）。 */
+export const getVisitorOverview = (query: VisitorQuery = {}) =>
+  request<VisitorOverview>(`/api/admin/visitors/overview${visitorQueryString(query)}`);
+
+/** D38：篩選式搜尋（必須至少一個條件；每頁最多 50 筆）。 */
+export const searchVisitors = (query: VisitorQuery) =>
+  request<VisitorSearchResponse>(`/api/admin/visitors/search${visitorQueryString(query)}`);
+
+/** D38：需要注意的訪客。 */
+export const getVisitorAttention = (limit = 20) =>
+  request<VisitorAttentionResponse>(`/api/admin/visitors/attention?limit=${limit}`);
+
+/** D38：AllChat 等級投影同步狀態。 */
+export const getAllChatSyncStatus = () =>
+  request<{ sync: import("./types").AllChatSyncStatus }>("/api/admin/integrations/allchat/status");
+
+/** D38：手動觸發 AllChat 等級同步（自動同步為每 5 分鐘 cron）。 */
+export const triggerAllChatSync = () =>
+  request<{ ok: boolean; synced: number; cursor: string | null }>(
+    "/api/admin/integrations/allchat/sync",
+    { method: "POST" }
+  );
 
 /** 停權／復權（C7 立即生效；DB 端 suspended → 'disabled'） */
 export const setUserStatus = (id: number, status: "active" | "suspended") =>

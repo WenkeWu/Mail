@@ -320,6 +320,97 @@ export interface VisitorUser {
   mail_count: number;
   /** 最近活動時間（最近一封信的時間；沒有信則為帳號更新時間） */
   last_activity_at: number | null;
+  /** D38：註冊／登入時記錄的國家（ISO 3166-1 alpha-2；未知 = null） */
+  country_code?: string | null;
+  /** D38：語系標籤（例：zh-TW；未知 = null） */
+  language?: string | null;
+  /** D38：最近一次活動時間（登入／開啟信箱；非信件時間） */
+  last_seen_at?: number | null;
+  /** D38：AllChat 等級投影（T0–T4；未同步 = null）。Mail 唯讀，管理在 AllChat。 */
+  level?: string | null;
+  level_scope?: string | null;
+  level_status?: string | null;
+  level_synced_at?: number | null;
+  quota_rejected_24h?: number;
+  rate_rejected_24h?: number;
+  login_failed_24h?: number;
+}
+
+/** D38：搜尋結果（GET /api/admin/visitors/search） */
+export interface VisitorSearchResponse {
+  users: VisitorUser[];
+  has_more: boolean;
+  filter_required: boolean;
+}
+
+export interface VisitorOverviewCounts {
+  total: number;
+  new_today: number;
+  new_7d: number;
+  active_7d: number;
+  suspended: number;
+  warming: number;
+  near_quota: number;
+  rejected_24h: number;
+}
+
+export interface VisitorDistribution {
+  key: string;
+  count: number;
+}
+
+export interface VisitorTrendPoint {
+  day: string;
+  count: number;
+}
+
+export interface AllChatSyncStatus {
+  configured: boolean;
+  lastSyncedAt: number | null;
+  lastError: string | null;
+  cursor: string | null;
+  stale: boolean;
+}
+
+export interface VisitorOverview {
+  totals: VisitorOverviewCounts;
+  by_country: VisitorDistribution[];
+  by_language: VisitorDistribution[];
+  by_level: VisitorDistribution[];
+  trends: {
+    registrations: VisitorTrendPoint[];
+    sent: VisitorTrendPoint[];
+  };
+  sync: AllChatSyncStatus;
+  filter_required: false;
+}
+
+/** D38：需要注意的訪客（GET /api/admin/visitors/attention） */
+export interface VisitorAttentionItem {
+  id: number;
+  username: string;
+  status: "active" | "suspended";
+  created_at: number;
+  last_seen_at: number | null;
+  country_code: string | null;
+  language: string | null;
+  address_id: number | null;
+  email: string | null;
+  address_status: string | null;
+  daily_send_quota: number | null;
+  sent_today: number | null;
+  level: string | null;
+  level_status: string | null;
+  quota_rejected_24h: number;
+  rate_rejected_24h: number;
+  login_failed_24h: number;
+  reasons: string[];
+  severity: "warn" | "high";
+}
+
+export interface VisitorAttentionResponse {
+  items: VisitorAttentionItem[];
+  sync: AllChatSyncStatus;
 }
 
 /** 閱讀窗格的內文狀態（UI 專用） */

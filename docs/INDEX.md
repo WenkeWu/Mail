@@ -2,7 +2,7 @@
 
 > **這是自動產生的檔案，不要手改。** 改各檔的 front-matter 後執行 `node scripts/docs-index.mjs`。
 > 檢查是否落後：`node scripts/docs-index.mjs --check`（落後會 exit 1）。
-> 產生時間：2026-11-13｜共 **35** 份、**568 KB**、狀態分布：需求 1／現況 24／設計 6／評估 1／歷史 3
+> 產生時間：2026-11-13｜共 **35** 份、**569 KB**、狀態分布：需求 1／現況 24／設計 6／評估 1／歷史 3
 
 ## 給 AI agent 的使用規則（依序照做，不要整批讀）
 
@@ -60,7 +60,7 @@
 | `32-i18n-locale.md` | D32：全站語系與區域設定（i18n） | 現況 | 2026-11-08 | 6 KB | 改語系／國家選擇／日期格式時（D32） |
 | `36-ui-style.md` | D36：AtWho UI Style（視覺樣式對齊） | 現況 | 2026-11-10 | 3 KB | 改視覺樣式、顏色、圓角、focus 樣式時（D36） |
 | `37-unified-sso.md` | D37：Mail 帳號中心與五系統入口（SSO） | 現況 | 2026-11-11 | 9 KB | 改五系統入口／SSO 契約／接遠端系統時（D37） |
-| `38-visitor-dashboard.md` | 訪客 Dashboard 與 AllChat 身分等級投影（Mail 端） | 現況 | 2026-11-11 | 11 KB | 改訪客 Dashboard／AllChat 身分投影時（D38，待部署） |
+| `38-visitor-dashboard.md` | 訪客 Dashboard 與 AllChat 身分等級投影（Mail 端） | 現況 | 2026-11-13 | 12 KB | 改訪客 Dashboard／AllChat 身分投影時（D38，已上線） |
 | `mail_PRD_SRS.md` | 100,000 Email Addresses | 需求 | 2026-11-10 | 27 KB | 要判斷「這功能該不該做／是否偏離原始設計」時；§零 只有指標，現況看 docs/31-handoff.md |
 
 ## 地雷與缺號（避免浪費工具呼叫）

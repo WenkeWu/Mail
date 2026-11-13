@@ -69,6 +69,16 @@ export interface Env {
   GOOGLE_CLIENT_SECRET?: string;
   /** D27：固定 redirect URI（非機密；放 vars；不得接受請求傳入的值） */
   OAUTH_REDIRECT_URI?: string;
+  /**
+   * D38：AllChat 身分等級內部 API 的 base URL（非機密；例：`https://chat.atwho.org`）。
+   * 未設定 → 不做等級同步，Dashboard 顯示「未設定」。
+   */
+  ALLCHAT_INTERNAL_BASE_URL?: string;
+  /**
+   * D38：AllChat 內部 API 的 HMAC secret（機密；只放 Worker secret）。
+   * 只存在 Mail 後端，**不得**出現在前端、URL、日誌或 git。
+   */
+  ALLCHAT_INTERNAL_SECRET?: string;
 }
 
 export type Scope =

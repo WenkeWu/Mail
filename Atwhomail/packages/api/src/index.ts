@@ -70,6 +70,18 @@ import {
   type JsonObject,
 } from "./forms";
 import { sanitizeHtml } from "./sanitize";
+import {
+  getSyncStatus,
+  getVisitorAttention,
+  getVisitorOverview,
+  languageFromAcceptLanguage,
+  normalizeCountryCode,
+  normalizeLanguageTag,
+  searchVisitors,
+  syncAllChatLevels,
+  touchUserActivity,
+  type VisitorFilters,
+} from "./visitors";
 
 const app = new Hono<AuthEnv>();
 
@@ -582,6 +594,21 @@ function clientIp(c: Context<AuthEnv>): string | null {
   return first ? first : null;
 }
 
+/** 訪客中繼資料：前端偏好優先，其次 Cloudflare 國別／Accept-Language。 */
+function requestCountry(c: Context<AuthEnv>, bodyValue?: unknown): string | null {
+  return (
+    normalizeCountryCode(bodyValue) ??
+    normalizeCountryCode(c.req.header("cf-ipcountry"))
+  );
+}
+
+function requestLanguage(c: Context<AuthEnv>, bodyValue?: unknown): string | null {
+  return (
+    normalizeLanguageTag(bodyValue) ??
+    languageFromAcceptLanguage(c.req.header("accept-language"))
+  );
+}
+
 interface AuditEntry {
   event: string;
   userId?: number | null;
@@ -1092,7 +1119,9 @@ app.post("/api/auth/login", async (c) => {
 });
 
 app.post("/api/auth/mailbox-login", async (c) => {
-  const body = await c.req.json<{ email?: string; password?: string }>().catch(() => null);
+  const body = await c.req
+    .json<{ email?: string; password?: string; country?: unknown; language?: unknown }>()
+    .catch(() => null);
   if (!body?.email || !body?.password) return err(c, "INVALID_BODY", "email 與 password 必填", 400);
   const email = body.email.trim().toLowerCase();
   const key = `mailbox:${email}`;
@@ -1101,7 +1130,8 @@ app.post("/api/auth/mailbox-login", async (c) => {
   if (lockedUntil) return err(c, "LOCKED", `嘗試次數過多，請於 ${new Date(lockedUntil).toISOString()} 後再試`, 429);
 
   const addr = await c.env.DB.prepare(
-    `SELECT a.id, a.email, a.password_hash, a.status, a.password_changed_at, u.status AS user_status
+    `SELECT a.id, a.email, a.password_hash, a.status, a.password_changed_at,
+            u.id AS user_id, u.status AS user_status
      FROM email_addresses a JOIN users u ON u.id = a.user_id
      WHERE a.email = ?1 AND a.deleted_at IS NULL`
   )
@@ -1112,6 +1142,7 @@ app.post("/api/auth/mailbox-login", async (c) => {
       password_hash: string | null;
       status: string;
       password_changed_at: number;
+      user_id: number;
       user_status: string;
     }>();
 
@@ -1153,6 +1184,10 @@ app.post("/api/auth/mailbox-login", async (c) => {
     return err(c, "ACCOUNT_SUSPENDED", "此帳號已停權，請聯絡管理者", 403);
   }
   await clearFailures(c.env.DB, key);
+  await touchUserActivity(c.env.DB, addr.user_id, {
+    country: requestCountry(c, body.country),
+    language: requestLanguage(c, body.language),
+  });
   const token = await signMailboxToken(c.env, addr.id, addr.email, Number(addr.password_changed_at ?? 0));
   return c.json({ token, session: "mailbox", address: { id: addr.id, email: addr.email } });
 });
@@ -1563,10 +1598,19 @@ app.get("/api/auth/oauth/google/callback", async (c) => {
           .prepare(
             `INSERT INTO users
                (username, display_name, password_hash, status, role, provider, provider_sub,
-                contact_email, email_verified, password_changed_at, created_at, updated_at)
-             VALUES (?1, NULL, '' , 'active', 'visitor', 'google', ?2, ?3, 1, 0, ?4, ?4)`
+                contact_email, email_verified, password_changed_at,
+                country_code, language, last_country_code, last_seen_at, created_at, updated_at)
+             VALUES (?1, NULL, '' , 'active', 'visitor', 'google', ?2, ?3, 1, 0,
+                     ?4, ?5, ?4, ?6, ?6, ?6)`
           )
-          .bind(localPart, sub, email, ts),
+          .bind(
+            localPart,
+            sub,
+            email,
+            requestCountry(c),
+            requestLanguage(c),
+            ts
+          ),
         db
           .prepare(
             `INSERT INTO email_addresses
@@ -1628,6 +1672,10 @@ app.get("/api/auth/oauth/google/callback", async (c) => {
     userAgent,
     detail: { provider: "google", sub_prefix: subPrefix },
   });
+  await touchUserActivity(c.env.DB, user.id, {
+    country: requestCountry(c),
+    language: requestLanguage(c),
+  });
 
   const issued = await issueSessionForUser(c.env, user);
   const target = readOAuthReturnTarget(c.env, redirectRaw);
@@ -1642,7 +1690,9 @@ app.get("/api/auth/oauth/google/callback", async (c) => {
  * 密碼錯誤 → 401。失敗計數沿用 `auth_attempts`（key = `login:<identifier>`）。
  */
 app.post("/api/auth/user-login", async (c) => {
-  const body = await c.req.json<{ identifier?: unknown; password?: unknown }>().catch(() => null);
+  const body = await c.req
+    .json<{ identifier?: unknown; password?: unknown; country?: unknown; language?: unknown }>()
+    .catch(() => null);
   if (
     typeof body?.identifier !== "string" ||
     typeof body?.password !== "string" ||
@@ -1707,6 +1757,10 @@ app.post("/api/auth/user-login", async (c) => {
     return err(c, "INVALID_CREDENTIALS", "帳號或密碼錯誤", 401);
   }
   await clearFailures(c.env.DB, key);
+  await touchUserActivity(c.env.DB, user.id, {
+    country: requestCountry(c, body.country),
+    language: requestLanguage(c, body.language),
+  });
   return c.json(await issueSessionForUser(c.env, user));
 });
 
@@ -2645,7 +2699,14 @@ app.post("/api/auth/register", async (c) => {
   }
 
   const body = await c.req
-    .json<{ invite_code?: string; username?: string; password?: string; local_part?: string }>()
+    .json<{
+      invite_code?: string;
+      username?: string;
+      password?: string;
+      local_part?: string;
+      country?: unknown;
+      language?: unknown;
+    }>()
     .catch(() => null);
   if (!body?.invite_code || !body?.username || !body?.password) {
     return err(c, "INVALID_BODY", "invite_code、username、password 必填", 400);
@@ -2726,10 +2787,18 @@ app.post("/api/auth/register", async (c) => {
   try {
     const userRes = await db
       .prepare(
-        `INSERT INTO users (username, display_name, password_hash, status, role, access_email, created_at, updated_at)
-         VALUES (?1, NULL, ?2, 'active', 'visitor', ?3, ?4, ?4)`
+        `INSERT INTO users (username, display_name, password_hash, status, role, access_email,
+                            country_code, language, last_country_code, last_seen_at, created_at, updated_at)
+         VALUES (?1, NULL, ?2, 'active', 'visitor', ?3, ?4, ?5, ?4, ?6, ?6, ?6)`
       )
-      .bind(username, pwHash, accessEmail, ts)
+      .bind(
+        username,
+        pwHash,
+        accessEmail,
+        requestCountry(c, body.country),
+        requestLanguage(c, body.language),
+        ts
+      )
       .run();
     const userId = Number(userRes.meta.last_row_id);
 
@@ -3067,7 +3136,14 @@ app.post("/api/auth/register-verify", async (c) => {
   }
 
   const body = await c.req
-    .json<{ email?: unknown; local_part?: unknown; code?: unknown; password?: unknown }>()
+    .json<{
+      email?: unknown;
+      local_part?: unknown;
+      code?: unknown;
+      password?: unknown;
+      country?: unknown;
+      language?: unknown;
+    }>()
     .catch(() => null);
   const email = normalizeEmailAddress(body?.email);
   const localPart = typeof body?.local_part === "string" ? body.local_part.trim().toLowerCase() : "";
@@ -3190,10 +3266,18 @@ app.post("/api/auth/register-verify", async (c) => {
       db
         .prepare(
           `INSERT INTO users (username, display_name, password_hash, status, role, access_email,
-                              contact_email, email_verified, created_at, updated_at)
-           VALUES (?1, NULL, ?2, 'active', 'visitor', NULL, ?3, 1, ?4, ?4)`
+                              contact_email, email_verified, country_code, language,
+                              last_country_code, last_seen_at, created_at, updated_at)
+           VALUES (?1, NULL, ?2, 'active', 'visitor', NULL, ?3, 1, ?4, ?5, ?4, ?6, ?6, ?6)`
         )
-        .bind(localPart, pwHash, email, ts),
+        .bind(
+          localPart,
+          pwHash,
+          email,
+          requestCountry(c, body.country),
+          requestLanguage(c, body.language),
+          ts
+        ),
       db
         .prepare(
           `INSERT INTO email_addresses
@@ -3288,7 +3372,8 @@ app.get("/api/me", requireMailSession, async (c) => {
   const warmupQuotaCol = await warmupQuotaColumn(c.env.DB, "a.");
   const row = await c.env.DB.prepare(
     `SELECT a.id, a.email, a.can_send, a.daily_send_quota, a.sent_today, a.quota_reset_at,
-            a.created_at, a.warmup_exempt, ${warmupQuotaCol} AS warmup_quota, u.username, u.role
+            a.created_at, a.warmup_exempt, a.user_id,
+            ${warmupQuotaCol} AS warmup_quota, u.username, u.role
      FROM email_addresses a JOIN users u ON u.id = a.user_id
      WHERE a.id = ?1 AND a.deleted_at IS NULL`
   )
@@ -3303,10 +3388,15 @@ app.get("/api/me", requireMailSession, async (c) => {
       created_at: number;
       warmup_exempt: number;
       warmup_quota: number | null;
+      user_id: number;
       username: string;
       role: string;
     }>();
   if (!row) return err(c, "NOT_FOUND", "address not found", 404);
+  await touchUserActivity(c.env.DB, row.user_id, {
+    country: requestCountry(c),
+    language: requestLanguage(c),
+  });
   return c.json({
     role: row.role,
     session: "mailbox",
@@ -3479,6 +3569,73 @@ app.get("/api/users", requireOwner, async (c) => {
     });
   }
   return c.json({ users });
+});
+
+// ══════════════════════ D38：訪客 Dashboard（owner）══════════════════════
+
+function visitorFiltersFromQuery(c: Context<AuthEnv>): VisitorFilters {
+  const read = (key: string): string | undefined => {
+    const value = c.req.query(key)?.trim();
+    return value ? value : undefined;
+  };
+  return {
+    q: read("q"),
+    country: read("country"),
+    language: read("language"),
+    status: read("status"),
+    level: read("level"),
+    risk: read("risk"),
+  };
+}
+
+/**
+ * GET /api/admin/visitors/overview — 訪客聚合（KPI／國家／語系／等級／趨勢／同步狀態）。
+ * 只回數量與時間，不含任何信件內容（N9）。
+ */
+app.get("/api/admin/visitors/overview", requireOwner, async (c) => {
+  const days = Number(c.req.query("days") ?? 30);
+  return c.json(await getVisitorOverview(c.env, visitorFiltersFromQuery(c), days));
+});
+
+/**
+ * GET /api/admin/visitors/search — 篩選式搜尋（必須至少一個條件；每頁最多 50 筆）。
+ * 預設不提供完整訪客清單，避免訪客數成長後拖垮管理頁。
+ */
+app.get("/api/admin/visitors/search", requireOwner, async (c) => {
+  const page = Number(c.req.query("page") ?? 1);
+  const limit = Number(c.req.query("limit") ?? 25);
+  return c.json(await searchVisitors(c.env, visitorFiltersFromQuery(c), page, limit));
+});
+
+/** GET /api/admin/visitors/attention — 需要注意的訪客（近配額、被拒、登入失敗、受限等級、停權）。 */
+app.get("/api/admin/visitors/attention", requireOwner, async (c) => {
+  const limit = Number(c.req.query("limit") ?? 20);
+  return c.json(await getVisitorAttention(c.env, limit));
+});
+
+/** GET /api/admin/integrations/allchat/status — AllChat 等級投影同步狀態。 */
+app.get("/api/admin/integrations/allchat/status", requireOwner, async (c) => {
+  return c.json({ sync: await getSyncStatus(c.env) });
+});
+
+/**
+ * POST /api/admin/integrations/allchat/sync — 手動觸發一次等級投影同步。
+ * 自動同步由 Worker cron（每 5 分鐘）負責；此端點供管理者立即重試。
+ * ⚠️ 只拉取等級／狀態，不寫回 AllChat（AllChat 是唯一 source of truth）。
+ */
+app.post("/api/admin/integrations/allchat/sync", requireOwner, async (c) => {
+  const result = await syncAllChatLevels(c.env);
+  if (!result.ok) {
+    return err(
+      c,
+      result.error === "not_configured" ? "ALLCHAT_NOT_CONFIGURED" : "ALLCHAT_SYNC_FAILED",
+      result.error === "not_configured"
+        ? "尚未設定 ALLCHAT_INTERNAL_BASE_URL／ALLCHAT_INTERNAL_SECRET"
+        : "AllChat 等級同步失敗，請稍後再試",
+      result.error === "not_configured" ? 503 : 502
+    );
+  }
+  return c.json(result);
 });
 
 /**

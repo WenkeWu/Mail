@@ -89,6 +89,8 @@ describe("D21：LoginPage 註冊表單", () => {
       local_part: "friend01",
       code: "123456",
       password: "long-password-01",
+      country: "TW",
+      language: "zh-TW",
     });
   });
 

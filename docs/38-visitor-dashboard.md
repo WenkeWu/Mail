@@ -1,13 +1,14 @@
 ---
 title: 訪客 Dashboard 與 AllChat 身分等級投影（Mail 端）
 status: 現況
-updated: 2026-11-11
-read-when: 改訪客 Dashboard／AllChat 身分投影時（D38，待部署）
+updated: 2026-11-13
+read-when: 改訪客 Dashboard／AllChat 身分投影時（D38，已上線）
 ---
 
 # 38 — 訪客 Dashboard 與 AllChat 身分等級投影（Mail 端）
 
-> 建立：2026-11-13｜分支：`feat/visitor-dashboard`｜狀態：**Mail 程式與測試完成；migration／部署待 owner 執行**
+> 建立：2026-11-13｜分支：`feat/visitor-dashboard`｜狀態：**Mail 已上線（migration 0019、API `fdf7e82c`、Pages `c9f20c41`，2026-11-13）**
+> AllChat 同步環境變數尚未設定，等級目前顯示「未同步」。
 > 範圍：**只做 Mail**。AllChat 的等級判定與管理由 AllChat 實作，Mail 不寫回、不管理等級。
 
 ## 1. 為什麼改
@@ -253,6 +254,16 @@ node ../../node_modules/wrangler/bin/wrangler.js secret put ALLCHAT_INTERNAL_SEC
 
 ⚠️ 順序不可顛倒：`register-verify`／OAuth／邀請碼註冊會寫入新欄位；若先部署程式、後套 migration，
 註冊會失敗。若必須先部署程式，請先暫停註冊或先套 migration。
+
+### 2026-11-13 部署紀錄
+
+| 項目 | 結果 |
+|---|---|
+| migration `0019` | ✅ 已套用 `mail-d1`（remote） |
+| API Worker | ✅ `fdf7e82c-5e1d-456a-8573-c3a0a03e2212`；cron `*/5 * * * *` |
+| Pages | ✅ `c9f20c41.atwhomail-web.pages.dev`；正式資產 `index-DlvXUcfw.js` |
+| 煙霧測試 | ✅ `GET /api/admin/visitors/overview` 未帶 session → 401；production bundle 含新端點 |
+| AllChat 同步 | ⏸ 未設定 `ALLCHAT_INTERNAL_BASE_URL`／`ALLCHAT_INTERNAL_SECRET` |
 
 ## 10. 驗收清單
 

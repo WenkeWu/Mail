@@ -1833,6 +1833,322 @@ select {
   cursor: not-allowed;
 }
 
+/* ───────────── D38：訪客 Dashboard ───────────── */
+.visitor-dashboard .muted.small {
+  margin-top: 0;
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.kpi-card,
+.visitor-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+}
+
+.kpi-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.kpi-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.kpi-value {
+  font-size: 24px;
+  line-height: 1.15;
+  color: var(--primary);
+}
+
+.visitor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.visitor-card h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.visitor-card .small,
+.visitor-card p {
+  margin: 6px 0;
+}
+
+.dist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.dist-row {
+  display: grid;
+  grid-template-columns: minmax(44px, auto) 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.dist-key {
+  color: var(--text-secondary);
+}
+
+.dist-bar {
+  height: 8px;
+  background: var(--primary-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.dist-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  border-radius: inherit;
+}
+
+.dist-count {
+  min-width: 28px;
+  text-align: right;
+  color: var(--muted);
+}
+
+.mini-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 64px;
+  padding-top: 6px;
+}
+
+.mini-bar {
+  flex: 1;
+  min-width: 4px;
+  background: var(--secondary);
+  border-radius: 3px 3px 0 0;
+  opacity: 0.85;
+}
+
+.mini-bar:hover {
+  opacity: 1;
+}
+
+.sync-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.sync-actions button,
+.pager-row button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.sync-actions button:hover,
+.pager-row button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.sync-actions button:disabled,
+.pager-row button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sync-actions a {
+  color: var(--primary);
+  font-size: 12.5px;
+}
+
+.visitor-section {
+  margin: 22px 0;
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.section-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.attention-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.attention-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.3fr) minmax(180px, 2fr) minmax(220px, 1.6fr) auto;
+  gap: 12px;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--warning);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  box-shadow: var(--shadow);
+}
+
+.attention-row.high {
+  border-left-color: var(--danger);
+}
+
+.attention-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.attention-main .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attention-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.attention-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attention-row > button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.attention-row > button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.visitor-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow);
+}
+
+.visitor-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.visitor-filters input,
+.visitor-filters select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  min-width: 0;
+}
+
+.visitor-filters input:focus,
+.visitor-filters select:focus {
+  outline: 2px solid var(--primary-soft);
+  border-color: var(--primary);
+}
+
+.filter-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.filter-actions button {
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.filter-actions .btn-primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+.filter-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.visitor-table {
+  min-width: 1040px;
+}
+
+.status-pill.level {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.pager-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+@media (max-width: 900px) {
+  .attention-row {
+    grid-template-columns: 1fr;
+  }
+  .visitor-filters {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+}
+
 /* ───────────── 管理主控台（D4 邀請碼／D5 訪客）───────────── */
 /* 邀請碼：等寬、可整段選取（reveal 後可直接手動複製） */
 .invite-code {

@@ -82,7 +82,8 @@ function registerErrorText(err: unknown, t: (key: string) => string): string {
 
 /** 登入頁：Model C 的兩種身分（信箱／管理員）＋ 訪客註冊（D21：Email 驗證碼／邀請碼） */
 export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }: Props) {
-  const { t } = useI18n();
+  const { t, country, language } = useI18n();
+  const visitorLocale = { country, language };
   /**
    * 分頁清單依模式決定（docs/16 D1；僅顯示面）：
    * - admin（mail.）→ 只有管理員登入
@@ -341,7 +342,13 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
             setError(t("請填寫 Email、ID、6 位數驗證碼與密碼"));
             return;
           }
-          const res = await registerVerify({ email: mail, local_part: name, code, password: newPassword });
+          const res = await registerVerify({
+            email: mail,
+            local_part: name,
+            code,
+            password: newPassword,
+            ...visitorLocale,
+          });
           onLogin({ kind: "mailbox", token: res.token, addressId: res.address.id, email: res.address.email });
           return;
         }
@@ -352,7 +359,12 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
           setError(t("請填寫邀請碼、使用者名稱與密碼"));
           return;
         }
-        const res = await register({ invite_code: code, username: name, password: newPassword });
+        const res = await register({
+          invite_code: code,
+          username: name,
+          password: newPassword,
+          ...visitorLocale,
+        });
         onLogin({ kind: "mailbox", token: res.token, addressId: res.address.id, email: res.address.email });
         return;
       }
@@ -366,10 +378,10 @@ export function LoginPage({ notice, onLogin, showRegister = true, mode = "all" }
         // D27：`*@atwho.org` 走既有地址登入（行為完全不變）；
         // 其他輸入（username／contact_email）走 user-login（docs/28 §3）。
         if (identifier.toLowerCase().endsWith("@atwho.org")) {
-          const res = await mailboxLogin(identifier, password);
+          const res = await mailboxLogin(identifier, password, visitorLocale);
           onLogin({ kind: "mailbox", token: res.token, addressId: res.address.id, email: res.address.email });
         } else {
-          const res = await userLogin(identifier, password);
+          const res = await userLogin(identifier, password, visitorLocale);
           if (res.session === "owner") {
             onLogin({ kind: "owner", token: res.token, userId: res.user.id, username: res.user.username });
           } else if (res.session === "mailbox") {
