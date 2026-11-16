@@ -70,6 +70,7 @@ import {
   type JsonObject,
 } from "./forms";
 import { sanitizeHtml } from "./sanitize";
+import { authenticateServiceToken, generateServiceToken, hashServiceToken } from "./service";
 import {
   getSyncStatus,
   getVisitorAttention,
@@ -107,7 +108,10 @@ app.use("*", async (c, next) => {
     c.header("Access-Control-Allow-Origin", origin);
     c.header("Vary", "Origin");
     c.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
-    c.header("Access-Control-Allow-Headers", "Authorization, Content-Type, x-admin-token");
+    c.header(
+      "Access-Control-Allow-Headers",
+      "Authorization, Content-Type, x-admin-token, x-service-token, Idempotency-Key"
+    );
     c.header("Access-Control-Max-Age", "86400");
   }
   if (c.req.method === "OPTIONS") return c.body(null, 204); // preflight 直接回應
@@ -289,6 +293,49 @@ interface SendAttachment {
   disposition?: "attachment" | "inline";
 }
 
+/** 寄信 request（`/api/mail/send` 與 `/api/service/mail/send` 共用） */
+interface SendBody {
+  from?: string;
+  to?: unknown;
+  cc?: unknown;
+  bcc?: unknown;
+  subject?: string;
+  html?: string;
+  text?: string;
+  /** D39：標準 Reply-To；可選，需為有效 Email */
+  reply_to?: unknown;
+  /** 相容 camelCase 呼叫方（與 reply_to 同義；reply_to 優先） */
+  replyTo?: unknown;
+  attachments?: SendAttachment[];
+}
+
+/** `email_addresses` 中與寄信配額／寄件備份相關的欄位 */
+interface FromRow {
+  id: number;
+  email: string;
+  user_id: number;
+  can_send: number;
+  daily_send_quota: number;
+  sent_today: number;
+  quota_reset_at: number | null;
+  created_at: number;
+  warmup_quota: number | null;
+}
+
+interface SendOptions {
+  viaAlias: boolean;
+  /** `addr:<address id>`（人類 session）或 `svc:<service token id>` */
+  idempotencyScope: string;
+  serviceId?: number;
+  /** service token 的每日上限（覆寫地址配額；service 不受暖機限制） */
+  dailyLimit?: number;
+  /** service token 的每小時上限（覆寫 QUOTA.HOURLY_SEND_LIMIT） */
+  hourlyLimit?: number;
+  skipWarmup?: boolean;
+  /** false = 配額被擋時不寄提醒信（service 建議關閉，呼叫方自行處理 429） */
+  quotaAlert?: boolean;
+}
+
 // ══════════════════════ 本地直送（docs/18 P1）══════════════════════
 
 interface LocalRecipient {
@@ -387,6 +434,7 @@ async function deliverLocalMail(
     subject: string;
     html?: string;
     text: string;
+    replyTo?: string;
     attachments: SendAttachment[];
     messageId: string;
     ts: number;
@@ -423,6 +471,7 @@ async function deliverLocalMail(
       date: d,
       messageId: input.messageId,
       text: input.text,
+      ...(input.replyTo ? { extraHeaders: [`Reply-To: ${input.replyTo}`] } : {}),
     });
     try {
       await env.MAIL.put(key, new TextEncoder().encode(eml), {
@@ -5337,21 +5386,411 @@ app.get("/api/attachments/:id", requireMailSession, async (c) => {
   });
 });
 
-// ══════════════════════ Phase 10：寄信 ══════════════════════
+// ══════════════════════ Phase 10／D39：寄信 ══════════════════════
+/**
+ * 共用寄信流程（人類 session 與 service token 都走這裡）。
+ * from 的解析（owner／mailbox／別名）由呼叫端完成；本函式只處理收件人、配額、寄送、
+ * Idempotency-Key 與寄件備份。
+ */
+async function performSend(
+  c: Context<AuthEnv>,
+  body: SendBody,
+  fromAddr: FromRow,
+  senderEmail: string,
+  options: SendOptions
+): Promise<Response> {
+  const toList = normalizeRecipients(body.to);
+  if (toList.length === 0) return err(c, "INVALID_TO", "to 至少需要一個收件人", 400);
+  const ccList = normalizeRecipients(body.cc);
+  const bccList = normalizeRecipients(body.bcc);
+  if (toList.length + ccList.length + bccList.length > 50) {
+    return err(c, "TOO_MANY_RECIPIENTS", "to+cc+bcc 合計不得超過 50", 422);
+  }
+  if (!body.subject || typeof body.subject !== "string") return err(c, "INVALID_SUBJECT", "subject 必填", 400);
+  if (!body.html && !body.text) return err(c, "INVALID_BODY", "html 與 text 至少要有一個", 400);
+
+  const atts = Array.isArray(body.attachments) ? body.attachments : [];
+  let estBytes = (body.html?.length ?? 0) + (body.text?.length ?? 0);
+  for (const a of atts) {
+    if (!a?.filename || !a?.content_base64) return err(c, "INVALID_ATTACHMENT", "附件需有 filename 與 content_base64", 400);
+    estBytes += Math.floor((a.content_base64.length * 3) / 4);
+  }
+  if (estBytes > 5 * 1024 * 1024) {
+    return err(c, "PAYLOAD_TOO_LARGE", `訊息總大小約 ${estBytes} bytes 超過 5 MiB 上限`, 413);
+  }
+
+  // D39：Reply-To（可選）——只影響顯示回覆地址，不影響 SPF/DKIM/DMARC 或授權
+  const replyToRaw = body.reply_to !== undefined ? body.reply_to : body.replyTo;
+  let replyTo: string | null = null;
+  if (replyToRaw !== undefined && replyToRaw !== null && replyToRaw !== "") {
+    replyTo = normalizeEmailAddress(replyToRaw);
+    if (!replyTo) return err(c, "INVALID_REPLY_TO", "reply_to 需為有效 Email", 400);
+  }
+
+  // D39：Idempotency-Key（可選）——同一 scope＋key 在 24 小時內只寄一次
+  const idemKey = (c.req.header("idempotency-key") ?? "").trim();
+  if (idemKey && (idemKey.length > 128 || !/^[\x21-\x7e]+$/.test(idemKey))) {
+    return err(c, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key 需為 1–128 個可見 ASCII 字元", 400);
+  }
+  const idemHash = idemKey
+    ? await sha256Hex(
+        new TextEncoder().encode(
+          JSON.stringify({
+            from: senderEmail,
+            to: toList,
+            cc: ccList,
+            bcc: bccList,
+            subject: body.subject,
+            text: body.text ?? null,
+            html: body.html ?? null,
+            reply_to: replyTo,
+            attachments: atts,
+          })
+        )
+      )
+    : null;
+  let idemReserved = false;
+  let idemCompleted = false;
+  const idemScope = options.idempotencyScope;
+  const nowMs = Date.now();
+  if (idemKey && idemHash) {
+    // 機會式清理過期資料；expires_at 有索引
+    await c.env.DB.prepare("DELETE FROM send_idempotency WHERE expires_at < ?1")
+      .bind(nowMs)
+      .run()
+      .catch(() => undefined);
+
+    type IdemRow = {
+      request_hash: string;
+      status: string;
+      response_status: number | null;
+      response_json: string | null;
+      created_at: number;
+    };
+    const existing = await c.env.DB.prepare(
+      `SELECT request_hash, status, response_status, response_json, created_at
+       FROM send_idempotency WHERE scope_key = ?1 AND idem_key = ?2`
+    )
+      .bind(idemScope, idemKey)
+      .first<IdemRow>();
+
+    if (existing) {
+      if (existing.request_hash !== idemHash) {
+        return err(c, "IDEMPOTENCY_CONFLICT", "同一個 Idempotency-Key 已用於不同的請求內容", 409);
+      }
+      if (existing.status === "done" && existing.response_json) {
+        try {
+          return c.json(
+            JSON.parse(existing.response_json) as Record<string, unknown>,
+            (existing.response_status ?? 200) as ContentfulStatusCode
+          );
+        } catch {
+          await c.env.DB.prepare(
+            "DELETE FROM send_idempotency WHERE scope_key = ?1 AND idem_key = ?2"
+          )
+            .bind(idemScope, idemKey)
+            .run()
+            .catch(() => undefined);
+        }
+      } else if (nowMs - Number(existing.created_at) < 2 * 60_000) {
+        return err(c, "IDEMPOTENCY_IN_PROGRESS", "相同 Idempotency-Key 正在處理中，請稍後重試", 409);
+      } else {
+        // 前一次處理超過 2 分鐘仍未完成（例如 Worker 中斷）→ 允許接管
+        await c.env.DB.prepare(
+          "DELETE FROM send_idempotency WHERE scope_key = ?1 AND idem_key = ?2 AND status = 'processing'"
+        )
+          .bind(idemScope, idemKey)
+          .run();
+      }
+    }
+
+    const reserved = await c.env.DB.prepare(
+      `INSERT INTO send_idempotency
+         (scope_key, idem_key, request_hash, status, created_at, expires_at)
+       VALUES (?1, ?2, ?3, 'processing', ?4, ?5)
+       ON CONFLICT(scope_key, idem_key) DO NOTHING`
+    )
+      .bind(idemScope, idemKey, idemHash, nowMs, nowMs + 24 * 3600_000)
+      .run();
+    if (reserved.meta.changes !== 1) {
+      return err(c, "IDEMPOTENCY_IN_PROGRESS", "相同 Idempotency-Key 正在處理中，請稍後重試", 409);
+    }
+    idemReserved = true;
+  }
+
+  try {
+  // ── Phase 1：帳號狀態與寄信配額（docs/13 §6.5、docs/14 §4.2；以下即判定順序）──
+  // 置於既有輸入驗證之後、實際寄送之前：無效請求不消耗配額，且扣額與寄送相鄰（避免 TOCTOU）
+  const auditCtx = {
+    addressId: fromAddr.id,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+  };
+  const ts0 = now();
+
+  // 1) 帳號狀態（停權 → 立即擋）
+  const acct = await c.env.DB.prepare("SELECT status FROM users WHERE id = ?1")
+    .bind(fromAddr.user_id)
+    .first<{ status: string }>();
+  if (!acct || acct.status !== "active") {
+    auditAsync(c, { ...auditCtx, event: "send_rejected_notallowed", detail: { reason: "ACCOUNT_SUSPENDED" } });
+    return err(c, "ACCOUNT_SUSPENDED", "此帳號已停權，無法寄信", 403);
+  }
+
+  // 2) 寄信權限（安全閥 C8：can_send=0 → 秒級生效）
+  if (fromAddr.can_send !== 1) {
+    auditAsync(c, { ...auditCtx, event: "send_rejected_notallowed", detail: { reason: "SEND_NOT_ALLOWED" } });
+    return err(c, "SEND_NOT_ALLOWED", "此地址目前不可寄信", 403);
+  }
+
+  // 3) 配額重置（每日 00:00 UTC）
+  if (fromAddr.quota_reset_at === null || fromAddr.quota_reset_at <= ts0) {
+    const d = new Date(ts0);
+    const nextReset = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
+    await c.env.DB.prepare(
+      `UPDATE email_addresses SET sent_today = 0, quota_reset_at = ?1, updated_at = ?2
+       WHERE id = ?3 AND (quota_reset_at IS NULL OR quota_reset_at <= ?2)`
+    )
+      .bind(nextReset, ts0, fromAddr.id)
+      .run();
+  }
+
+  // 4) 暖機期（C2）：註冊後 WARMUP_HOURS 內 → 有效上限 = min(daily_send_quota, WARMUP_QUOTA)
+  //    D5：地址若被 owner 設為 `warmup_exempt=1`（migration 0007）→ **跳過**暖機上限，
+  //    但仍受 daily_send_quota（每日上限）約束；migration 未套用時此查詢回 false（行為不變）。
+  const inWarmup = ts0 < Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000;
+  const warmupApplies =
+    options.skipWarmup !== true &&
+    inWarmup &&
+    !(await isWarmupExempt(c.env.DB, fromAddr.id));
+  const warmupQuota = Number(fromAddr.warmup_quota ?? QUOTA.WARMUP_QUOTA);
+  const addressLimit = warmupApplies
+    ? Math.min(Number(fromAddr.daily_send_quota), warmupQuota)
+    : Number(fromAddr.daily_send_quota);
+  const effectiveLimit = options.dailyLimit ?? addressLimit;
+  const hourlyLimit = options.hourlyLimit ?? QUOTA.HOURLY_SEND_LIMIT;
+
+  // 5) 原子扣配額（硬性要求：不得寫成「先 SELECT 再 UPDATE」→ 併發下才不會超額）
+  const deduct = await c.env.DB.prepare(
+    `UPDATE email_addresses
+     SET sent_today = sent_today + 1, first_send_at = COALESCE(first_send_at, ?1), updated_at = ?1
+     WHERE id = ?2 AND status = 'active' AND can_send = 1 AND sent_today < ?3`
+  )
+    .bind(ts0, fromAddr.id, effectiveLimit)
+    .run();
+  if (deduct.meta.changes !== 1) {
+    auditAsync(c, {
+      ...auditCtx,
+      event: "send_rejected_quota",
+      detail: {
+        limit: effectiveLimit,
+        warmup: warmupApplies,
+        ...(options.serviceId ? { service_id: options.serviceId } : {}),
+      },
+    });
+    // 每日配額或暖機期上限被擋都提醒；service token 由呼叫方處理 429，不寄提醒信
+    if (options.quotaAlert !== false) {
+      runInBackground(
+        c,
+        sendQuotaAlert(c, {
+          userId: fromAddr.user_id,
+          addressId: fromAddr.id,
+          addressEmail: fromAddr.email,
+          limit: effectiveLimit,
+          dailyLimit: Number(fromAddr.daily_send_quota),
+          warmup: warmupApplies,
+          warmupUntil: warmupApplies
+            ? Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000
+            : null,
+          ts: ts0,
+        })
+      );
+    }
+    return err(
+      c,
+      "QUOTA_EXCEEDED",
+      `已達寄信上限（${effectiveLimit} 封／${warmupApplies ? "註冊後 24 小時暖機期" : "每日"}）`,
+      429
+    );
+  }
+
+  // 6) 每小時限流（C3）：以近 60 分鐘的寄件備份為計數來源
+  const recent = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM messages WHERE address_id = ?1 AND folder = 'sent' AND received_at >= ?2`
+  )
+    .bind(fromAddr.id, ts0 - 3600_000)
+    .first<{ n: number }>();
+  if ((recent?.n ?? 0) >= hourlyLimit) {
+    await refundQuota(c.env.DB, fromAddr.id); // 步驟 5 已扣 → 此處未寄出，回補
+    auditAsync(c, {
+      ...auditCtx,
+      event: "send_rejected_rate",
+      detail: {
+        hourly_limit: hourlyLimit,
+        recent: recent?.n ?? 0,
+        ...(options.serviceId ? { service_id: options.serviceId } : {}),
+      },
+    });
+    return err(c, "RATE_LIMITED", `每小時最多寄 ${hourlyLimit} 封，請稍後再試`, 429);
+  }
+
+  // ── 本地直送判定（docs/18 P1）：to+cc+bcc 全部為本網域＋存在＋active → 不繞 SMTP ──
+  const uniqueRecipients = [...new Set([...toList, ...ccList, ...bccList])];
+  const localRecipients = await resolveLocalRecipients(c.env.DB, uniqueRecipients);
+  const deliveryScope: "internal" | "external" = localRecipients ? "internal" : "external";
+
+  let result: { messageId: string };
+  if (localRecipients) {
+    // ⚠️ 本地直送：**絕不呼叫 EMAIL.send()**（連內部一般郵件也不繞外網）。
+    const messageId = `${crypto.randomUUID()}@${DOMAIN}`;
+    try {
+      await deliverLocalMail(c.env, {
+        from: senderEmail,
+        recipients: [...localRecipients.values()],
+        to: toList,
+        cc: ccList,
+        subject: body.subject,
+        html: body.html,
+        text: body.text ?? (body.html ?? "").replace(/<[^>]+>/g, " "),
+        replyTo: replyTo ?? undefined,
+        attachments: atts,
+        messageId,
+        ts: ts0,
+      });
+    } catch (e) {
+      console.error("[atwhomail-api] local delivery failed", { from: senderEmail, error: String(e) });
+      await refundQuota(c.env.DB, fromAddr.id);
+      return err(c, "SEND_FAILED", "本地投遞失敗，請稍後再試", 500);
+    }
+    result = { messageId };
+  } else {
+    try {
+      result = await c.env.EMAIL.send({
+        from: senderEmail,
+        to: toList,
+        cc: ccList.length ? ccList : undefined,
+        bcc: bccList.length ? bccList : undefined,
+        subject: body.subject,
+        html: body.html,
+        text: body.text,
+        ...(replyTo ? { replyTo } : {}),
+        attachments: atts.length
+          ? atts.map((a) => ({
+              content: a.content_base64,
+              filename: a.filename,
+              type: a.type || "application/octet-stream",
+              disposition: "attachment" as const,
+            }))
+          : undefined,
+      });
+    } catch (e) {
+      const code = (e as { code?: string })?.code ?? "SEND_FAILED";
+      console.error("[atwhomail-api] send failed", { from: senderEmail, code, error: String(e) });
+      await refundQuota(c.env.DB, fromAddr.id); // 未寄出 → 回補配額（避免誤扣）
+      return err(c, "SEND_FAILED", `${code}: ${String(e)}`, 502);
+    }
+  }
+
+  // 寄件備份
+  const ts = now();
+  const d = new Date(ts);
+  const key = buildMailKey(d);
+  const eml = buildPlainEml({
+    from: senderEmail,
+    to: toList,
+    cc: ccList,
+    subject: body.subject,
+    date: d,
+    messageId: result.messageId,
+    text: body.text ?? (body.html ?? "").replace(/<[^>]+>/g, " "),
+    ...(replyTo ? { extraHeaders: [`Reply-To: ${replyTo}`] } : {}),
+  });
+  try {
+    await c.env.MAIL.put(key, new TextEncoder().encode(eml), {
+      httpMetadata: { contentType: "message/rfc822" },
+      customMetadata: { "d1-flag": "sent-copy" },
+    });
+  } catch (e) {
+    console.error("[atwhomail-api] sent-copy R2 store failed", { key, error: String(e) });
+  }
+
+  const ownerId = fromAddr.user_id;
+
+  const preview = (body.text ?? (body.html ?? "").replace(/<[^>]+>/g, " ")).slice(0, 200);
+  await c.env.DB.prepare(
+    `INSERT INTO messages
+       (owner_user_id, address_id, folder, message_id, from_address, to_address, cc,
+        subject, text_preview, received_at, send_status, raw_r2_key, created_at, updated_at,
+        origin, kind, delivery_scope)
+     VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?, 'internal', 'normal', ?)`
+  )
+    .bind(
+      ownerId,
+      fromAddr.id,
+      result.messageId ?? null,
+      senderEmail,
+      JSON.stringify(toList.map((a) => ({ address: a, name: "" }))),
+      JSON.stringify(ccList.map((a) => ({ address: a, name: "" }))),
+      body.subject,
+      preview,
+      ts,
+      key,
+      ts,
+      ts,
+      deliveryScope
+    )
+    .run();
+
+  // D25：成功寄出的稽核（只記 via_alias／service id；不含主旨／內文／收件人，N9）
+  auditAsync(c, {
+    event: "mail_sent",
+    userId: fromAddr.user_id,
+    ...auditCtx,
+    detail: {
+      via_alias: options.viaAlias,
+      ...(options.serviceId ? { service_id: options.serviceId } : {}),
+    },
+  });
+
+  const responseBody = {
+    messageId: result.messageId,
+    send_status: "sent" as const,
+    from: senderEmail,
+    to: toList,
+    delivery_scope: deliveryScope,
+  };
+
+  if (idemReserved) {
+    await c.env.DB.prepare(
+      `UPDATE send_idempotency
+       SET status = 'done', response_status = 200, response_json = ?1
+       WHERE scope_key = ?2 AND idem_key = ?3`
+    )
+      .bind(JSON.stringify(responseBody), idemScope, idemKey)
+      .run();
+    idemCompleted = true;
+  }
+
+  return c.json(responseBody);
+  } finally {
+    if (idemReserved && !idemCompleted) {
+      await c.env.DB.prepare(
+        "DELETE FROM send_idempotency WHERE scope_key = ?1 AND idem_key = ?2 AND status = 'processing'"
+      )
+        .bind(idemScope, idemKey)
+        .run()
+        .catch(() => undefined);
+    }
+  }
+}
+
+/**
+ * POST /api/mail/send — owner／mailbox session 的一般寄信。
+ * D39 起 `reply_to` 與 `Idempotency-Key` 由 `performSend` 共用處理。
+ */
 app.post("/api/mail/send", requireMailSession, async (c) => {
   const scope = c.get("scope") as MailScope;
-  const body = await c.req
-    .json<{
-      from?: string;
-      to?: unknown;
-      cc?: unknown;
-      bcc?: unknown;
-      subject?: string;
-      html?: string;
-      text?: string;
-      attachments?: SendAttachment[];
-    }>()
-    .catch(() => null);
+  const body = await c.req.json<SendBody>().catch(() => null);
   if (!body) return err(c, "INVALID_BODY", "invalid JSON body", 400);
 
   // from 必須在 scope 內且 active（mailbox 只能用自己的地址）
@@ -5359,17 +5798,6 @@ app.post("/api/mail/send", requireMailSession, async (c) => {
     return err(c, "INVALID_FROM", "from 必填且需為完整地址", 400);
   }
   const fromEmail = body.from.trim().toLowerCase();
-  type FromRow = {
-    id: number;
-    email: string;
-    user_id: number;
-    can_send: number;
-    daily_send_quota: number;
-    sent_today: number;
-    quota_reset_at: number | null;
-    created_at: number;
-    warmup_quota: number | null;
-  };
   const warmupQuotaCol = await warmupQuotaColumn(c.env.DB);
   const fromCols =
     `id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at, ` +
@@ -5420,249 +5848,175 @@ app.post("/api/mail/send", requireMailSession, async (c) => {
   }
   if (!fromAddr) return err(c, "FROM_NOT_ALLOWED", "from 不屬於此 session 的 active 地址", 403);
 
-  const toList = normalizeRecipients(body.to);
-  if (toList.length === 0) return err(c, "INVALID_TO", "to 至少需要一個收件人", 400);
-  const ccList = normalizeRecipients(body.cc);
-  const bccList = normalizeRecipients(body.bcc);
-  if (toList.length + ccList.length + bccList.length > 50) {
-    return err(c, "TOO_MANY_RECIPIENTS", "to+cc+bcc 合計不得超過 50", 422);
-  }
-  if (!body.subject || typeof body.subject !== "string") return err(c, "INVALID_SUBJECT", "subject 必填", 400);
-  if (!body.html && !body.text) return err(c, "INVALID_BODY", "html 與 text 至少要有一個", 400);
+  return performSend(c, body, fromAddr, senderEmail, {
+    viaAlias,
+    idempotencyScope: `addr:${fromAddr.id}`,
+  });
+});
 
-  const atts = Array.isArray(body.attachments) ? body.attachments : [];
-  let estBytes = (body.html?.length ?? 0) + (body.text?.length ?? 0);
-  for (const a of atts) {
-    if (!a?.filename || !a?.content_base64) return err(c, "INVALID_ATTACHMENT", "附件需有 filename 與 content_base64", 400);
-    estBytes += Math.floor((a.content_base64.length * 3) / 4);
+// ══════════════════════ D39：service token（只寄信）══════════════════════
+
+/**
+ * POST /api/admin/service-tokens — 建立只寄信憑證（owner）。
+ * 明碼 token 只在本次回應出現一次；DB 只存 SHA-256。
+ */
+app.post("/api/admin/service-tokens", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const body = await c.req
+    .json<{ name?: unknown; address_id?: unknown; hourly_limit?: unknown; daily_limit?: unknown }>()
+    .catch(() => null);
+  if (!body) return err(c, "INVALID_BODY", "invalid JSON body", 400);
+
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (name.length < 1 || name.length > 64) {
+    return err(c, "INVALID_NAME", "name 需為 1–64 字元", 400);
   }
-  if (estBytes > 5 * 1024 * 1024) {
-    return err(c, "PAYLOAD_TOO_LARGE", `訊息總大小約 ${estBytes} bytes 超過 5 MiB 上限`, 413);
+  const addressId = Number(body.address_id);
+  if (!Number.isInteger(addressId) || addressId <= 0) {
+    return err(c, "INVALID_ADDRESS", "address_id 需為正整數", 400);
+  }
+  const hourlyLimit = body.hourly_limit === undefined ? 60 : Number(body.hourly_limit);
+  const dailyLimit = body.daily_limit === undefined ? 500 : Number(body.daily_limit);
+  if (!Number.isInteger(hourlyLimit) || hourlyLimit < 1 || hourlyLimit > 100_000) {
+    return err(c, "INVALID_HOURLY_LIMIT", "hourly_limit 需為 1–100000 的整數", 422);
+  }
+  if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 1_000_000) {
+    return err(c, "INVALID_DAILY_LIMIT", "daily_limit 需為 1–1000000 的整數", 422);
   }
 
-  // ── Phase 1：帳號狀態與寄信配額（docs/13 §6.5、docs/14 §4.2；以下即判定順序）──
-  // 置於既有輸入驗證之後、實際寄送之前：無效請求不消耗配額，且扣額與寄送相鄰（避免 TOCTOU）
-  const auditCtx = {
-    addressId: fromAddr.id,
+  const address = await c.env.DB.prepare(
+    "SELECT id, email, status FROM email_addresses WHERE id = ?1 AND deleted_at IS NULL"
+  )
+    .bind(addressId)
+    .first<{ id: number; email: string; status: string }>();
+  if (!address) return err(c, "NOT_FOUND", "address not found", 404);
+  if (address.status !== "active") {
+    return err(c, "SERVICE_SENDER_INACTIVE", "寄件地址目前不是 active，不能建立 service token", 409);
+  }
+
+  const token = generateServiceToken();
+  const tokenHash = await hashServiceToken(token);
+  const ts = now();
+  const inserted = await c.env.DB.prepare(
+    `INSERT INTO service_tokens
+       (name, token_hash, address_id, status, hourly_limit, daily_limit, created_at, updated_at)
+     VALUES (?1, ?2, ?3, 'active', ?4, ?5, ?6, ?6)`
+  )
+    .bind(name, tokenHash, addressId, hourlyLimit, dailyLimit, ts)
+    .run();
+
+  auditAsync(c, {
+    event: "service_token_created",
+    userId: scope.kind === "owner" ? scope.userId : null,
     ip: clientIp(c),
     userAgent: c.req.header("user-agent") ?? null,
-  };
-  const ts0 = now();
+    detail: {
+      service_id: Number(inserted.meta.last_row_id),
+      name,
+      address_id: addressId,
+      hourly_limit: hourlyLimit,
+      daily_limit: dailyLimit,
+    },
+  });
 
-  // 1) 帳號狀態（停權 → 立即擋）
-  const acct = await c.env.DB.prepare("SELECT status FROM users WHERE id = ?1")
-    .bind(fromAddr.user_id)
-    .first<{ status: string }>();
-  if (!acct || acct.status !== "active") {
-    auditAsync(c, { ...auditCtx, event: "send_rejected_notallowed", detail: { reason: "ACCOUNT_SUSPENDED" } });
-    return err(c, "ACCOUNT_SUSPENDED", "此帳號已停權，無法寄信", 403);
-  }
+  c.header("Cache-Control", "no-store");
+  return c.json(
+    {
+      id: Number(inserted.meta.last_row_id),
+      name,
+      token,
+      address_id: addressId,
+      email: address.email,
+      hourly_limit: hourlyLimit,
+      daily_limit: dailyLimit,
+    },
+    201
+  );
+});
 
-  // 2) 寄信權限（安全閥 C8：can_send=0 → 秒級生效）
-  if (fromAddr.can_send !== 1) {
-    auditAsync(c, { ...auditCtx, event: "send_rejected_notallowed", detail: { reason: "SEND_NOT_ALLOWED" } });
-    return err(c, "SEND_NOT_ALLOWED", "此地址目前不可寄信", 403);
-  }
+/** GET /api/admin/service-tokens — 列出 service token（不含明碼／hash）。 */
+app.get("/api/admin/service-tokens", requireOwner, async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT st.id, st.name, st.address_id, a.email, st.status,
+            st.hourly_limit, st.daily_limit, st.created_at, st.updated_at, st.last_used_at
+     FROM service_tokens st
+     JOIN email_addresses a ON a.id = st.address_id
+     ORDER BY st.id DESC`
+  ).all();
+  return c.json({ tokens: results });
+});
 
-  // 3) 配額重置（每日 00:00 UTC）
-  if (fromAddr.quota_reset_at === null || fromAddr.quota_reset_at <= ts0) {
-    const d = new Date(ts0);
-    const nextReset = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
-    await c.env.DB.prepare(
-      `UPDATE email_addresses SET sent_today = 0, quota_reset_at = ?1, updated_at = ?2
-       WHERE id = ?3 AND (quota_reset_at IS NULL OR quota_reset_at <= ?2)`
-    )
-      .bind(nextReset, ts0, fromAddr.id)
-      .run();
-  }
-
-  // 4) 暖機期（C2）：註冊後 WARMUP_HOURS 內 → 有效上限 = min(daily_send_quota, WARMUP_QUOTA)
-  //    D5：地址若被 owner 設為 `warmup_exempt=1`（migration 0007）→ **跳過**暖機上限，
-  //    但仍受 daily_send_quota（每日上限）約束；migration 未套用時此查詢回 false（行為不變）。
-  const inWarmup = ts0 < Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000;
-  const warmupApplies = inWarmup && !(await isWarmupExempt(c.env.DB, fromAddr.id));
-  const warmupQuota = Number(fromAddr.warmup_quota ?? QUOTA.WARMUP_QUOTA);
-  const effectiveLimit = warmupApplies
-    ? Math.min(Number(fromAddr.daily_send_quota), warmupQuota)
-    : Number(fromAddr.daily_send_quota);
-
-  // 5) 原子扣配額（硬性要求：不得寫成「先 SELECT 再 UPDATE」→ 併發下才不會超額）
-  const deduct = await c.env.DB.prepare(
-    `UPDATE email_addresses
-     SET sent_today = sent_today + 1, first_send_at = COALESCE(first_send_at, ?1), updated_at = ?1
-     WHERE id = ?2 AND status = 'active' AND can_send = 1 AND sent_today < ?3`
-  )
-    .bind(ts0, fromAddr.id, effectiveLimit)
-    .run();
-  if (deduct.meta.changes !== 1) {
-    auditAsync(c, {
-      ...auditCtx,
-      event: "send_rejected_quota",
-      detail: { limit: effectiveLimit, warmup: warmupApplies },
-    });
-    // 每日配額或暖機期上限被擋都提醒；內容會標明是哪一種
-    runInBackground(
-      c,
-      sendQuotaAlert(c, {
-        userId: fromAddr.user_id,
-        addressId: fromAddr.id,
-        addressEmail: fromAddr.email,
-        limit: effectiveLimit,
-        dailyLimit: Number(fromAddr.daily_send_quota),
-        warmup: warmupApplies,
-        warmupUntil: warmupApplies
-          ? Number(fromAddr.created_at) + QUOTA.WARMUP_HOURS * 3600_000
-          : null,
-        ts: ts0,
-      })
-    );
-    return err(
-      c,
-      "QUOTA_EXCEEDED",
-      `已達寄信上限（${effectiveLimit} 封／${warmupApplies ? "註冊後 24 小時暖機期" : "每日"}）`,
-      429
-    );
-  }
-
-  // 6) 每小時限流（C3）：以近 60 分鐘的寄件備份為計數來源
-  const recent = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM messages WHERE address_id = ?1 AND folder = 'sent' AND received_at >= ?2`
-  )
-    .bind(fromAddr.id, ts0 - 3600_000)
-    .first<{ n: number }>();
-  if ((recent?.n ?? 0) >= QUOTA.HOURLY_SEND_LIMIT) {
-    await refundQuota(c.env.DB, fromAddr.id); // 步驟 5 已扣 → 此處未寄出，回補
-    auditAsync(c, {
-      ...auditCtx,
-      event: "send_rejected_rate",
-      detail: { hourly_limit: QUOTA.HOURLY_SEND_LIMIT, recent: recent?.n ?? 0 },
-    });
-    return err(c, "RATE_LIMITED", `每小時最多寄 ${QUOTA.HOURLY_SEND_LIMIT} 封，請稍後再試`, 429);
-  }
-
-  // ── 本地直送判定（docs/18 P1）：to+cc+bcc 全部為本網域＋存在＋active → 不繞 SMTP ──
-  const uniqueRecipients = [...new Set([...toList, ...ccList, ...bccList])];
-  const localRecipients = await resolveLocalRecipients(c.env.DB, uniqueRecipients);
-  const deliveryScope: "internal" | "external" = localRecipients ? "internal" : "external";
-
-  let result: { messageId: string };
-  if (localRecipients) {
-    // ⚠️ 本地直送：**絕不呼叫 EMAIL.send()**（連內部一般郵件也不繞外網）。
-    const messageId = `${crypto.randomUUID()}@${DOMAIN}`;
-    try {
-      await deliverLocalMail(c.env, {
-        from: senderEmail,
-        recipients: [...localRecipients.values()],
-        to: toList,
-        cc: ccList,
-        subject: body.subject,
-        html: body.html,
-        text: body.text ?? (body.html ?? "").replace(/<[^>]+>/g, " "),
-        attachments: atts,
-        messageId,
-        ts: ts0,
-      });
-    } catch (e) {
-      console.error("[atwhomail-api] local delivery failed", { from: senderEmail, error: String(e) });
-      await refundQuota(c.env.DB, fromAddr.id);
-      return err(c, "SEND_FAILED", "本地投遞失敗，請稍後再試", 500);
-    }
-    result = { messageId };
-  } else {
-    try {
-      result = await c.env.EMAIL.send({
-        from: senderEmail,
-        to: toList,
-        cc: ccList.length ? ccList : undefined,
-        bcc: bccList.length ? bccList : undefined,
-        subject: body.subject,
-        html: body.html,
-        text: body.text,
-        attachments: atts.length
-          ? atts.map((a) => ({
-              content: a.content_base64,
-              filename: a.filename,
-              type: a.type || "application/octet-stream",
-              disposition: "attachment" as const,
-            }))
-          : undefined,
-      });
-    } catch (e) {
-      const code = (e as { code?: string })?.code ?? "SEND_FAILED";
-      console.error("[atwhomail-api] send failed", { from: senderEmail, code, error: String(e) });
-      await refundQuota(c.env.DB, fromAddr.id); // 未寄出 → 回補配額（避免誤扣）
-      return err(c, "SEND_FAILED", `${code}: ${String(e)}`, 502);
-    }
-  }
-
-  // 寄件備份
+/** DELETE /api/admin/service-tokens/:id — 撤銷 service token（立即生效）。 */
+app.delete("/api/admin/service-tokens/:id", requireOwner, async (c) => {
+  const scope = c.get("scope");
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return err(c, "INVALID_ID", "id 需為正整數", 400);
   const ts = now();
-  const d = new Date(ts);
-  const key = buildMailKey(d);
-  const eml = buildPlainEml({
-    from: senderEmail,
-    to: toList,
-    cc: ccList,
-    subject: body.subject,
-    date: d,
-    messageId: result.messageId,
-    text: body.text ?? (body.html ?? "").replace(/<[^>]+>/g, " "),
+  const res = await c.env.DB.prepare(
+    "UPDATE service_tokens SET status = 'revoked', updated_at = ?1 WHERE id = ?2 AND status = 'active'"
+  )
+    .bind(ts, id)
+    .run();
+  if (res.meta.changes !== 1) return err(c, "NOT_FOUND", "service token not found", 404);
+  auditAsync(c, {
+    event: "service_token_revoked",
+    userId: scope.kind === "owner" ? scope.userId : null,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    detail: { service_id: id },
   });
-  try {
-    await c.env.MAIL.put(key, new TextEncoder().encode(eml), {
-      httpMetadata: { contentType: "message/rfc822" },
-      customMetadata: { "d1-flag": "sent-copy" },
-    });
-  } catch (e) {
-    console.error("[atwhomail-api] sent-copy R2 store failed", { key, error: String(e) });
+  return c.json({ ok: true, id, status: "revoked" });
+});
+
+/**
+ * POST /api/service/mail/send — 外部系統專用、只寄信。
+ *
+ * - 認證：`Authorization: Bearer atw_svc_...`（或 `x-service-token`）
+ * - 只能使用 token 綁定的寄件地址；body.from 可省略，若提供必須完全相同
+ * - 不提供信箱讀取、地址管理、owner 端點
+ * - `reply_to` 與 `Idempotency-Key` 與一般寄信相同
+ */
+app.post("/api/service/mail/send", async (c) => {
+  const auth = c.req.header("authorization") ?? "";
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  const token = bearer || (c.req.header("x-service-token") ?? "").trim();
+  const service = await authenticateServiceToken(c.env, token);
+  if (!service) {
+    return err(c, "UNAUTHORIZED", "invalid or revoked service token", 401);
   }
 
-  const ownerId =
-    scope.kind === "owner"
-      ? scope.userId
-      : (await c.env.DB.prepare("SELECT user_id FROM email_addresses WHERE id = ?1")
-          .bind(scope.addressId)
-          .first<{ user_id: number }>())?.user_id ?? 0;
+  const body = await c.req.json<SendBody>().catch(() => null);
+  if (!body) return err(c, "INVALID_BODY", "invalid JSON body", 400);
 
-  const preview = (body.text ?? (body.html ?? "").replace(/<[^>]+>/g, " ")).slice(0, 200);
-  await c.env.DB.prepare(
-    `INSERT INTO messages
-       (owner_user_id, address_id, folder, message_id, from_address, to_address, cc,
-        subject, text_preview, received_at, send_status, raw_r2_key, created_at, updated_at,
-        origin, kind, delivery_scope)
-     VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?, 'internal', 'normal', ?)`
+  const warmupQuotaCol = await warmupQuotaColumn(c.env.DB);
+  const fromCols =
+    `id, email, user_id, can_send, daily_send_quota, sent_today, quota_reset_at, created_at, ` +
+    `${warmupQuotaCol} AS warmup_quota`;
+  const fromAddr = await c.env.DB.prepare(
+    `SELECT ${fromCols} FROM email_addresses
+     WHERE id = ?1 AND status = 'active' AND deleted_at IS NULL`
   )
-    .bind(
-      ownerId,
-      fromAddr.id,
-      result.messageId ?? null,
-      senderEmail,
-      JSON.stringify(toList.map((a) => ({ address: a, name: "" }))),
-      JSON.stringify(ccList.map((a) => ({ address: a, name: "" }))),
-      body.subject,
-      preview,
-      ts,
-      key,
-      ts,
-      ts,
-      deliveryScope
-    )
-    .run();
+    .bind(service.address_id)
+    .first<FromRow>();
+  if (!fromAddr) {
+    return err(c, "SERVICE_SENDER_UNAVAILABLE", "service token 綁定的寄件地址目前不可用", 403);
+  }
 
-  // D25：成功寄出的稽核（只記 via_alias 布林；不含主旨／內文／收件人，N9）
-  auditAsync(c, {
-    event: "mail_sent",
-    userId: fromAddr.user_id,
-    ...auditCtx,
-    detail: { via_alias: viaAlias },
-  });
+  if (body.from !== undefined && body.from !== null && body.from !== "") {
+    if (typeof body.from !== "string") return err(c, "INVALID_FROM", "from 需為字串", 400);
+    if (body.from.trim().toLowerCase() !== fromAddr.email) {
+      return err(c, "FROM_NOT_ALLOWED", "service token 只能使用綁定的寄件地址", 403);
+    }
+  }
 
-  return c.json({
-    messageId: result.messageId,
-    send_status: "sent",
-    from: senderEmail,
-    to: toList,
-    delivery_scope: deliveryScope,
+  return performSend(c, body, fromAddr, fromAddr.email, {
+    viaAlias: false,
+    idempotencyScope: `svc:${service.id}`,
+    serviceId: service.id,
+    dailyLimit: service.daily_limit,
+    hourlyLimit: service.hourly_limit,
+    skipWarmup: true,
+    quotaAlert: false,
   });
 });
 
