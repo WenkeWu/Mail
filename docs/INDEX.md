@@ -2,7 +2,7 @@
 
 > **這是自動產生的檔案，不要手改。** 改各檔的 front-matter 後執行 `node scripts/docs-index.mjs`。
 > 檢查是否落後：`node scripts/docs-index.mjs --check`（落後會 exit 1）。
-> 產生時間：2026-11-16｜共 **36** 份、**586 KB**、狀態分布：需求 1／現況 25／設計 6／評估 1／歷史 3
+> 產生時間：2026-11-18｜共 **37** 份、**590 KB**、狀態分布：需求 1／現況 26／設計 6／評估 1／歷史 3
 
 ## 給 AI agent 的使用規則（依序照做，不要整批讀）
 
@@ -62,6 +62,7 @@
 | `37-unified-sso.md` | D37：Mail 帳號中心與五系統入口（SSO） | 現況 | 2026-11-11 | 9 KB | 改五系統入口／SSO 契約／接遠端系統時（D37） |
 | `38-visitor-dashboard.md` | 訪客 Dashboard 與 AllChat 身分等級投影（Mail 端） | 現況 | 2026-11-13 | 12 KB | 改訪客 Dashboard／AllChat 身分投影時（D38，已上線） |
 | `39-service-mail-send.md` | 外部系統只寄信 service token（D39） | 現況 | 2026-11-16 | 7 KB | Trace-Flow／外部系統要串 Atwhomail 發信、建立 service token、reply_to 或 Idempotency-Key 時 |
+| `40-login-alerts.md` | 登入通知信（D40） | 現況 | 2026-11-18 | 4 KB | 要調整登入通知、contact_email、登入告警或未來單一裝置政策時 |
 | `mail_PRD_SRS.md` | 100,000 Email Addresses | 需求 | 2026-11-10 | 28 KB | 要判斷「這功能該不該做／是否偏離原始設計」時；§零 只有指標，現況看 docs/31-handoff.md |
 
 ## 地雷與缺號（避免浪費工具呼叫）

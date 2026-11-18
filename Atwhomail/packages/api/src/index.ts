@@ -1033,6 +1033,67 @@ async function sendQuotaAlert(
 }
 
 /**
+ * D40：成功登入通知信（只寄到 `users.contact_email`）。
+ *
+ * - 只寄通知，**不阻擋登入**；寄送失敗只記 log
+ * - 內容只有帳號、時間、IP、國別、裝置、登入方式；不含密碼／驗證碼／信件內容
+ * - `LOGIN_ALERTS_DISABLED=true` 可暫時關閉（測試環境預設關閉）
+ */
+async function sendLoginAlert(
+  c: Context<AuthEnv>,
+  opts: {
+    userId: number;
+    username: string;
+    contactEmail: string | null;
+    addressEmail?: string | null;
+    method: "mailbox" | "password" | "google";
+    ip: string | null;
+    userAgent: string | null;
+    ts?: number;
+  }
+): Promise<void> {
+  if ((c.env.LOGIN_ALERTS_DISABLED ?? "").trim().toLowerCase() === "true") return;
+  if (!opts.contactEmail) return;
+
+  const ts = opts.ts ?? now();
+  const time = new Date(ts).toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+  const country = normalizeCountryCode(c.req.header("cf-ipcountry")) ?? "未知";
+  const ua = (opts.userAgent ?? "").replace(/[\r\n]+/g, " ").slice(0, 300) || "未知";
+  const method =
+    opts.method === "mailbox"
+      ? "信箱地址＋密碼"
+      : opts.method === "password"
+        ? "AtWho ID／備用 Email＋密碼"
+        : "Google 登入";
+  const addressLine = opts.addressEmail ? `\n信箱：${opts.addressEmail}` : "";
+  const text =
+    `您的 AtWho 帳號剛剛完成一次登入：\n\n` +
+    `帳號：${opts.username}${addressLine}\n` +
+    `時間：${time}\n` +
+    `IP：${opts.ip ?? "未知"}\n` +
+    `國別：${country}\n` +
+    `裝置：${ua}\n` +
+    `方式：${method}\n\n` +
+    `如果這是你本人，不需要做任何事。\n` +
+    `如果這不是你，請立即變更密碼；若無法登入，請使用「忘記密碼」。\n\n` +
+    `AtWho ${DOMAIN}`;
+
+  try {
+    await c.env.EMAIL.send({
+      from: "noreply@atwho.org",
+      to: [opts.contactEmail],
+      subject: "AtWho 登入通知",
+      text,
+    });
+  } catch (e) {
+    console.error("[atwhomail-api] login alert failed", {
+      userId: opts.userId,
+      error: String(e),
+    });
+  }
+}
+
+/**
  * 寫 `register_rejected` 稽核並回錯誤。
  * ⚠️ detail **只放 reason 與 local_part**（不含 Email、密碼、驗證碼；docs/21 §5）。
  */
@@ -1180,7 +1241,7 @@ app.post("/api/auth/mailbox-login", async (c) => {
 
   const addr = await c.env.DB.prepare(
     `SELECT a.id, a.email, a.password_hash, a.status, a.password_changed_at,
-            u.id AS user_id, u.status AS user_status
+            u.id AS user_id, u.username, u.contact_email, u.status AS user_status
      FROM email_addresses a JOIN users u ON u.id = a.user_id
      WHERE a.email = ?1 AND a.deleted_at IS NULL`
   )
@@ -1192,6 +1253,8 @@ app.post("/api/auth/mailbox-login", async (c) => {
       status: string;
       password_changed_at: number;
       user_id: number;
+      username: string;
+      contact_email: string | null;
       user_status: string;
     }>();
 
@@ -1237,6 +1300,18 @@ app.post("/api/auth/mailbox-login", async (c) => {
     country: requestCountry(c, body.country),
     language: requestLanguage(c, body.language),
   });
+  runInBackground(
+    c,
+    sendLoginAlert(c, {
+      userId: addr.user_id,
+      username: addr.username,
+      contactEmail: addr.contact_email,
+      addressEmail: addr.email,
+      method: "mailbox",
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+    })
+  );
   const token = await signMailboxToken(c.env, addr.id, addr.email, Number(addr.password_changed_at ?? 0));
   return c.json({ token, session: "mailbox", address: { id: addr.id, email: addr.email } });
 });
@@ -1725,6 +1800,17 @@ app.get("/api/auth/oauth/google/callback", async (c) => {
     country: requestCountry(c),
     language: requestLanguage(c),
   });
+  runInBackground(
+    c,
+    sendLoginAlert(c, {
+      userId: user.id,
+      username: user.username,
+      contactEmail: user.contact_email ?? null,
+      method: "google",
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+    })
+  );
 
   const issued = await issueSessionForUser(c.env, user);
   const target = readOAuthReturnTarget(c.env, redirectRaw);
@@ -1810,6 +1896,17 @@ app.post("/api/auth/user-login", async (c) => {
     country: requestCountry(c, body.country),
     language: requestLanguage(c, body.language),
   });
+  runInBackground(
+    c,
+    sendLoginAlert(c, {
+      userId: user.id,
+      username: user.username,
+      contactEmail: user.contact_email,
+      method: "password",
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? null,
+    })
+  );
   return c.json(await issueSessionForUser(c.env, user));
 });
 

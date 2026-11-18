@@ -70,6 +70,11 @@ export interface Env {
   /** D27：固定 redirect URI（非機密；放 vars；不得接受請求傳入的值） */
   OAUTH_REDIRECT_URI?: string;
   /**
+   * D40：成功登入通知信。預設啟用；設為 `true` 可暫時關閉（測試環境預設關閉）。
+   * 只寄到 `users.contact_email`，不影響登入結果。
+   */
+  LOGIN_ALERTS_DISABLED?: string;
+  /**
    * D38：AllChat 身分等級內部 API 的 base URL（非機密；例：`https://chat.atwho.org`）。
    * 未設定 → 不做等級同步，Dashboard 顯示「未設定」。
    */

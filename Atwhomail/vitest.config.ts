@@ -22,6 +22,9 @@ export default defineConfig({
           bindings: {
             JWT_SECRET: "test-jwt-secret",
             ADMIN_TOKEN: "test-admin-token",
+            // D40：登入通知信預設關閉，避免既有測試的 sentMails 計數被影響；
+            // 專用測試會自行把 E.LOGIN_ALERTS_DISABLED 設回 "false"。
+            LOGIN_ALERTS_DISABLED: "true",
             TEST_MIGRATIONS: migrations,
           },
         },
