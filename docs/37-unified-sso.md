@@ -1,13 +1,13 @@
 ---
 title: D37：Mail 帳號中心與五系統入口（SSO）
 status: 現況
-updated: 2026-11-11
+updated: 2026-11-27
 read-when: 改五系統入口／SSO 契約／接遠端系統時（D37）
 ---
 
 # 37 — D37：Mail 帳號中心與五系統入口（SSO）
 
-> 建立：2026-11-10｜狀態：**Mail 入口／API／Pages 已上線（Pages `d59f2154`、API `2943668e`）；Chat `AllChat` `5c80f1a`、Form `94d802c`、Flow `a6e9684`、Now `6ccccda` 的 `feat/atwho-sso` 均已推 GitHub；四個遠端系統待部署驗收**
+> 建立：2026-11-10｜狀態：**Mail 入口／API／Pages 已上線（Pages `d59f2154`、API `2943668e`）；Chat `AllChat` `5c80f1a`、Form `94d802c`、Flow `a6e9684`、Now `6ccccda` 的 `feat/atwho-sso` 均已推 GitHub；**四系統已部署並配置 secret**（2026-11-27 外網實測：`/api/auth/atwho/start` 回 302＋`state`、假 `code` 被擋、Form 本機登入回 `403 SSO_REQUIRED`）；**端對端瀏覽器驗收待做**，Chat 的 Tunnel 仍指 Vite（`:5173`）、舊 session 未清、AllChat internal secret 未設**
 > Mail API 的 `POST /api/auth/app-login` 現在會把 `state` 原樣接到 callback；`POST /api/auth/exchange` 與 `GET /api/auth/me` 會回傳主要 `email`。
 > 決策（owner 2026-11-10）：一次 Mail 登入 → 使用同一 ID 在 Mail／Form／Now／Chat／Flow 工作；
 > 使用 **D26 一次性 code 交換**；登入後前往**上次使用的系統**（首次預設 Mail）；

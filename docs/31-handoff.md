@@ -1,7 +1,7 @@
 ---
 title: 交接文件（HANDOFF）｜2026-11-05 收尾
 status: 現況
-updated: 2026-11-26
+updated: 2026-11-27
 read-when: **開新對話第一份**：現況、決策、金鑰路徑、指令、待辦
 ---
 
@@ -32,7 +32,7 @@ read-when: **開新對話第一份**：現況、決策、金鑰路徑、指令�
 | **D34** | **配額顯示與實際一致**：`/api/me`、`/api/account/settings` 多回 `effective_daily_quota`（暖機中 = min(配額, 暖機配額)）＋ `warmup_until`；個人設置／側欄顯示有效上限；撰寫鈕的額度判斷同步改用有效值 | ✅ 上線（2026-11-08；`168b03c`／API `29a1c860`／Pages `59de8e9d`）| docs/05 §2.32 |
 | **D35** | **暖機期上限可調**：每地址 `warmup_quota`（預設 **20**、1–50）；`mail.atwho.org` 訪客管理「寄信設定」可調整；暖機期有效上限 = `min(每日配額, 暖機配額)` | ✅ 上線（2026-11-09；`48e20c9`／migration `0017` @ 06:47 UTC／API `4dbac525`／Pages `dcb1da60`）<br>✅ 2026-11-09 預設改 20（`d364e8e`／migration `0018` @07:49 UTC／API `49866c66`／Pages `55dd1d04`） | docs/05 §2.33、docs/16 |
 | **D36** | **AtWho UI Style**：依 `D:\Form\docs\05_UI_Specification.md` 套用主色 `#1F4E79`、狀態色、8px 圓角、卡片陰影與 focus 樣式；**不改版面排佈** | ✅ 上線（2026-11-09；Pages `5f68a302`） | docs/36 |
-| **D37** | **Mail 帳號中心＋五系統入口**：Mail／Form／Now／Chat／Flow 系統清單、頭像選單切換、登入後前往上次系統、D26 code 交換契約；遠端系統接入 | ✅ Mail 入口與契約上線（2026-11-10；Pages `0cd68ede`；D36/D37 已 commit `6c57afb`、Pages `d3e46160` 內容同前）<br>✅ Mail API `state`／`email` 部署（2026-11-10；API `2943668e`）<br>✅ Mail Web Pages `state` 部署（2026-11-11；Pages `d59f2154`；commit `dd2ed01`）<br>🟡 Chat `5c80f1a`、Form `94d802c`、Flow `a6e9684`、Now `6ccccda`（`feat/atwho-sso`）已推 GitHub，待遠端部署與五系統驗收 | docs/37 |
+| **D37** | **Mail 帳號中心＋五系統入口**：Mail／Form／Now／Chat／Flow 系統清單、頭像選單切換、登入後前往上次系統、D26 code 交換契約；遠端系統接入 | ✅ Mail 入口與契約上線（2026-11-10；Pages `0cd68ede`；D36/D37 已 commit `6c57afb`、Pages `d3e46160` 內容同前）<br>✅ Mail API `state`／`email` 部署（2026-11-10；API `2943668e`）<br>✅ Mail Web Pages `state` 部署（2026-11-11；Pages `d59f2154`；commit `dd2ed01`）<br>🟡 Chat `5c80f1a`、Form `94d802c`、Flow `a6e9684`、Now `6ccccda`（`feat/atwho-sso`）已推 GitHub；**四系統已部署**（2026-11-27 實測 `start` 302＋state、假 code 被擋）；剩端對端驗收、Chat Tunnel 改 `:3000`、清舊 session | docs/37 |
 | **D38** | **訪客 Dashboard ＋ AllChat 身分等級投影**（Mail 只讀；未設同步時顯示「未同步」）| ✅ 上線（2026-11-13；migration `0019` @09:14 UTC／API `fdf7e82c`）| docs/38 |
 | **D39** | **外部系統只寄信 service token**（`atw_svc_…` 綁定單一地址、`Idempotency-Key` 24h、每小時／每日獨立上限）| ✅ 上線（2026-11-16；migration `0020` @03:46 UTC／API `32411b6b`）| docs/39 |
 | **D40** | **登入通知信**（登入／新裝置告警寄到 `contact_email`，無 migration）| ✅ 上線（2026-11-18；API `ef2711d7`）| docs/40 |
