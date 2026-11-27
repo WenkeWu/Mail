@@ -2,7 +2,7 @@
 
 > **這是自動產生的檔案，不要手改。** 改各檔的 front-matter 後執行 `node scripts/docs-index.mjs`。
 > 檢查是否落後：`node scripts/docs-index.mjs --check`（落後會 exit 1）。
-> 產生時間：2026-11-18｜共 **37** 份、**590 KB**、狀態分布：需求 1／現況 26／設計 6／評估 1／歷史 3
+> 產生時間：2026-11-27｜共 **37** 份、**591 KB**、狀態分布：需求 1／現況 26／設計 6／評估 1／歷史 3
 
 ## 給 AI agent 的使用規則（依序照做，不要整批讀）
 
@@ -56,14 +56,14 @@
 | `27-d26-auth-proxy.md` | D26 實作規格：`auth.atwho.org` 薄代理 ＋ App code 交換 | 現況 | 2026-11-05 | 8 KB | 改 auth.atwho.org 代理、code 交換時（D26 已上線） |
 | `28-d27-google-oauth.md` | D27 實作規格：Google OAuth 登入 ＋ 忘記密碼 | 現況 | 2026-11-08 | 8 KB | 改 Google 登入／忘記密碼時（D27） |
 | `29-d29-account-settings.md` | D29：`app.atwho.org` 收斂管理功能 ＋ 新增「個人設定」頁 | 現況 | 2026-11-07 | 6 KB | 改個人設置頁／app 站收斂時（D29） |
-| `31-handoff.md` | 交接文件（HANDOFF）｜2026-11-05 收尾 | 現況 | 2026-11-11 | 12 KB | **開新對話第一份**：現況、決策、金鑰路徑、指令、待辦 |
+| `31-handoff.md` | 交接文件（HANDOFF）｜2026-11-05 收尾 | 現況 | 2026-11-26 | 13 KB | **開新對話第一份**：現況、決策、金鑰路徑、指令、待辦 |
 | `32-i18n-locale.md` | D32：全站語系與區域設定（i18n） | 現況 | 2026-11-08 | 6 KB | 改語系／國家選擇／日期格式時（D32） |
 | `36-ui-style.md` | D36：AtWho UI Style（視覺樣式對齊） | 現況 | 2026-11-10 | 3 KB | 改視覺樣式、顏色、圓角、focus 樣式時（D36） |
 | `37-unified-sso.md` | D37：Mail 帳號中心與五系統入口（SSO） | 現況 | 2026-11-11 | 9 KB | 改五系統入口／SSO 契約／接遠端系統時（D37） |
 | `38-visitor-dashboard.md` | 訪客 Dashboard 與 AllChat 身分等級投影（Mail 端） | 現況 | 2026-11-13 | 12 KB | 改訪客 Dashboard／AllChat 身分投影時（D38，已上線） |
 | `39-service-mail-send.md` | 外部系統只寄信 service token（D39） | 現況 | 2026-11-16 | 7 KB | Trace-Flow／外部系統要串 Atwhomail 發信、建立 service token、reply_to 或 Idempotency-Key 時 |
 | `40-login-alerts.md` | 登入通知信（D40） | 現況 | 2026-11-18 | 4 KB | 要調整登入通知、contact_email、登入告警或未來單一裝置政策時 |
-| `mail_PRD_SRS.md` | 100,000 Email Addresses | 需求 | 2026-11-10 | 28 KB | 要判斷「這功能該不該做／是否偏離原始設計」時；§零 只有指標，現況看 docs/31-handoff.md |
+| `mail_PRD_SRS.md` | 100,000 Email Addresses | 需求 | 2026-11-26 | 28 KB | 要判斷「這功能該不該做／是否偏離原始設計」時；§零 只有指標，現況看 docs/31-handoff.md |
 
 ## 地雷與缺號（避免浪費工具呼叫）
 

@@ -14,7 +14,7 @@
 | git root（本 repo，**PUBLIC**） | `D:\Mail` |
 | 程式（pnpm workspace，8 個 package） | `D:\Mail\Atwhomail`（`web/`＝前端、`packages/api`＝Worker） |
 | 文件 | `D:\Mail\docs` → **先看 `docs/INDEX.md`** |
-| migrations | `D:\Mail\Atwhomail\migrations`（0001–0018 已套用 production） |
+| migrations | `D:\Mail\Atwhomail\migrations`（0001–0020 已套用 production） |
 
 ## 2. 導航規則（照做，省 token）
 

@@ -1,7 +1,7 @@
 ---
 title: 100,000 Email Addresses
 status: 需求
-updated: 2026-11-10
+updated: 2026-11-26
 read-when: 要判斷「這功能該不該做／是否偏離原始設計」時；§零 只有指標，現況看 docs/31-handoff.md
 ---
 
@@ -915,14 +915,15 @@ Phase 20
 Phase 21
 註冊機制（D21／D22）：邀請碼 → Email 驗證碼、可分享註冊連結
 
-Phase 22（待做）
-D23 Turnstile 防機器人（需 owner 於 Dashboard 建 widget）
+Phase 22（✅ 已上線 2026-11-05）
+D23 Turnstile 防機器人（widget `atwho-entry`）→ `docs/23`
 
-Phase 23（待做）
-D24 別名／反向別名（**僅對外匿名**；內部不匿名）
+Phase 23（✅ 已上線（D25 實作）；D24 為評估）
+D24 別名／反向別名評估（結論：僅對外匿名、反向別名不實作）→ `docs/24`
+D25 別名 Phase 1（3–12 字母＋3 碼流水號）→ `docs/25`
 
-Phase 24（待審）
-D20 註冊 ID 撞二級網域偵測 ＋ 可用名稱建議
+Phase 24（✅ 已上線 2026-11-05）
+D20 註冊 ID 撞二級網域偵測 ＋ 可用名稱建議 → `docs/20`
 
 每完成一個 Phase：
 

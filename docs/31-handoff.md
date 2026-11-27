@@ -1,7 +1,7 @@
 ---
 title: 交接文件（HANDOFF）｜2026-11-05 收尾
 status: 現況
-updated: 2026-11-11
+updated: 2026-11-26
 read-when: **開新對話第一份**：現況、決策、金鑰路徑、指令、待辦
 ---
 
@@ -33,6 +33,9 @@ read-when: **開新對話第一份**：現況、決策、金鑰路徑、指令�
 | **D35** | **暖機期上限可調**：每地址 `warmup_quota`（預設 **20**、1–50）；`mail.atwho.org` 訪客管理「寄信設定」可調整；暖機期有效上限 = `min(每日配額, 暖機配額)` | ✅ 上線（2026-11-09；`48e20c9`／migration `0017` @ 06:47 UTC／API `4dbac525`／Pages `dcb1da60`）<br>✅ 2026-11-09 預設改 20（`d364e8e`／migration `0018` @07:49 UTC／API `49866c66`／Pages `55dd1d04`） | docs/05 §2.33、docs/16 |
 | **D36** | **AtWho UI Style**：依 `D:\Form\docs\05_UI_Specification.md` 套用主色 `#1F4E79`、狀態色、8px 圓角、卡片陰影與 focus 樣式；**不改版面排佈** | ✅ 上線（2026-11-09；Pages `5f68a302`） | docs/36 |
 | **D37** | **Mail 帳號中心＋五系統入口**：Mail／Form／Now／Chat／Flow 系統清單、頭像選單切換、登入後前往上次系統、D26 code 交換契約；遠端系統接入 | ✅ Mail 入口與契約上線（2026-11-10；Pages `0cd68ede`；D36/D37 已 commit `6c57afb`、Pages `d3e46160` 內容同前）<br>✅ Mail API `state`／`email` 部署（2026-11-10；API `2943668e`）<br>✅ Mail Web Pages `state` 部署（2026-11-11；Pages `d59f2154`；commit `dd2ed01`）<br>🟡 Chat `5c80f1a`、Form `94d802c`、Flow `a6e9684`、Now `6ccccda`（`feat/atwho-sso`）已推 GitHub，待遠端部署與五系統驗收 | docs/37 |
+| **D38** | **訪客 Dashboard ＋ AllChat 身分等級投影**（Mail 只讀；未設同步時顯示「未同步」）| ✅ 上線（2026-11-13；migration `0019` @09:14 UTC／API `fdf7e82c`）| docs/38 |
+| **D39** | **外部系統只寄信 service token**（`atw_svc_…` 綁定單一地址、`Idempotency-Key` 24h、每小時／每日獨立上限）| ✅ 上線（2026-11-16；migration `0020` @03:46 UTC／API `32411b6b`）| docs/39 |
+| **D40** | **登入通知信**（登入／新裝置告警寄到 `contact_email`，無 migration）| ✅ 上線（2026-11-18；API `ef2711d7`）| docs/40 |
 | P1/P2、D16–D18 | 互動式表單（內部限定、四道鎖、RJSF lazy-load）| ✅ 上線 | docs/18 |
 | D17 | 備份 13 表 ＋ watchdog 去抖 ＋ 退避重試 | ✅ 上線 | docs/17 |
 
@@ -106,7 +109,7 @@ cd packages/api && node ../../node_modules/wrangler/bin/wrangler.js d1 migration
 | Pages | `atwhomail-web` |
 | Workers | `atwhomail-api`／`-email-handler`／`-mta-sts`／`-heartbeat`／**`atwhomail-auth`** |
 | 對外網址 | `app.atwho.org`（公開）／`mail.atwho.org`（Access，owner-only）／**`auth.atwho.org`**（SSO）|
-| Migration 現況 | `0001`–`0017` 已套用 production（`0015` @ 2026-11-06 08:52 UTC；`0016_visitor_quota_50` @ 2026-11-08 00:19 UTC；`0017_warmup_quota` @ 2026-11-09）；`0018_warmup_quota_default_20` @ 2026-11-09 07:49 UTC（僅把仍為 5 者改 20，管理員自訂值保留）|
+| Migration 現況 | `0001`–`0020` 已套用 production（`0019` @ 2026-11-13 09:14 UTC；`0020` @ 2026-11-16 03:46 UTC；其餘見 `d1_migrations`）（`0015` @ 2026-11-06 08:52 UTC；`0016_visitor_quota_50` @ 2026-11-08 00:19 UTC；`0017_warmup_quota` @ 2026-11-09）；`0018_warmup_quota_default_20` @ 2026-11-09 07:49 UTC（僅把仍為 5 者改 20，管理員自訂值保留）|
 
 ---
 
